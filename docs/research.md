@@ -12,6 +12,7 @@ from knowledge and not verified with `dnf`. Numbers are indicative, not benchmar
 | Decode Opus / Vorbis | libopusfile, libvorbisfile (miniaudio custom backends) | BSD | `opusfile-devel libvorbis-devel libogg-devel` |
 | Audio output + resample | miniaudio (PulseAudio/ALSA backends → PipeWire) | PD / MIT-0 | vendored |
 | Client HTTP | libcurl (multi API, Range, TLS, HTTP/2) | curl (MIT-like) | `libcurl-devel` |
+| Client offline cache | plain files + SQLite range/metadata DB | PD | `sqlite-devel` |
 | TUI | FTXUI (ncurses as minimal fallback) | MIT | `ftxui-devel` |
 | Desktop integration | MPRIS via sd-bus (libsystemd) | LGPL | `systemd-devel` |
 | Optional GUI later | FLTK 1.4 (or Qt Widgets if polish matters) | LGPL+exception | `fltk-devel` |
@@ -149,8 +150,65 @@ POST /api/v1/admin/rescan
 - `libplayer` has zero UI deps; frontends depend only on it.
 - Consider an mpd-style **daemon/client split** (core as daemon + Unix-socket control) so music survives closing the TUI. v1 can be single-process if the core API is designed for it.
 
+## 5. Offline cache (client)
+
+Requirement: anything streamed is kept so it can be replayed offline; partially
+streamed tracks are completed in the background during idle periods.
+
+- **Tee the network stream to disk.** The libcurl write callback appends bytes to both the
+  compressed ring buffer and a cache file `cache/<trackId>.<ext>.part`. Bytes are the server's
+  original file, so offline playback uses the exact same decoder path.
+- **Track which byte ranges exist.** Seeking/skipping produces holes. Keep a small range list
+  per track (in the client SQLite DB) and write with `pwrite` at the right offset into a
+  pre-sized sparse file. When ranges cover `[0, size)`, verify size + ETag, rename `.part` →
+  final, mark `complete`.
+- **Idle fill queue.** Tracks with holes (skipped mid-way, seeked past, or queued in a playlist)
+  go into a background download queue. A low-priority fetcher fills missing ranges with
+  `Range:` requests only when nothing is streaming for playback (and optionally only on
+  unmetered networks / AC power). Pauses immediately when playback needs bandwidth.
+- **Offline lookup first.** Before streaming, the player checks the cache: complete → play
+  from disk, no network; partial → play cached ranges from disk and fetch only the holes.
+- **Metadata offline too.** Client keeps a mirror of the library (via
+  `/library/changes?since=rev`) and cover thumbnails, so browsing works offline. Cached
+  tracks are shown as available when the server is unreachable.
+- **Invalidation.** Key cache entries by `trackId + ETag`; if the server reports a new ETag
+  (file re-tagged/replaced), refetch.
+- **Size limit.** User-set cap with LRU eviction; "pin" (keep offline) flag exempts tracks
+  or albums from eviction and puts them in the idle queue proactively.
+- Cost: one SQLite DB (`sqlite-devel`, already used server-side) plus plain files. No
+  extra memory pressure: writes stream from the same buffers already in RAM.
+
+## Decisions
+- **v1 is a single program** (no daemon/client split). Keep `libplayer` UI-free so a split
+  stays possible later.
+- **Formats: MP3, FLAC, Opus, Ogg Vorbis.** No AAC/ALAC, so no FFmpeg/RPM Fusion needed for
+  decoding.
+- **Transcoding: not in v1.** Serve original files only. Opus transcoding may come later as an
+  opt-in for FLAC sources on metered/slow links (see below).
+- **Offline cache** (section 5) is a v1 requirement.
+
+### Opus and on-the-fly transcoding
+Opus (IETF RFC 6716, 2012) is a modern, open, royalty-free lossy codec, usually stored in
+an Ogg container (`.opus`). It sounds as good as or better than MP3 at much lower bitrates:
+~96–128 kbps is transparent for most listeners, compared with ~192–320 kbps for MP3.
+
+Pros of converting on the fly:
+- Much less data: ~10× smaller than FLAC, ~1.5–2.5× smaller than 192–320k MP3. Matters on
+  mobile data or slow uplinks, and shrinks the offline cache.
+- Cheap: measured ~70× realtime on one core.
+
+Cons:
+- Lossy: from FLAC it's fine; from MP3 it's lossy→lossy re-encoding (extra artifacts) for a
+  small size win.
+- No byte-Range seeking/resume on a live transcode (no fixed size); needs time-offset
+  requests or a server-side transcode cache, which complicates the offline-cache range logic.
+- The offline copy would be the lower-quality version.
+- Extra server complexity and a dependency (ffmpeg or libopusenc), plus server CPU per stream.
+
+Conclusion: for a private server used mostly on home/LAN with largely MP3 sources, little gain
+in v1. Revisit if FLAC libraries are streamed over mobile data.
+
 ## Open questions
-- Single process vs. daemon/client split for v1?
-- Transcoding in v1, or raw-only first?
-- Formats beyond MP3/FLAC/Opus/Vorbis (AAC/ALAC need full FFmpeg from RPM Fusion)?
 - Re-verify numbers and package names on real Fedora with an actual PipeWire device.
+- Default offline-cache size cap and whether idle fill should respect metered connections
+  (NetworkManager exposes this over D-Bus).
