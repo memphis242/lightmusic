@@ -13,6 +13,7 @@ from knowledge and not verified with `dnf`. Numbers are indicative, not benchmar
 | Audio output + resample | miniaudio (PulseAudio/ALSA backends → PipeWire) | PD / MIT-0 | vendored |
 | Client HTTP | libcurl (multi API, Range, TLS, HTTP/2) | curl (MIT-like) | `libcurl-devel` |
 | Client offline cache | plain files + SQLite range/metadata DB | PD | `sqlite-devel` |
+| Config file (YAML) | rapidyaml (or yaml-cpp) | MIT | vendored / `yaml-cpp-devel` |
 | TUI | FTXUI (ncurses as minimal fallback) | MIT | `ftxui-devel` |
 | Desktop integration | MPRIS via sd-bus (libsystemd) | LGPL | `systemd-devel` |
 | Optional GUI later | FLTK 1.4 (or Qt Widgets if polish matters) | LGPL+exception | `fltk-devel` |
@@ -185,7 +186,27 @@ streamed tracks are completed in the background during idle periods.
   decoding.
 - **Transcoding: not in v1.** Serve original files only. Opus transcoding may come later as an
   opt-in for FLAC sources on metered/slow links (see below).
-- **Offline cache** (section 5) is a v1 requirement.
+- **Offline cache** (section 5) is a v1 requirement:
+  - Default size cap **100 MB**, user-configurable.
+  - Idle background fill is **active by default**, with an option to pause it on metered
+    connections (detected via NetworkManager's `Metered` property over D-Bus, using the
+    sd-bus dependency already planned for MPRIS).
+- **Configuration**: `~/.config/lightmusic/cfg.yaml` (honour `$XDG_CONFIG_HOME`), editable
+  from the UI too; the UI writes back to the same file. Parser: **rapidyaml** (MIT,
+  header-only, very fast/low-alloc; vendored) or **yaml-cpp** (MIT, `yaml-cpp-devel`,
+  simpler API, heavier). Example:
+  ```yaml
+  server:
+    url: https://music.example.net
+    api_key: ...
+  cache:
+    max_size_mb: 100
+    background_fill: true
+    pause_on_metered: false
+  ```
+- **Frontends**: TUI (FTXUI) first, GUI later, both on the UI-free `libplayer` core.
+- **Opus transcoding**: promising, deferred. Target devices are a laptop and a phone with
+  usually good connections, and sources are mostly MP3. Revisit if latency proves excessive.
 
 ### Opus and on-the-fly transcoding
 Opus (IETF RFC 6716, 2012) is a modern, open, royalty-free lossy codec, usually stored in
@@ -210,5 +231,3 @@ in v1. Revisit if FLAC libraries are streamed over mobile data.
 
 ## Open questions
 - Re-verify numbers and package names on real Fedora with an actual PipeWire device.
-- Default offline-cache size cap and whether idle fill should respect metered connections
-  (NetworkManager exposes this over D-Bus).
