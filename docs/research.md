@@ -1,29 +1,34 @@
 # lightmusic — Research Notes (dependency & architecture scouting)
 
 Status: research only, no implementation yet. Measurements were taken with throwaway
-probes in an **Ubuntu 24.04, 4-core container** (not Fedora). Fedora package names are
-from knowledge and not verified with `dnf`. Numbers are indicative, not benchmarks.
+probes in an **Ubuntu 24.04, 4-core container**. Package names were then verified on
+**Fedora 43** (see bench results on branch `test/fedora-bench`). Numbers are indicative, not benchmarks.
 
 ## TL;DR — recommended stack
 
 | Layer | Pick | License | Fedora pkg |
 |---|---|---|---|
-| Decode MP3/FLAC/WAV | dr_mp3 / dr_flac (via miniaudio, vendored headers) | PD / MIT-0 | vendored |
+| Decode MP3/FLAC/WAV | dr_mp3 / dr_flac (via miniaudio, vendored headers) | Unlicense (public domain) or MIT-0 | vendored |
 | Decode Opus / Vorbis | libopusfile, libvorbisfile (miniaudio custom backends) | BSD | `opusfile-devel libvorbis-devel libogg-devel` |
-| Audio output + resample | miniaudio (PulseAudio/ALSA backends → PipeWire) | PD / MIT-0 | vendored |
+| Audio output + resample | miniaudio (PulseAudio/ALSA backends → PipeWire) | Unlicense (public domain) or MIT-0 | vendored |
 | Client HTTP | libcurl (multi API, Range, TLS, HTTP/2) | curl (MIT-like) | `libcurl-devel` |
-| Client offline cache | plain files + SQLite range/metadata DB | PD | `sqlite-devel` |
+| Client offline cache | plain files + SQLite range/metadata DB | public domain | `sqlite-devel` |
 | Config file (YAML) | rapidyaml (or yaml-cpp) | MIT | vendored / `yaml-cpp-devel` |
 | TUI | FTXUI (ncurses as minimal fallback) | MIT | `ftxui-devel` |
-| Desktop integration | MPRIS via sd-bus (libsystemd) | LGPL | `systemd-devel` |
-| Optional GUI later | FLTK 1.4 (or Qt Widgets if polish matters) | LGPL+exception | `fltk-devel` |
-| Server HTTP | cpp-httplib (raw `sendfile` path if ever needed) | MIT | `cpp-httplib-devel` |
-| Tags / index / watch | TagLib + SQLite (WAL) + inotify | LGPL/MPL, PD | `taglib-devel sqlite-devel` |
+| Desktop integration | MPRIS via sd-bus (libsystemd) | LGPL-2.1+ | `systemd-devel` |
+| Optional GUI later | FLTK 1.4 (measured 1.3; or Qt Widgets if polish matters) | LGPL+exception | `fltk-devel` |
+| Server HTTP | cpp-httplib (raw `sendfile` path if ever needed) | MIT | `cpp-httplib-devel` (0.48.0, no pkg-config) |
+| Tags / index / watch | TagLib + SQLite (WAL) + inotify | TagLib LGPL-2.1 or MPL-1.1; SQLite public domain | `taglib-devel sqlite-devel` |
 | TLS (server) | Caddy reverse proxy (or Tailscale/WireGuard) | Apache-2.0 | `caddy` |
-| Optional transcode | Opus via `ffmpeg` subprocess or libopusenc | BSD / LGPL | `libopusenc-devel opus-devel ffmpeg-free` |
+| Optional transcode (**post-v1**) | Opus via `ffmpeg` subprocess or libopusenc | BSD / LGPL | `libopusenc-devel opus-devel ffmpeg-free` |
 
-Nothing above requires RPM Fusion (MP3 patents expired; Fedora ships mpg123/lame/ffmpeg-free).
+Nothing above requires RPM Fusion (AAC/ALAC excluded by decision; MP3 patents expired; Fedora ships mpg123/lame/ffmpeg-free).
 Build tooling: `gcc-c++ cmake ninja-build pkgconf`.
+
+Fedora 43 notes (bench): `cpp-httplib-devel` is **0.48.0**, header `/usr/include/httplib.h`, no
+pkg-config file; the bench below measured 0.18.1 — a major API delta, so pin or vendor one version.
+`ftxui-devel` is **6.1.9** (measured 5.0.0). miniaudio trimmed (`MA_NO_*`, Pulse/ALSA/Null only)
+is **424 KB** vs 617 KB full. PipeWire default: 48 kHz, quantum 1024.
 
 ## 1. Client audio pipeline
 
@@ -38,7 +43,7 @@ Build tooling: `gcc-c++ cmake ninja-build pkgconf`.
 
 - ~10 MB of RSS is process/measurement baseline; decoder delta is a few hundred KB.
 - Real music decodes ~2–3× slower than a sine; still well under 1% of a core at realtime.
-- `MA_NO_*` defines (no encoder/generators/unused backends) should shrink miniaudio to ~300–400 KB.
+- `MA_NO_*` defines (no encoder/generators/unused backends) shrink miniaudio to 424 KB on Fedora (617 KB full).
 
 ### Alternatives
 - **libmpg123** (`mpg123-devel`, LGPL): fastest MP3 (SIMD), sample-accurate seek, gapless via LAME header, ICY. Swap in if dr_mp3 seeking/gapless disappoints.
@@ -50,17 +55,31 @@ Build tooling: `gcc-c++ cmake ninja-build pkgconf`.
 
 ### Threading & buffers
 1. **Control thread** (commands, playlist, observers).
-2. **Decoder thread**: read file/network buffer → decode → ReplayGain → PCM ring buffer.
+   Handles device-lost/default-changed (`ma_device_notification` → posted to control thread).
+2. **Decoder thread**: `ByteSource` → decode → ReplayGain → PCM ring buffer.
 3. **Audio callback** (realtime): lock-free SPSC pop (`ma_pcm_rb` or custom atomics), volume multiply, silence on underrun. No locks, allocations, logging or I/O.
-4. **Network thread** (libcurl multi), only when streaming.
+4. **Network thread** (libcurl multi): sole owner of all curl handles; also does cache `pwrite` + SQLite range updates (never the callback).
 
-Sizes: device period 10–20 ms (256–1024 frames @48k; ~50 ms for power saving);
+**Seek/flush**: a generation counter. Decoder bumps it on seek/skip and tags ring frames with it;
+the callback drops stale-generation frames instead of locking/clearing the ring.
+
+Sizes: device period 256–1024 frames @48 kHz = 5.3–21 ms (~50 ms for power saving; PipeWire default quantum 1024);
 PCM ring 0.5–1 s (≈384 KB float stereo @48k); compressed network ring 256 KB–1 MB,
-start playback at ~64 KB. Resume/seek with `Range: bytes=N-` (time→byte via FLAC seektable / Xing TOC).
+start playback at ~64 KB.
 
-**Gapless**: single open device; decoder starts the next track ~2 s before end into the same ring;
-trim encoder delay/padding. Reopen device only on rate change (or resample to fixed 48k).
-**ReplayGain**: read `REPLAYGAIN_*` / Opus `R128_*` + header gain once; apply in decoder thread, peak-clamped.
+**Seek**: time→byte via FLAC SEEKTABLE / Xing TOC (coarse, 100 points), then decode forward to the
+exact sample, all through `ByteSource` (missing bytes → `Range: bytes=N-`).
+
+**Gapless**: single open device; decoder starts the next track ~2 s before end into the same ring.
+Per-format trimming: MP3 LAME header via dr_mp3 `delayInPCMFrames`/`paddingInPCMFrames` (exposed by
+vendored dr_mp3 0.7.4); Opus pre-skip via opusfile; FLAC/Vorbis are sample-exact. The decoder puts a
+track-boundary marker (frame index) in the ring; the callback publishes "track changed at frame N"
+via an atomic for the UI. Reopen device only on rate change (or resample to fixed 48k).
+
+**ReplayGain**: read `REPLAYGAIN_*` / Opus `R128_*` once; apply in decoder thread, peak-clamped.
+`R128_TRACK_GAIN` is Q7.8 relative to −23 LUFS → `gain_dB = Q7.8/256 + 5.0` to match ReplayGain's
+~−18 LUFS reference; OpusHead output gain is applied by opusfile. Mode: album when playing an album
+in order, else track. Pre-amp for untagged files configurable.
 **Memory**: always stream; never decode whole tracks.
 
 ## 2. UI layer
@@ -106,13 +125,17 @@ Both returned correct 206 ranges. Either saturates gigabit from a fraction of a 
 **Indexing** (TagLib Fast read + SQLite, single transaction, 300 files / 88 MB):
 11–17 ms warm (18–26k files/s), 50 ms cold (~6k files/s). 50k-track library < 1 min cold even on slower disks.
 Incremental rescan keyed on (path, mtime, size) at startup, then inotify; rescan on `IN_Q_OVERFLOW`;
-raise `fs.inotify.max_user_watches` for huge trees.
+raise `fs.inotify.max_user_watches` for huge trees. inotify details: one watch per directory,
+including newly created subdirs (add the watch, *then* scan the new dir to close the race); pair
+`IN_MOVED_FROM`/`IN_MOVED_TO` by cookie (unpaired = delete/add); index only after `IN_CLOSE_WRITE`.
 
-**Transcoding** (ffmpeg libopus 128k): 300 s stereo in 4.0 s CPU (~70× realtime/core);
+**Transcoding** (post-v1; ffmpeg libopus 128k): 300 s stereo in 4.0 s CPU (~70× realtime/core);
 35.5 MB FLAC → 3.3 MB Opus. Worth it for mobile data. Transcoded streams can't byte-seek:
 use `t=<sec>` or cache the transcode then serve with Range.
 
-**Auth**: per-device random API keys, SHA-256 stored in SQLite; `Authorization: Bearer` or `?apiKey=`.
+**Auth**: per-device random API keys, SHA-256 stored in SQLite. Prefer `Authorization: Bearer`;
+`?apiKey=` accepted only on `/stream` and `/cover` (for players that can't set headers), with the
+query redacted in Caddy logs. Per-key revocation endpoint; rate-limit failed auth.
 **Cover art**: embedded pictures (TagLib) or `cover.jpg`/`folder.jpg`; thumbnails on demand, cached on disk by hash.
 
 ### API sketch
@@ -123,12 +146,13 @@ GET  /api/v1/artists | /artists/{id}
 GET  /api/v1/albums?sort=&offset=&limit= | /albums/{id}
 GET  /api/v1/tracks/{id}
 GET  /api/v1/search?q=
-GET  /api/v1/stream/{trackId}[?format=raw|opus&bitrate=128&t=<sec>]
-       raw: 200/206 + Accept-Ranges, ETag, Last-Modified; opus: chunked Ogg
+GET  /api/v1/stream/{trackId}                v1: raw only, 200/206 + Accept-Ranges, ETag, Last-Modified
+       post-v1: ?format=opus&bitrate=128&t=<sec> → chunked Ogg
 GET  /api/v1/cover/{id}?size=300
 GET/POST/PUT/DELETE /api/v1/playlists[/{id}]
 POST /api/v1/scrobble
 POST /api/v1/admin/rescan
+DELETE /api/v1/admin/keys/{id}               revoke an API key
 ```
 
 ## 4. Proposed architecture
@@ -144,7 +168,7 @@ POST /api/v1/admin/rescan
                                      │ HTTP/1.1 + Range (Caddy TLS)
             ┌────────────────────────▼───────────────────────────┐
  server:    │ lightmusicd: cpp-httplib · SQLite(WAL) index ·      │
-            │ TagLib scanner · inotify watcher · opt. Opus encode │
+            │ TagLib scanner · inotify watcher · [Opus: post-v1]  │
             └─────────────────────────────────────────────────────┘
 ```
 
@@ -161,8 +185,15 @@ streamed tracks are completed in the background during idle periods.
   original file, so offline playback uses the exact same decoder path.
 - **Track which byte ranges exist.** Seeking/skipping produces holes. Keep a small range list
   per track (in the client SQLite DB) and write with `pwrite` at the right offset into a
-  pre-sized sparse file. When ranges cover `[0, size)`, verify size + ETag, rename `.part` →
-  final, mark `complete`.
+  pre-sized sparse file. Total size comes from `Content-Range: bytes a-b/TOTAL` (or HEAD).
+  Commit in batches (~256 KB / 1 s): `pwrite` → `fdatasync` → SQLite range update, so the DB
+  never claims bytes that aren't durable. When ranges cover `[0, size)`, verify size + ETag,
+  rename `.part` → final, mark `complete`.
+- **Consistency.** Every hole request sends `If-Range: <etag>`; a `200` reply (not `206`) means
+  the file changed → discard the `.part` and restart.
+- **One read path.** A single `ByteSource` interface (`read(offset, len)`, blocks on missing
+  ranges), backed by a local file or by cache + fetcher, so local, partial and streamed playback
+  share one decoder path.
 - **Idle fill queue.** Tracks with holes (skipped mid-way, seeked past, or queued in a playlist)
   go into a background download queue. A low-priority fetcher fills missing ranges with
   `Range:` requests only when nothing is streaming for playback (and optionally only on
@@ -175,7 +206,9 @@ streamed tracks are completed in the background during idle periods.
 - **Invalidation.** Key cache entries by `trackId + ETag`; if the server reports a new ETag
   (file re-tagged/replaced), refetch.
 - **Size limit.** User-set cap with LRU eviction; "pin" (keep offline) flag exempts tracks
-  or albums from eviction and puts them in the idle queue proactively.
+  or albums from eviction and puts them in the idle queue proactively. Pinned items count
+  toward the cap and are never evicted; a pin that would exceed the cap is refused with a UI
+  error; idle prefetch never evicts pinned items.
 - Cost: one SQLite DB (`sqlite-devel`, already used server-side) plus plain files. No
   extra memory pressure: writes stream from the same buffers already in RAM.
 
@@ -187,14 +220,18 @@ streamed tracks are completed in the background during idle periods.
 - **Transcoding: not in v1.** Serve original files only. Opus transcoding may come later as an
   opt-in for FLAC sources on metered/slow links (see below).
 - **Offline cache** (section 5) is a v1 requirement:
-  - Default size cap **100 MB**, user-configurable.
+  - Default size cap **100 MB**, user-configurable. 100 MB ≈ 14 tracks at 192 kbps, so users
+    with larger offline needs should raise it.
   - Idle background fill is **active by default**, with an option to pause it on metered
     connections (detected via NetworkManager's `Metered` property over D-Bus, using the
     sd-bus dependency already planned for MPRIS).
 - **Configuration**: `~/.config/lightmusic/cfg.yaml` (honour `$XDG_CONFIG_HOME`), editable
-  from the UI too; the UI writes back to the same file. Parser: **rapidyaml** (MIT,
-  header-only, very fast/low-alloc; vendored) or **yaml-cpp** (MIT, `yaml-cpp-devel`,
-  simpler API, heavier). Example:
+  from the UI too. Parser: **rapidyaml** (MIT, compiled library, also available as a
+  single-header amalgamation; very fast/low-alloc; vendored) or **yaml-cpp** (MIT,
+  `yaml-cpp-devel`, simpler API, heavier). Neither emitter reliably preserves comments, so
+  how the UI writes back is open (see below). Created `0600`; warn at startup if group/world-
+  readable (it holds the API key). Writes are temp → fsync → rename. Reloaded on inotify
+  change; unknown keys warn, not fail. Example:
   ```yaml
   server:
     url: https://music.example.net
@@ -208,7 +245,7 @@ streamed tracks are completed in the background during idle periods.
 - **Opus transcoding**: promising, deferred. Target devices are a laptop and a phone with
   usually good connections, and sources are mostly MP3. Revisit if latency proves excessive.
 
-### Opus and on-the-fly transcoding
+### Opus and on-the-fly transcoding (Deferred)
 Opus (IETF RFC 6716, 2012) is a modern, open, royalty-free lossy codec, usually stored in
 an Ogg container (`.opus`). It sounds as good as or better than MP3 at much lower bitrates:
 ~96–128 kbps is transparent for most listeners, compared with ~192–320 kbps for MP3.
@@ -230,4 +267,7 @@ Conclusion: for a private server used mostly on home/LAN with largely MP3 source
 in v1. Revisit if FLAC libraries are streamed over mobile data.
 
 ## Open questions
-- Re-verify numbers and package names on real Fedora with an actual PipeWire device.
+- UI write-back: rewrite `cfg.yaml` (drops comments) vs. a separate generated
+  `ui-overrides.yaml` layered on top.
+- v1 phone support: none (OpenSubsonic layer in v1.1) vs. a minimal OpenSubsonic subset in v1
+  (ping, getAlbumList2, getAlbum, stream, getCoverArt, search3) so Symfonium works.
