@@ -91,6 +91,43 @@ for f in "$TMP"/san*; do
     echo "FAIL: sanitizer report $f"; cat "$f"; fail=1
 done
 
+# Settings write-back: volume keys are saved into cfg.yaml 1 s after the last change
+# (in place: comments and layout kept) and on quit, and our own save does not trigger a
+# "settings reloaded" (no self-reload loop).
+printf '# my settings\nplayback:\n  volume: 50   # percent\n\nui:\n  show_cache_markers: true # markers\n' > "$CFG"
+chmod 600 "$CFG"
+: > "$TMP/log3"
+wait_file() { # TEXT: poll cfg.yaml for TEXT
+    n=200
+    while [ $n -gt 0 ]; do grep -q -- "$1" "$CFG" && return 0; sleep 0.05; n=$((n - 1)); done
+    echo "timeout waiting for '$1' in cfg.yaml" >&2; return 1
+}
+{ n=200; while [ $n -gt 0 ] && ! grep -q Playing "$TMP/log3"; do sleep 0.05; n=$((n - 1)); done
+  printf '+'; sleep 0.1; printf '+'
+  wait_file "volume: 60"
+  sleep 1
+  printf '-'; sleep 0.1; printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+    timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log3" >/dev/null 2>&1
+rc=$?
+[ $rc -eq 0 ] || { echo "FAIL: write-back run exit status $rc"; tail -c 1000 "$TMP/log3" | cat -v; fail=1; }
+want=$(printf '# my settings\nplayback:\n  volume: 55   # percent\n\nui:\n  show_cache_markers: true # markers\n')
+[ "$(cat "$CFG")" = "$want" ] || { echo "FAIL: cfg.yaml after write-back:"; cat "$CFG"; fail=1; }
+[ "$(stat -c %a "$CFG")" = 600 ] || { echo "FAIL: cfg.yaml mode changed"; fail=1; }
+grep -q "vol  60%" "$TMP/log3" || { echo "FAIL: volume 60% never shown"; fail=1; }
+grep -q "settings reloaded" "$TMP/log3" && { echo "FAIL: own save reloaded"; fail=1; }
+grep -q "not saved" "$TMP/log3" && { echo "FAIL: save error shown"; fail=1; }
+# ui.save_settings: false disables it.
+printf 'playback:\n  volume: 50\nui:\n  save_settings: false\n' > "$CFG"
+: > "$TMP/log4"
+{ n=200; while [ $n -gt 0 ] && ! grep -q Playing "$TMP/log4"; do sleep 0.05; n=$((n - 1)); done
+  printf '+'; sleep 0.1; printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+    timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log4" >/dev/null 2>&1
+grep -q "volume: 50" "$CFG" || { echo "FAIL: saved despite ui.save_settings: false"; cat "$CFG"; fail=1; }
+for f in "$TMP"/san*; do
+    [ -e "$f" ] || continue
+    echo "FAIL: sanitizer report $f (write-back run)"; cat "$f"; fail=1
+done
+
 # Regression: a FIFO given as a track (no writer, so any blocking open/read would hang
 # forever) must not stop q from exiting promptly. The tag scanner and the player only
 # open regular files, and quitting never waits for the scanner.

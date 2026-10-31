@@ -116,7 +116,13 @@ ctest --test-dir build --output-on-failure
   atomic rename-over through the debounced watcher loop (settings never reset to the
   defaults), and malformed/fuzzed YAML that must only produce diagnostics, including
   inputs that used to crash rapidyaml and over-deep nesting (run it under ASan/UBSan;
-  `LM_FUZZ_ITERS=<n>`, default 4000).
+  `LM_FUZZ_ITERS=<n>`, default 4000); UI write-back (`editYamlValues`,
+  `updateConfigValues`): comments, blank lines, key order, inline comments, quoting,
+  CRLF and indentation kept; insertion into an existing section, under an empty one, a new
+  section at the end, a new file (header, 0600, parent dirs 0700); refusals (flow
+  collections, block/multi-line scalars, tags, quoted keys, a broken file) leave the file
+  untouched; mode kept, no write when unchanged, a symlink's target edited; and random
+  edits of random valid configs that must read back exactly (`LM_FUZZ_SEED=<n>`).
 - `test_server_config`: `lightmusicd --config`: every key mapped onto `Config`, relative
   music paths, flags overriding (lists replaced), defaults, errors with line numbers,
   unknown keys, loopback/proxy checks on the merged result, missing and world-writable
@@ -144,7 +150,9 @@ ctest --test-dir build --output-on-failure
   generated files, sends keys, expects a clean exit on `q` and a restored terminal; also
   that `q` exits promptly with a FIFO in the queue; with a temp `XDG_CONFIG_HOME`:
   `cfg.yaml`'s volume applied at start, a live edit (volume hot-applied, replaygain
-  reported as restart-required), and a group-writable file / an `api_key` refused.
+  reported as restart-required), and a group-writable file / an `api_key` refused;
+  volume keys saved into `cfg.yaml` (debounced and on quit) with its comments intact,
+  without a "settings reloaded" from our own write, and not with `ui.save_settings: false`.
   Skipped without `script` or `ffmpeg`.
 - `test_mpris` (under `dbus-run-session`): libmpris driven by an sd-bus client and
   `playerctl` (if installed): properties and metadata, Play/Pause/PlayPause/Next/Previous,
@@ -510,6 +518,7 @@ playback:
                                     # gain for now, with a warning)
 ui:
   show_cache_markers: true          # the ● ◐ ○ * column
+  save_settings: true               # write volume changes made in the UI back here
 ```
 
 | Key | Flag | Default | Hot |
@@ -524,6 +533,7 @@ ui:
 | `playback.volume` | – | 100 | yes |
 | `playback.replaygain` | `--rg` (= `track`) | off | restart |
 | `ui.show_cache_markers` | – | true | restart |
+| `ui.save_settings` | – | true | yes |
 
 **Value forms.** Numbers are plain decimal integers: an optional sign and digits, no
 leading zeros (`010` is an error, since YAML 1.1 reads it as octal), no `_`, `0x`,
@@ -560,15 +570,29 @@ status line says `settings not reloaded`. A smaller cache cap applies to new dow
 once, but existing unpinned, unused entries are evicted down to it lazily (2 s later, when
 no download runs), so a cap briefly lowered and restored evicts nothing.
 
-**UI write-back: not implemented (open decision).** Two options are being weighed:
-(a) the UI rewrites `cfg.yaml` itself (simple, one file, but comments and formatting are
-lost unless a round-tripping emitter is added), or (b) the UI writes a generated
-`ui-overrides.yaml` next to it that is layered on top (hand-written `cfg.yaml` untouched,
-but two places to look). The infrastructure for either exists: `Layer` (dotted keys,
-any source), `Schema::resolve()` over any stack of layers (the `overrides` argument of
-`loadClientSettings()`/`reloadClientSettings()` is that slot, currently passed `nullptr`),
-`uiOverridesPath()`, and `writeFileAtomic()` (temp file in the same directory, `fchmod`,
-`fsync`, `rename`, directory `fsync`), which both options would write through.
+**UI write-back.** Settings changed in the TUI are written back into `cfg.yaml` itself,
+editing it in place: only the bytes of the changed value are replaced, so comments
+(also inline ones after the value), blank lines, key order, indentation, CRLF line
+endings and the quoting style of strings are kept. Today that is the volume (`+`/`-`,
+saved 1 s after the last change and on quit; values above 100% are saved as 100). A key
+not yet in the file is inserted as `key: value` at the end of its section, at that
+section's indentation, or as a new section at the end of the file; a missing `cfg.yaml`
+is created (0600, with a comment header and the saved keys). Values that are not a
+one-line value in an indented mapping are never guessed at: flow collections
+(`playback: {volume: 80}`, `[...]`), block scalars (`|`, `>`), values spanning several
+lines, tags (`!!int 5`), quoted keys, or a file that currently has errors make the save
+fail with a message in the status line (`not saved: ... is a flow mapping ({...}) ...`)
+and the file is left untouched. Each edit is re-parsed before writing and must read back
+as the new value with every other entry unchanged. The write goes through
+`writeFileAtomic()` (temp file in the same directory, `fchmod` to the existing mode,
+`fsync`, `rename`, directory `fsync`; a symlinked `cfg.yaml` has its target replaced,
+the link stays) and is refused if the file is not yours or is group/world-writable. The
+TUI remembers the content it wrote, so the inotify event of its own save is applied
+silently (no "settings reloaded"); an edit you made in the meantime is merged (only our
+key's text changes) and reloaded as usual. `ui.save_settings: false` turns write-back
+off; `--no-config` never writes. (The alternative, a generated `ui-overrides.yaml` layered
+on top, was not chosen: two places to look for one setting. Its layer slot stays
+reserved.)
 
 ### Server: `lightmusicd --config FILE`
 

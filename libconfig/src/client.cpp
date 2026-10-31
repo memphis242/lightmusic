@@ -33,6 +33,7 @@ const Schema<ClientSettings> &clientSchema() {
             enumField<S>("playback.replaygain", &S::replayGain,
                          {{"off", ReplayGain::Off}, {"track", ReplayGain::Track}, {"album", ReplayGain::Album}}),
             boolField<S>("ui.show_cache_markers", &S::showCacheMarkers),
+            boolField<S>("ui.save_settings", &S::saveSettings, true),
         };
         const std::string keyMsg = "the API key must not be stored in the config file; put it in a file only you "
                                    "can read (chmod 600) and set server.key_file to its path";

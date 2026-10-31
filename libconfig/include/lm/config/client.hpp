@@ -26,6 +26,7 @@ struct ClientSettings {
     ReplayGain replayGain = ReplayGain::Off;
     // ui
     bool showCacheMarkers = true;
+    bool saveSettings = true; // write UI changes (volume) back into cfg.yaml
     bool operator==(const ClientSettings &) const = default;
 };
 
