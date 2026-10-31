@@ -5,14 +5,17 @@ designed for low memory, near-zero idle CPU and fast response. Research and desi
 [docs/research.md](docs/research.md).
 
 Status: playback core (`libplayer`), a dev CLI, a first terminal UI (`lightmusic`) for
-local files, and the server MVP (`lightmusicd`, see [Server](#server-lightmusicd)). The
-client does not talk to the server yet; no cache, config or MPRIS yet.
+local files, the server MVP (`lightmusicd`, see [Server](#server-lightmusicd)), and
+client streaming with an offline cache (`libnet`, see
+[Streaming and offline cache](#streaming-and-offline-cache-client)). No YAML config or
+MPRIS yet.
 
 ## Build (Fedora 43)
 
 ```sh
 sudo dnf install gcc-c++ cmake ninja-build pkgconf-pkg-config \
-                 opusfile-devel libvorbis-devel libogg-devel ftxui-devel
+                 opusfile-devel libvorbis-devel libogg-devel ftxui-devel \
+                 libcurl-devel sqlite-devel systemd-devel
 # optional, only for the tests (generates audio fixtures at test time):
 sudo dnf install ffmpeg-free
 # optional, for the sanitizer builds:
@@ -25,7 +28,10 @@ ninja -C build
 miniaudio, dr_mp3 and dr_flac are vendored in `third_party/` (see
 `third_party/VERSIONS.md`). miniaudio loads PulseAudio/ALSA at runtime with `dlopen`, so
 no audio `-devel` package is needed. On Ubuntu/Debian the packages are
-`libopusfile-dev libvorbis-dev libogg-dev ffmpeg`.
+`libopusfile-dev libvorbis-dev libogg-dev libcurl4-openssl-dev libsqlite3-dev libsystemd-dev
+ffmpeg`. `libcurl-devel`/`sqlite-devel` are needed for `libnet` (`-DLM_BUILD_NET=OFF`
+skips it and the TUI's `--server`); `systemd-devel` is optional (sd-bus, for metered-network
+detection; without it networks count as unmetered, `-DLM_WITH_SDBUS=OFF` forces that).
 
 The TUI needs FTXUI >= 6 (Fedora's `ftxui-devel` is 6.1.9). Where no package exists
 (e.g. Ubuntu), `-DLM_FETCH_FTXUI=ON` fetches v6.1.9 at configure time (network) and links
@@ -117,6 +123,20 @@ ctest --test-dir build --output-on-failure
   generated files, sends keys, expects a clean exit on `q` and a restored terminal; also
   that `q` exits promptly with a FIFO in the queue.
   Skipped without `script` or `ffmpeg`.
+- `test_range_set`: cache range sets: merge, split, holes, serialisation, random ops
+  against a bitmap model.
+- `test_cache` (in-process fake server, `tests/fake_server.hpp`): SIGKILL a downloading
+  client three times, then check that every durable range on disk matches the source
+  (no unwritten zeros) and that resuming fetches only what is missing; If-Range: a file
+  changed on the server comes back as 200 and restarts the entry (a reader that already
+  got old bytes fails instead of splicing versions); ETag invalidation and deletion by
+  sync; LRU eviction, pin cap refusal, playback over the cap, pinned entries never evicted
+  by idle fill; idle fill paused by a mocked metered probe and by playback; read timeouts,
+  401, offline; concurrent seek/read/interrupt on two sources (meant for TSan).
+- `test_stream_e2e`: starts `lightmusicd --port 0` on generated FLAC/MP3, syncs, plays two
+  tracks through `lm::Player` (Null backend) via `lm://` URIs and compares the output
+  sample for sample with a local decode, stops the server, and replays them offline from
+  a fresh client (an uncached track is skipped with one Error event).
 
 Sanitizer builds (own code is built with `-Wall -Wextra -Werror`; `third_party/` is not):
 
@@ -293,6 +313,89 @@ response: cpp-httplib's content-provider API does not expose the socket, so `sen
 is not possible without bypassing it (the research bench measured `sendfile` at ~1/4 of
 the CPU; an option if a small host ever needs it).
 
+## Streaming and offline cache (client)
+
+```sh
+build/server/lightmusicd --add-key laptop > ~/.config/lightmusic/key   # on the server
+chmod 600 ~/.config/lightmusic/key                                      # required
+build/frontends/tui/lightmusic --server https://music.example.net --key-file ~/.config/lightmusic/key
+build/frontends/tui/lightmusic --server URL --key-file K --list          # albums/tracks + cache state
+build/frontends/tui/lightmusic --server URL --key-file K --album 3 --album 7
+```
+
+Options (flags only; the YAML config comes later): `--cache-dir DIR` (default
+`$XDG_CACHE_HOME/lightmusic`, else `~/.cache/lightmusic`), `--cache-max-mb N` (default
+100), `--no-fill` (no background fill), `--pause-on-metered` (pause the background fill
+while NetworkManager reports a metered connection). The key file must be a regular file
+owned by you with no group/other permission bits (0600/0400); anything else is refused.
+The key is only ever sent as `Authorization: Bearer`, never in a URL, never logged;
+redirects are not followed; plain `http://` to a host other than `localhost`,
+`127.0.0.0/8` or `::1` (parsed exactly, not by prefix) prints a warning. With `--server`
+the TUI marks itself non-dumpable (`prctl(PR_SET_DUMPABLE, 0)`): no core dumps and no
+same-user ptrace/`/proc/PID/mem` access to the key in memory.
+
+The TUI syncs at start (offline: it uses the mirror and queues only fully cached tracks),
+then queues every remote track (or the `--album`s) after any local files given. Rows show
+`●` cached, `◐` partial, `○` remote only, `*` pinned; `P` pins/unpins the selected track.
+The next three tracks are handed to the idle fill queue. A richer browser (albums →
+tracks, search, queue editing) is left for a later branch.
+
+Design (`libnet/`, see `libnet/include/lm/net/client.hpp` and the top of
+`libnet/src/client.cpp`; docs/research.md §5):
+
+- **Threads.** One network thread per client owns a libcurl multi handle and every
+  transfer, writes downloaded bytes into the cache files, commits them, and schedules
+  fetches. The player's decoder thread reads through `CachedStreamSource`; the audio
+  callback never touches it. Other threads only do short SQLite queries.
+- **Mirror.** `/library/changes?since=REV` into `client.db` (SQLite, WAL): artists, albums,
+  tracks with size and ETag; browsing works offline.
+- **Files.** `tracks/<id>.part` is a sparse file pre-sized to the track (Content-Range
+  total or the mirror's size); the range set of bytes present lives in memory and in
+  `cache_entry`. Bytes are `pwrite`n, then `fdatasync`ed, then the range set is committed
+  to SQLite — batched every 256 KiB or 1 s — so a crash never records bytes that are not
+  on disk. When ranges cover the file, size and ETag are checked and it is renamed to
+  `tracks/<id>.<suffix>`.
+- **Validation.** Every range request carries `If-Range: <etag>`; a 200 with another
+  ETag means the file changed: the entry is cleared (committed first) and the 200 body
+  becomes the new download. A 200 with the same ETag (a server ignoring `Range`) keeps the
+  cached ranges and uses the body from the wanted offset on. A 206 with the same ETag but
+  another total, or a Content-Range outside the request, is a protocol error (retried
+  with backoff; nothing is reset). A sync reporting a new ETag (or a deletion) drops the
+  entry. Tracks without a strong ETag (missing or `W/`) are never persisted: they are
+  cached for as long as they are open, then dropped, and cannot be pinned.
+- **Errors.** Transient failures (connection cut, stall, protocol error) are retried by
+  the network thread; a fetch that made progress resumes at once, others back off
+  exponentially. A blocked read fails only on a fatal error (401/403/404, cache write or
+  `fdatasync` failure — the entry's data is then discarded), when the server cannot be
+  reached at all (so offline playback fails fast), after 5 consecutive
+  failures without progress, or after `readTimeoutSec` without progress.
+- **Reads.** `CachedStreamSource` serves present ranges with `pread`; on a hole it asks
+  the network thread for that range and blocks on a condition variable, which a seek,
+  stop or shutdown interrupts (the player interrupts sources of retired decoders); no
+  progress for 20 s fails the read. While a track is open the rest of it streams ahead of
+  the read position (prefetch); a seek beyond 512 KiB of the running fetch restarts it.
+- **Idle fill.** With no playback fetch running, one low-priority fetch fills the fill
+  queue (next tracks), then pinned tracks, then partially cached ones; a playback request
+  cancels it at once. With `--pause-on-metered` it also waits while NetworkManager's
+  `Metered` property (sd-bus) says yes, re-checked every 30 s.
+- **Eviction.** Entry sizes are reserved up front; before a new entry is created the
+  least-recently-played unpinned entries not in use are deleted until it fits. Idle fills
+  never exceed the cap; a track opened for playback may, and the cap is enforced again
+  when it closes. Pinned tracks are never evicted, and a pin that would make pins exceed
+  the cap is refused.
+
+Known gaps: the player opens the first decoder of a `startAt` on its control thread, so
+a slow server delays later commands by up to the read timeout; transcoded streams and
+covers are not cached; downloads write on the network thread (an `fdatasync` on a slow
+disk briefly stalls other transfers).
+
+Measured on this repo's Ubuntu 24.04 container (4 cores, RelWithDebInfo, loopback
+`lightmusicd`, two 180 s 320 kbps MP3s, TUI on the Null backend in a pty): during the first
+10 s the client streams track 1 and idle-fills track 2 (14 MB in total, loopback-fast) for
+5 CPU ticks (~0.5% of a core); playing from the cache 7 ticks/12 s; paused 0 ticks over
+10 s (the network thread sleeps without a timer when nothing is due). RSS 15.7 MB
+throughout, 6 threads (UI, player control/decoder/audio, network, plus miniaudio's).
+
 ## Layout
 
 ```
@@ -303,6 +406,8 @@ libplayer/              static library `lm::player` (namespace lm), no UI deps
   src/                  decoders (dr_mp3, dr_flac, opusfile, vorbisfile), miniaudio
                         output, player threads; miniaudio_impl.c / dr_impl.c are the
                         only TUs that compile the vendored implementations
+libnet/                 static library `lm::net`: server client (libcurl), library mirror and
+                        offline cache (SQLite + sparse files), CachedStreamSource
 tools/                  lightmusic-play dev CLI
 frontends/tui/          `lightmusic` TUI (FTXUI DOM + own poll() loop); tui_logic.* is
                         the UI-free, unit-tested part

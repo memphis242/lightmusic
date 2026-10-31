@@ -2,9 +2,8 @@
 // a ByteSource so a network stream or an offline-cache file can be plugged in later
 // without changing any decoder.
 //
-// Implemented now: FileSource. Planned (not in this branch): a network source backed by a
-// compressed ring fed by libcurl, and a cache source that reads cached byte ranges and
-// blocks (or fails) on holes.
+// Implemented here: FileSource. libnet adds CachedStreamSource (lm/net/client.hpp): reads
+// cached byte ranges from disk and blocks on holes while the network thread fetches them.
 #pragma once
 
 #include <cstddef>
@@ -28,6 +27,11 @@ public:
     virtual std::int64_t size() const = 0;
     // Human-readable origin (path or URL) for logs.
     virtual const std::string &name() const = 0;
+    // Makes a read() blocked on another thread (e.g. waiting for the network) return
+    // early, and every later read() return 0. Thread-safe; called by the player when it
+    // retires a decoder (seek, skip, stop, shutdown). Sources that never block need not
+    // implement it.
+    virtual void interrupt() {}
 };
 
 // Plain file. Returns nullptr if the file cannot be opened or is not a regular file
