@@ -2,6 +2,13 @@
 // ScreenInteractive).
 //
 //   lightmusic [--null] [--rg] FILE|DIR...
+//   lightmusic --server URL --key-file PATH [--album ID]... [--list] [FILE|DIR...]
+//
+// With --server, the library is synced into the local mirror (libnet) and the remote
+// tracks (all, or the given albums) are queued as lm://server/track/<id> URIs, which the
+// player opens through the client's offline cache. Offline (sync fails), only fully
+// cached tracks are queued. Rows show the cache state (● cached, ◐ partial, ○ remote,
+// * pinned); the next three remote tracks are handed to the idle fill queue.
 //
 // Event loop and threading. The main thread owns all UI state (`Ui`) and blocks in
 // poll() on two fds: the terminal (keys) and a self-pipe. Nothing else wakes it, so a
@@ -31,12 +38,16 @@
 #include "tui_logic.hpp"
 
 #include "lm/player.hpp"
+#ifdef LM_TUI_NET
+#include "lm/net/client.hpp"
+#endif
 
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
 
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/prctl.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <termios.h>
@@ -67,6 +78,7 @@ static_assert(std::atomic<int>::is_always_lock_free, "signal flags must be lock-
 std::atomic<int> g_resized{0};
 std::atomic<int> g_continued{0};
 std::atomic<int> g_quitSignal{0}; // signal number that asked us to quit, 0 if none
+std::atomic<int> g_cacheChanged{0}; // set by the network thread (libnet onCacheChange)
 // Terminal state for async-signal-safe restore. g_saved is written once before
 // g_ttyRaw is set and only read afterwards.
 termios g_saved{};
@@ -250,6 +262,12 @@ private:
 struct Ui {
     std::vector<std::string> paths;
     std::vector<std::string> names;
+    // Per queue row: remote track id (0 for a local file), cache state (-1 local,
+    // 0 remote, 1 partial, 2 cached) and pin flag.
+    std::vector<std::int64_t> remote;
+    std::vector<int> cache;
+    std::vector<char> pinned;
+    std::string net; // "offline", cache usage, ... (empty without --server)
     lm::PlayerState st;
     std::string message; // last error / notice
     int selected = 0;
@@ -294,8 +312,11 @@ Element render(const Ui &ui, int height) {
         const bool sel = static_cast<int>(i) == ui.selected;
         char num[32];
         std::snprintf(num, sizeof num, "%3zu ", i + 1);
+        const int cs = i < ui.cache.size() ? ui.cache[i] : -1;
+        Element mark = cs < 0 ? text("") : text(lmtui::cacheGlyph(cs, i < ui.pinned.size() && ui.pinned[i]) + " ");
+        if (cs == 2) mark = mark | color(Color::Cyan);
         Element row = hbox({text(cur ? std::string(statusGlyph(st.status)) + " " : "  "), text(num) | dim,
-                            text(ui.names[i])});
+                            mark, text(ui.names[i])});
         if (cur) row = row | bold | color(Color::Green);
         if (sel) row = row | inverted;
         rows.push_back(std::move(row));
@@ -324,7 +345,8 @@ Element render(const Ui &ui, int height) {
         hbox({text(std::string(statusGlyph(st.status)) + " "), text(statusLabel(st.status)) | bold, text("  "),
               text(title) | bold, text(sub) | dim, filler(), text(" "), text(pos) | dim}),
         hbox({text(times + " "), gauge(frac) | flex, text(" "), text(vol)}),
-        text(ui.message.empty() ? std::string("? help  q quit") : ui.message) | dim,
+        hbox({text(ui.message.empty() ? std::string("? help  q quit") : ui.message) | dim, filler(),
+              text(ui.net) | dim}),
     });
 
     Element main = vbox({queue, separator(), now}) | border;
@@ -334,7 +356,38 @@ Element render(const Ui &ui, int height) {
     return dbox({main, vbox(std::move(help)) | border | bgcolor(Color::Black) | clear_under | center});
 }
 
-void usage(FILE *f) { std::fputs("usage: lightmusic [--null] [--rg] FILE|DIR...\n", f); }
+void usage(FILE *f) {
+    std::fputs("usage: lightmusic [--null] [--rg] FILE|DIR...\n"
+               "       lightmusic --server URL --key-file PATH [--album ID]... [--list]\n"
+               "                  [--cache-dir DIR] [--cache-max-mb N] [--no-fill] [--pause-on-metered]\n"
+               "                  [--null] [--rg] [FILE|DIR...]\n",
+               f);
+}
+
+#ifdef LM_TUI_NET
+// Refreshes the cache markers and the status text from the client database.
+void refreshCache(Ui &ui, lm::net::Client &client, bool offline) {
+    for (std::size_t i = 0; i < ui.remote.size(); i++) {
+        if (!ui.remote[i]) continue;
+        const auto ci = client.cacheInfo(ui.remote[i]);
+        ui.cache[i] = static_cast<int>(ci.state);
+        ui.pinned[i] = ci.pinned;
+    }
+    const auto st = client.stats();
+    char buf[96];
+    std::snprintf(buf, sizeof buf, "%scache %lld/%llu MB", offline ? "offline · " : "",
+                  static_cast<long long>(st.usage >> 20), static_cast<unsigned long long>(st.cap >> 20));
+    ui.net = buf;
+}
+
+// The next few remote tracks after `index` go to the idle fill queue.
+void updateFillQueue(const Ui &ui, lm::net::Client &client, int index) {
+    std::vector<std::int64_t> ids;
+    for (std::size_t i = static_cast<std::size_t>(std::max(0, index + 1)); i < ui.remote.size() && ids.size() < 3; i++)
+        if (ui.remote[i]) ids.push_back(ui.remote[i]);
+    client.setFillQueue(std::move(ids));
+}
+#endif
 
 void apply(Ui &ui, const lm::Event &ev) {
     ui.st = ev.state;
@@ -357,9 +410,42 @@ void apply(Ui &ui, const lm::Event &ev) {
 int run(int argc, char **argv) {
     lm::PlayerConfig cfg;
     std::vector<std::string> args;
+    std::string server, keyFile, cacheDir;
+    long cacheMaxMb = 100;
+    // Only read when built with libnet (LM_TUI_NET); still parsed so the flags are accepted.
+    [[maybe_unused]] bool noFill = false, pauseMetered = false, listOnly = false;
+    std::vector<std::int64_t> albumIds;
     for (int i = 1; i < argc; i++) {
+        auto value = [&](const char *flag) -> const char * {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "lightmusic: %s needs a value\n", flag);
+                std::exit(2);
+            }
+            return argv[++i];
+        };
         if (!std::strcmp(argv[i], "--null")) cfg.nullBackend = true;
         else if (!std::strcmp(argv[i], "--rg")) cfg.replayGain = true;
+        else if (!std::strcmp(argv[i], "--server")) server = value("--server");
+        else if (!std::strcmp(argv[i], "--key-file")) keyFile = value("--key-file");
+        else if (!std::strcmp(argv[i], "--cache-dir")) cacheDir = value("--cache-dir");
+        else if (!std::strcmp(argv[i], "--cache-max-mb")) {
+            char *end = nullptr;
+            cacheMaxMb = std::strtol(value("--cache-max-mb"), &end, 10);
+            if (!end || *end || cacheMaxMb < 1 || cacheMaxMb > (1L << 30)) {
+                std::fputs("lightmusic: --cache-max-mb needs a positive number\n", stderr);
+                return 2;
+            }
+        } else if (!std::strcmp(argv[i], "--album")) {
+            char *end = nullptr;
+            const long long id = std::strtoll(value("--album"), &end, 10);
+            if (!end || *end || id <= 0) {
+                std::fputs("lightmusic: --album needs an album id (see --list)\n", stderr);
+                return 2;
+            }
+            albumIds.push_back(id);
+        } else if (!std::strcmp(argv[i], "--no-fill")) noFill = true;
+        else if (!std::strcmp(argv[i], "--pause-on-metered")) pauseMetered = true;
+        else if (!std::strcmp(argv[i], "--list")) listOnly = true;
         else if (!std::strcmp(argv[i], "-h") || !std::strcmp(argv[i], "--help")) {
             usage(stdout);
             for (const auto &l : lmtui::helpLines()) std::printf("  %s\n", l.c_str());
@@ -367,10 +453,113 @@ int run(int argc, char **argv) {
         } else args.emplace_back(argv[i]);
     }
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;
-    if (args.empty()) {
+    if (args.empty() && server.empty()) {
         usage(stderr);
         return 2;
     }
+    if (server.empty() != keyFile.empty()) {
+        std::fputs("lightmusic: --server and --key-file go together\n", stderr);
+        return 2;
+    }
+#ifndef LM_TUI_NET
+    if (!server.empty()) {
+        std::fputs("lightmusic: built without libnet (-DLM_BUILD_NET=OFF); --server unavailable\n", stderr);
+        return 2;
+    }
+#endif
+    int pipeFds[2];
+    if (pipe2(pipeFds, O_CLOEXEC | O_NONBLOCK) != 0) {
+        std::perror("lightmusic: pipe");
+        return 1;
+    }
+    g_wakeWrite = pipeFds[1];
+    sigset_t async;
+    sigemptyset(&async);
+    for (int sig : {SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGCONT, SIGTSTP, SIGQUIT}) sigaddset(&async, sig);
+
+#ifdef LM_TUI_NET
+    // Remote library: the client (and its network thread) lives until after the player.
+    std::unique_ptr<lm::net::Client> client;
+    std::vector<lm::net::Track> remoteTracks;
+    bool offline = false;
+    std::string netNote;
+    // Client log lines go to stderr before the UI starts and are dropped afterwards
+    // (they would corrupt the screen); errors reach the UI through player events.
+    auto uiActive = std::make_shared<std::atomic<bool>>(false);
+    if (!server.empty()) {
+        // The API key lives in this process's memory (and in libcurl's header buffers):
+        // no core dumps, and no ptrace/proc-mem access by other same-uid processes
+        // without CAP_SYS_PTRACE. Done before the key is read.
+        if (::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0)
+            std::fprintf(stderr, "lightmusic: warning: cannot disable core dumps: %s\n", std::strerror(errno));
+        std::string key, err;
+        if (!lmtui::readKeyFile(keyFile, key, err)) {
+            std::fprintf(stderr, "lightmusic: %s\n", err.c_str());
+            return 2;
+        }
+        lm::net::ClientConfig cc;
+        cc.serverUrl = server;
+        cc.apiKey = std::move(key);
+        cc.cacheDir = cacheDir;
+        cc.cacheMaxBytes = static_cast<std::uint64_t>(cacheMaxMb) << 20;
+        cc.backgroundFill = !noFill;
+        cc.pauseOnMetered = pauseMetered;
+        cc.log = [uiActive](const std::string &m) {
+            if (!*uiActive) std::fprintf(stderr, "lightmusic: %s\n", m.c_str());
+        };
+        cc.onCacheChange = [] {
+            g_cacheChanged = 1;
+            wake();
+        };
+        // The network thread must not take asynchronous signals (see above).
+        sigset_t old;
+        pthread_sigmask(SIG_BLOCK, &async, &old);
+        client = lm::net::Client::open(std::move(cc), &err);
+        pthread_sigmask(SIG_SETMASK, &old, nullptr);
+        if (!client) {
+            std::fprintf(stderr, "lightmusic: %s\n", err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "lightmusic: syncing library from %s ...\n", server.c_str());
+        if (!client->sync(&err)) {
+            offline = true;
+            netNote = err;
+            std::fprintf(stderr, "lightmusic: %s; using the offline mirror\n", err.c_str());
+        }
+        if (listOnly) {
+            for (const auto &al : client->albums()) {
+                std::printf("album %lld  %s — %s%s\n", static_cast<long long>(al.id), al.artist.c_str(), al.title.c_str(),
+                            al.year ? (" (" + std::to_string(al.year) + ")").c_str() : "");
+                for (const auto &t : client->tracksOfAlbum(al.id)) {
+                    const auto ci = client->cacheInfo(t.id);
+                    std::printf("  %-8s%s %2lld. %s — %s  [%s]\n", lm::net::cacheStateName(ci.state),
+                                ci.pinned ? "*" : " ", static_cast<long long>(t.trackNo), t.artist.c_str(),
+                                t.title.c_str(), lmtui::formatTime(double(t.durationMs) / 1000).c_str());
+                }
+            }
+            const auto st = client->stats();
+            std::printf("cache: %lld of %llu MB used, %zu entries, %lld MB pinned\n",
+                        static_cast<long long>(st.usage >> 20), static_cast<unsigned long long>(st.cap >> 20), st.entries,
+                        static_cast<long long>(st.pinned >> 20));
+            return 0;
+        }
+        if (albumIds.empty()) remoteTracks = client->allTracks();
+        else
+            for (auto id : albumIds) {
+                auto v = client->tracksOfAlbum(id);
+                if (v.empty()) std::fprintf(stderr, "lightmusic: no album %lld in the library\n", static_cast<long long>(id));
+                remoteTracks.insert(remoteTracks.end(), v.begin(), v.end());
+            }
+        if (offline) {
+            const auto before = remoteTracks.size();
+            std::erase_if(remoteTracks, [&](const lm::net::Track &t) {
+                return client->cacheInfo(t.id).state != lm::net::CacheState::Cached;
+            });
+            std::fprintf(stderr, "lightmusic: offline: %zu of %zu tracks are cached\n", remoteTracks.size(), before);
+        }
+        cfg.openSource = client->sourceOpener();
+    }
+#endif
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
         std::fputs("lightmusic: needs a terminal\n", stderr);
         return 2;
@@ -384,26 +573,32 @@ int run(int argc, char **argv) {
     }
     std::vector<std::string> errors;
     Ui ui;
-    ui.paths = lmtui::collectTracks(args, &errors);
+    if (!args.empty()) ui.paths = lmtui::collectTracks(args, &errors);
     for (const auto &e : errors) std::fprintf(stderr, "lightmusic: %s\n", e.c_str());
-    if (ui.paths.empty()) {
-        std::fputs("lightmusic: no playable files\n", stderr);
-        return 1;
-    }
     for (const auto &p : ui.paths) ui.names.push_back(lmtui::displayName(p));
-
-    int pipeFds[2];
-    if (pipe2(pipeFds, O_CLOEXEC | O_NONBLOCK) != 0) {
-        std::perror("lightmusic: pipe");
+    ui.remote.assign(ui.paths.size(), 0);
+    ui.cache.assign(ui.paths.size(), -1);
+    ui.pinned.assign(ui.paths.size(), 0);
+#ifdef LM_TUI_NET
+    for (const auto &t : remoteTracks) {
+        ui.paths.push_back(lm::net::Client::trackUri(t.id));
+        ui.names.push_back(lmtui::trackLabel(t.artist, t.title, t.title.empty() ? ui.paths.back() : t.title));
+        ui.remote.push_back(t.id);
+        ui.cache.push_back(0);
+        ui.pinned.push_back(0);
+    }
+    if (client) {
+        refreshCache(ui, *client, offline);
+        if (offline) ui.message = "offline: " + netNote;
+    }
+#endif
+    if (ui.paths.empty()) {
+        std::fputs(server.empty() ? "lightmusic: no playable files\n" : "lightmusic: no playable tracks\n", stderr);
         return 1;
     }
-    g_wakeWrite = pipeFds[1];
 
     // Asynchronous signals go to the UI thread only: block them while the player
     // creates its threads (they inherit the mask), then unblock here.
-    sigset_t async;
-    sigemptyset(&async);
-    for (int sig : {SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGCONT, SIGTSTP, SIGQUIT}) sigaddset(&async, sig);
     sigset_t oldMask;
     pthread_sigmask(SIG_BLOCK, &async, &oldMask);
     for (int sig : {SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGCONT}) setHandler(sig, onSignal);
@@ -423,8 +618,9 @@ int run(int argc, char **argv) {
         // waits for it, even if a read blocks (slow or network file). It is started
         // while the async signals are still blocked, so it inherits that mask.
         auto labels = std::make_shared<LabelBox>();
-        std::thread([labels, paths = ui.paths] {
+        std::thread([labels, paths = ui.paths, remote = ui.remote] {
             for (std::size_t i = 0; i < paths.size() && !labels->stopped(); i++) {
+                if (remote[i]) continue; // labelled from the library mirror
                 lm::Tags t;
                 if (lm::readTags(paths[i], t) && !t.title.empty())
                     labels->push(i, lmtui::trackLabel(t.artist, t.title, paths[i]));
@@ -446,6 +642,10 @@ int run(int argc, char **argv) {
         player.enqueue(ui.paths);
         ui.st = player.state();
         player.play();
+#ifdef LM_TUI_NET
+        if (client) updateFillQueue(ui, *client, -1);
+        *uiActive = true;
+#endif
 
         {
             Tty term;
@@ -504,6 +704,20 @@ int run(int argc, char **argv) {
                 case lmtui::Command::PageUp: select(ui.selected - page); break;
                 case lmtui::Command::PageDown: select(ui.selected + page); break;
                 case lmtui::Command::Quit: running = false; break;
+                case lmtui::Command::TogglePin: {
+#ifdef LM_TUI_NET
+                    const auto sel = static_cast<std::size_t>(ui.selected);
+                    if (client && sel < ui.remote.size() && ui.remote[sel]) {
+                        std::string err;
+                        if (!client->pin(ui.remote[sel], !ui.pinned[sel], &err)) ui.message = err;
+                        else ui.message = ui.pinned[sel] ? "unpinned" : "pinned: kept offline";
+                        refreshCache(ui, *client, offline);
+                        break;
+                    }
+#endif
+                    ui.message = "only remote tracks can be pinned";
+                    break;
+                }
                 case lmtui::Command::ToggleHelp: ui.help = !ui.help; break;
                 case lmtui::Command::CloseHelp: ui.help = false; break;
                 }
@@ -538,7 +752,19 @@ int run(int argc, char **argv) {
                     for (const auto &ev : inbox.take()) {
                         apply(ui, ev);
                         dirty = true;
+#ifdef LM_TUI_NET
+                        if (client && ev.type == lm::EventType::TrackChanged) {
+                            updateFillQueue(ui, *client, ev.state.index);
+                            g_cacheChanged = 1;
+                        }
+#endif
                     }
+#ifdef LM_TUI_NET
+                    if (client && g_cacheChanged.exchange(0)) {
+                        refreshCache(ui, *client, offline);
+                        dirty = true;
+                    }
+#endif
                     for (auto &[i, label] : labels->take()) {
                         if (i < ui.names.size()) ui.names[i] = std::move(label);
                         dirty = true;

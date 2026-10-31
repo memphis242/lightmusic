@@ -46,3 +46,30 @@ if(TARGET test_server_e2e AND LM_ASAN AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   # Same GCC false positive as server/src/api.cpp (std::regex via httplib.h).
   set_source_files_properties(test_server_e2e.cpp PROPERTIES COMPILE_OPTIONS -Wno-maybe-uninitialized)
 endif()
+
+if(TARGET lm::net)
+  lm_test(test_range_set)
+  target_link_libraries(test_range_set PRIVATE lm::net)
+  if(TARGET lm_httplib)
+    # Cache tests use an in-process cpp-httplib server (tests/fake_server.hpp).
+    lm_test(test_cache)
+    target_link_libraries(test_cache PRIVATE lm::net lm_httplib)
+    target_include_directories(test_cache PRIVATE ${PROJECT_SOURCE_DIR}/libnet/src)
+    set_tests_properties(test_cache PROPERTIES TIMEOUT 300)
+  endif()
+  if(TARGET lightmusicd)
+    # Real lightmusicd + Player on the Null backend, then offline playback.
+    lm_test(test_stream_e2e)
+    target_link_libraries(test_stream_e2e PRIVATE lm::net)
+    set_tests_properties(test_stream_e2e PROPERTIES TIMEOUT 300)
+    set_property(TEST test_stream_e2e APPEND PROPERTY ENVIRONMENT "LM_SERVER_BIN=$<TARGET_FILE:lightmusicd>")
+  endif()
+  if(LM_ASAN AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND TARGET test_cache)
+    # Same GCC false positive as server/src/api.cpp (std::regex via httplib.h).
+    set_source_files_properties(test_cache.cpp PROPERTIES COMPILE_OPTIONS -Wno-maybe-uninitialized)
+  endif()
+  if(LM_ASAN AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND TARGET test_stream_e2e)
+    # GCC 13 + ASan: same -Wmaybe-uninitialized false positive in the std library headers.
+    set_source_files_properties(test_stream_e2e.cpp PROPERTIES COMPILE_OPTIONS -Wno-maybe-uninitialized)
+  endif()
+endif()

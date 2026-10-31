@@ -23,6 +23,13 @@
 // job (generation bump + ack), drop the ring contents, start a new job, wait for a short
 // prebuffer, restart the device. One device stays open throughout.
 //
+// Sources that block (network/cache, PlayerConfig::openSource) are wrapped in a
+// TrackedSource registered in `liveSources` with the decoder generation they were opened
+// for. flush() and shutdown interrupt every source of a retired generation, so a decoder
+// thread blocked in read() (waiting for the network) returns at once instead of holding
+// up a seek/skip/stop; a source registered for an already-retired generation is
+// interrupted on registration.
+//
 // Sample-rate policy: the device is opened at the first track's native rate, and
 // reopened at a new track's rate only when playback starts from Stopped (no audio in
 // flight, so no gap matters). A track whose rate differs from the open device during
@@ -45,6 +52,7 @@
 #include <deque>
 #include <future>
 #include <mutex>
+#include <set>
 #include <thread>
 
 namespace lm {
@@ -106,7 +114,20 @@ struct Cmd {
     int index = 0;
     double value = 0;
     std::promise<void> *barrier = nullptr;
+    std::uint64_t seq = 0; // Impl::cmdSeq right after this command was queued
 };
+
+bool isUri(const std::string &p) {
+    const auto at = p.find("://");
+    if (at == std::string::npos || at == 0) return false;
+    for (std::size_t i = 0; i < at; i++) {
+        const char c = p[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '+' || c == '-' ||
+              c == '.'))
+            return false;
+    }
+    return true;
+}
 
 } // namespace
 
@@ -120,6 +141,19 @@ struct Player::Impl {
     std::condition_variable ccv;
     std::deque<Cmd> cmds;
     bool quit = false, poked = false;
+    // Opens on the control thread can block (a remote source reads its header from the
+    // network). A command that supersedes the open (stop, skip, seek, clear) or shutdown
+    // bumps cmdSeq and interrupts the source being opened from the posting thread;
+    // startAt() gives up when cmdSeq moved past the value recorded with the command it
+    // is handling (i.e. a superseding command was queued after it).
+    std::atomic<std::uint64_t> cmdSeq{0};
+    std::uint64_t seenSeq = 0;                // control thread
+    std::atomic<std::uint64_t> openingGen{0}; // generation + 1 of the open in progress, 0 if none
+    // A superseded startAt() leaves the player on the track it was opening (index, status =
+    // its target) with no decoder, so the superseding command applies relative to it:
+    // next/prev move from that track, a seek re-opens it at the new position. Only
+    // stop/clear (or a failed open) end Stopped. Cleared by the next startAt().
+    bool openPending = false;
 
     // Decoder shared state (guarded by dm).
     struct Job {
@@ -160,6 +194,60 @@ struct Player::Impl {
 
     std::thread controlThread, decoderThread;
 
+    // Live blocking sources (see file header). Guarded by srcm.
+    std::mutex srcm;
+    std::multiset<std::pair<std::uint64_t, ByteSource *>> liveSources;
+    std::uint64_t retiredBelow = 0; // sources with a generation below this are interrupted
+
+    void interruptBelow(std::uint64_t g) {
+        std::lock_guard lk(srcm);
+        retiredBelow = std::max(retiredBelow, g);
+        for (auto &[sg, src] : liveSources)
+            if (sg < g) src->interrupt();
+    }
+
+    // Forwards to the real source and keeps it in Impl::liveSources while it lives.
+    class TrackedSource final : public ByteSource {
+    public:
+        TrackedSource(Impl &impl, std::uint64_t g, std::unique_ptr<ByteSource> src)
+            : impl_(impl), g_(g), src_(std::move(src)) {
+            std::lock_guard lk(impl_.srcm);
+            impl_.liveSources.emplace(g_, src_.get());
+            if (g_ < impl_.retiredBelow) src_->interrupt();
+        }
+        ~TrackedSource() override {
+            std::lock_guard lk(impl_.srcm);
+            impl_.liveSources.erase(impl_.liveSources.find({g_, src_.get()}));
+        }
+        std::size_t read(void *dst, std::size_t n) override { return src_->read(dst, n); }
+        bool seek(std::int64_t o, Whence w) override { return src_->seek(o, w); }
+        std::int64_t tell() const override { return src_->tell(); }
+        std::int64_t size() const override { return src_->size(); }
+        const std::string &name() const override { return src_->name(); }
+        void interrupt() override { src_->interrupt(); }
+
+    private:
+        Impl &impl_;
+        std::uint64_t g_;
+        std::unique_ptr<ByteSource> src_;
+    };
+
+    // Opens a track for decoder generation `g`: URIs through cfg.openSource, else a file.
+    std::unique_ptr<Decoder> openTrack(const std::string &path, std::uint64_t g, std::string *err) {
+        if (!isUri(path)) return openDecoderForFile(path, err);
+        if (!cfg.openSource) {
+            if (err) *err = "cannot open " + path + " (no source for URIs)";
+            return nullptr;
+        }
+        std::string e;
+        auto src = cfg.openSource(path, &e);
+        if (!src) {
+            if (err) *err = e.empty() ? "cannot open " + path : e;
+            return nullptr;
+        }
+        return openDecoder(std::make_unique<TrackedSource>(*this, g, std::move(src)), err);
+    }
+
     explicit Impl(PlayerConfig c)
         : cfg(std::move(c)), ring(ringSamples(48000)) {
         out.tap = cfg.outputTap;
@@ -183,15 +271,33 @@ struct Player::Impl {
             std::lock_guard lk(cm);
             quit = true;
         }
+        supersedeOpen();
         ccv.notify_all();
         controlThread.join();
     }
 
+    // Any thread: makes an open in progress on the control thread return promptly.
+    void supersedeOpen() {
+        cmdSeq.fetch_add(1);
+        if (const std::uint64_t g = openingGen.load()) interruptBelow(g);
+    }
+    bool openSuperseded() const { return cmdSeq.load() != seenSeq; }
+
     void push(Cmd c) {
+        bool supersedes = false;
+        switch (c.kind) {
+        case Cmd::Clear: case Cmd::PlayIndex: case Cmd::Stop: case Cmd::Next: case Cmd::Prev: case Cmd::Seek:
+            supersedes = true;
+            break;
+        default: break;
+        }
         {
             std::lock_guard lk(cm);
+            c.seq = supersedes ? cmdSeq.fetch_add(1) + 1 : cmdSeq.load();
             cmds.push_back(std::move(c));
         }
+        if (supersedes)
+            if (const std::uint64_t g = openingGen.load()) interruptBelow(g);
         ccv.notify_one();
     }
     void poke() {
@@ -286,6 +392,7 @@ struct Player::Impl {
             std::unique_lock lk(dm);
             job = Job{};
             const std::uint64_t g = ++gen;
+            interruptBelow(g); // a decoder blocked on the network returns now
             dcv.notify_all();
             dcv.wait(lk, [&] { return ackGen == g; });
             markers.clear();
@@ -304,8 +411,10 @@ struct Player::Impl {
     }
 
     // Starts decoding at queue[i] + frame. Returns false if no track from i on opens.
-    bool startAt(int i, std::uint64_t frame, Status target) {
+    // seekSec >= 0: start at that time instead of `frame` (the rate is known once open).
+    bool startAt(int i, std::uint64_t frame, Status target, double seekSec = -1) {
         const Status before = status;
+        openPending = false;
         flush();
         std::unique_ptr<Decoder> dec;
         std::string path;
@@ -316,7 +425,31 @@ struct Player::Impl {
                 path = queue[static_cast<std::size_t>(i)];
             }
             std::string err;
-            dec = openDecoderForFile(path, &err);
+            std::uint64_t g;
+            {
+                std::lock_guard lk(dm);
+                g = gen; // the job created below gets gen + 1; flush() retires both
+            }
+            // A remote open can block; a newer superseding command (or shutdown) interrupts
+            // it (see push()), or skips it if it was already queued. The rest of the queue
+            // is not tried: the newer command decides what plays, relative to this track
+            // (see openPending). An open that succeeds anyway is kept (the newer command retires it).
+            // Local files never block and always open.
+            openingGen.store(g + 1);
+            if (!isUri(path) || !openSuperseded()) dec = openTrack(path, g, &err);
+            openingGen.store(0);
+            if (!dec && openSuperseded()) {
+                // The newer command decides what plays; it acts from this track.
+                index = i;
+                cur = Marker{};
+                cur.index = i;
+                cur.info.path = path;
+                status = target;
+                openPending = true;
+                publish();
+                if (before != status) emit(EventType::StatusChanged);
+                return false;
+            }
             if (dec && dec->channels() >= 1 && dec->channels() <= kMaxChannels) break;
             emit(EventType::Error, err.empty() ? "unsupported channel count: " + path : err);
             dec.reset();
@@ -345,6 +478,7 @@ struct Player::Impl {
             ring.resize(ringSamples(out.sampleRate()));
             ringRate = out.sampleRate();
         }
+        if (seekSec >= 0) frame = static_cast<std::uint64_t>(seekSec * dec->sampleRate());
         if (frame && dec->totalFrames()) frame = std::min(frame, dec->totalFrames());
         // The state describes the new track from here on, whether or not the prebuffer
         // fills in time; the decoder's own marker (same ring frame) confirms it later.
@@ -429,6 +563,7 @@ struct Player::Impl {
             break;
         }
         case Cmd::Clear:
+            openPending = false;
             flush();
             {
                 std::lock_guard lk(dm);
@@ -455,6 +590,7 @@ struct Player::Impl {
             else startAt(index >= 0 ? index : 0, 0, Status::Playing);
             break;
         case Cmd::Stop:
+            openPending = false;
             if (status != Status::Stopped) {
                 flush();
                 setStatus(Status::Stopped);
@@ -477,8 +613,13 @@ struct Player::Impl {
         }
         case Cmd::Seek: {
             serviceMarkers();
-            if (status == Status::Stopped || index < 0 || !cur.info.sampleRate) break;
             const double s = std::max(0.0, c.value);
+            if (openPending && index >= 0) { // the track was never opened: open it at s
+                startAt(index, 0, status, s);
+                emit(EventType::Seeked);
+                break;
+            }
+            if (status == Status::Stopped || index < 0 || !cur.info.sampleRate) break;
             startAt(index, static_cast<std::uint64_t>(s * cur.info.sampleRate), status);
             emit(EventType::Seeked);
             break;
@@ -508,6 +649,7 @@ struct Player::Impl {
         setStatus(Status::Playing);
     }
     void endOfQueue() {
+        openPending = false;
         flush();
         index = -1;
         cur = Marker{};
@@ -597,7 +739,11 @@ struct Player::Impl {
                 poked = false;
                 batch.swap(cmds);
             }
-            for (auto &c : batch) handle(c);
+            for (auto &c : batch) {
+                seenSeq = c.seq;
+                handle(c);
+            }
+            seenSeq = cmdSeq.load(); // service() may open the next track
             service();
         }
         // Shutdown: release any sync() waiters, stop audio, then the decoder.
@@ -612,6 +758,7 @@ struct Player::Impl {
             std::lock_guard lk(dm);
             dquit = true;
         }
+        interruptBelow(UINT64_MAX);
         dcv.notify_all();
         decoderThread.join();
     }
@@ -697,7 +844,7 @@ struct Player::Impl {
 
             if (needOpen) {
                 std::string err;
-                if (!dec) dec = openDecoderForFile(path, &err);
+                if (!dec) dec = openTrack(path, seen, &err);
                 if (dec && (dec->channels() < 1 || dec->channels() > kMaxChannels)) {
                     err = "unsupported channel count: " + path;
                     dec.reset();

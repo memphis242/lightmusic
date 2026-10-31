@@ -6,6 +6,7 @@
 //  - decode errors become Error events; sync() from an event handler does not deadlock.
 #include "common.hpp"
 #include "lm/player.hpp"
+#include "lm/source.hpp"
 #include "lm_miniaudio.h"
 
 #include <atomic>
@@ -432,6 +433,170 @@ void commands(const std::string &dir) {
     (void)p.state();
 }
 
+// A remote source that never delivers (stalled server): the control thread blocks in
+// the decoder open. stop(), a new command and destruction must interrupt it promptly.
+struct StalledSource final : lm::ByteSource {
+    std::mutex m;
+    std::condition_variable cv;
+    bool interrupted = false;
+    std::string nm = "lm://stalled/1";
+    std::atomic<int> *opens;
+    explicit StalledSource(std::atomic<int> *o) : opens(o) { ++*opens; }
+    std::size_t read(void *, std::size_t) override {
+        std::unique_lock lk(m);
+        cv.wait_for(lk, 20s, [&] { return interrupted; });
+        return 0;
+    }
+    bool seek(std::int64_t, Whence) override { return true; }
+    std::int64_t tell() const override { return 0; }
+    std::int64_t size() const override { return 1 << 20; }
+    const std::string &name() const override { return nm; }
+    void interrupt() override {
+        std::lock_guard lk(m);
+        interrupted = true;
+        cv.notify_all();
+    }
+};
+
+void stalledOpen() {
+    std::atomic<int> opens{0};
+    auto make = [&] {
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.openSource = [&opens](const std::string &, std::string *) -> std::unique_ptr<lm::ByteSource> {
+            return std::make_unique<StalledSource>(&opens);
+        };
+        return std::make_unique<lm::Player>(cfg);
+    };
+    auto waitOpens = [&](int n) {
+        for (int i = 0; i < 200 && opens.load() < n; i++) std::this_thread::sleep_for(10ms);
+    };
+    {
+        auto p = make();
+        p->enqueue({"lm://stalled/1", "lm://stalled/2"});
+        p->play();
+        waitOpens(1);
+        std::this_thread::sleep_for(100ms); // blocked in the open now
+        const auto t0 = Clock::now();
+        p->stop();
+        p->sync();
+        CHECK(Clock::now() - t0 < 3s);
+        CHECK(p->state().status == lm::Status::Stopped);
+        CHECK_EQ(opens.load(), 1); // the rest of the queue was not tried
+    }
+    {
+        auto p = make();
+        p->enqueue({"lm://stalled/1"});
+        p->play();
+        waitOpens(2);
+        std::this_thread::sleep_for(100ms);
+        const auto t0 = Clock::now();
+        p.reset(); // shutdown while the control thread is blocked
+        CHECK(Clock::now() - t0 < 3s);
+    }
+}
+
+
+// Skip/seek interrupting a stalled remote open act on their own target instead of
+// leaving the player Stopped: "lm://stalled/..." never delivers, "lm://ok/<file>" is a
+// normally served source (a local file).
+void interruptedOpenProceeds(const std::string &dir) {
+    const std::string t = dir + "/ok.flac";
+    CHECK(lmtest::makeTone(t, 44100, 44100 * 6, 350, "-c:a flac -f flac"));
+    std::atomic<int> opens{0};
+    std::atomic<int> stalls{0};
+    Recorder rec;
+    lm::PlayerConfig cfg;
+    cfg.nullBackend = true;
+    cfg.tickSeconds = 0.1;
+    cfg.onEvent = std::ref(rec);
+    cfg.openSource = [&](const std::string &uri, std::string *err) -> std::unique_ptr<lm::ByteSource> {
+        ++opens;
+        if (uri.rfind("lm://ok/", 0) == 0) return lm::openFileSource(uri.substr(8));
+        if (uri.rfind("lm://stalled/", 0) == 0) {
+            ++stalls;
+            return std::make_unique<StalledSource>(&opens);
+        }
+        if (err) *err = "unknown";
+        return nullptr;
+    };
+    auto waitStalls = [&](int n) {
+        for (int i = 0; i < 300 && stalls.load() < n; i++) std::this_thread::sleep_for(10ms);
+        std::this_thread::sleep_for(100ms); // blocked in the open now
+    };
+    auto waitPlaying = [&](lm::Player &p, int index, double minPos = 0) {
+        for (int i = 0; i < 500; i++) {
+            const auto st = p.state();
+            if (st.status == lm::Status::Playing && st.index == index && st.position >= minPos) return true;
+            std::this_thread::sleep_for(10ms);
+        }
+        return false;
+    };
+    const std::string ok = "lm://ok/" + t;
+    {
+        // next() while track 1 stalls: track 2 opens and plays.
+        lm::Player p(cfg);
+        p.enqueue({"lm://stalled/1", ok});
+        p.play();
+        waitStalls(1);
+        const auto t0 = Clock::now();
+        p.next();
+        p.sync();
+        CHECK(Clock::now() - t0 < 3s);
+        CHECK(waitPlaying(p, 1));
+        CHECK(p.state().track.path == ok);
+        p.stop();
+        p.sync();
+        CHECK(p.state().status == lm::Status::Stopped);
+    }
+    {
+        // prev() while track 2 stalls: track 1 plays.
+        lm::Player p(cfg);
+        p.enqueue({ok, "lm://stalled/2"});
+        p.playIndex(1);
+        waitStalls(2);
+        p.prev();
+        p.sync();
+        CHECK(waitPlaying(p, 0));
+    }
+    {
+        // playIndex() while track 1 stalls.
+        lm::Player p(cfg);
+        p.enqueue({"lm://stalled/1", "lm://stalled/2", ok});
+        p.play();
+        waitStalls(3);
+        p.playIndex(2);
+        p.sync();
+        CHECK(waitPlaying(p, 2));
+    }
+    {
+        // seek() on a stalled open: the same track is opened again at the new position
+        // (it stalls again; the player is not Stopped), then next() still works.
+        lm::Player p(cfg);
+        p.enqueue({"lm://stalled/1", ok});
+        p.play();
+        waitStalls(4);
+        p.seek(2.0);
+        waitStalls(5); // re-opened at 2 s
+        CHECK(p.state().status != lm::Status::Stopped);
+        CHECK_EQ(p.state().index, 0);
+        p.next();
+        p.sync();
+        CHECK(waitPlaying(p, 1));
+    }
+    {
+        // seek() on an interrupted open of a playable track: it starts at the new position.
+        lm::Player p(cfg);
+        p.enqueue({"lm://stalled/1", ok});
+        p.play();
+        waitStalls(6);
+        p.next();
+        p.seek(3.0); // queued behind next(): applies to track 2
+        p.sync();
+        CHECK(waitPlaying(p, 1, 2.9));
+        CHECK(p.state().position < 5.0);
+    }
+}
 } // namespace
 
 int main() {
@@ -445,5 +610,7 @@ int main() {
     enqueueAtEnd(dir);
     errorsAndReentrancy(dir);
     commands(dir);
+    stalledOpen();
+    interruptedOpenProceeds(dir);
     return lmtest::finish("test_player");
 }

@@ -1,8 +1,14 @@
 #include "tui_logic.hpp"
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <system_error>
 
@@ -161,6 +167,7 @@ Command mapKey(std::string_view k) {
     if (k == "ctrl-z") return Command::Suspend;
     if (k == "?") return Command::ToggleHelp;
     if (k == "escape") return Command::CloseHelp;
+    if (k == "P") return Command::TogglePin;
     return Command::None;
 }
 
@@ -261,6 +268,58 @@ std::vector<std::string> KeyParser::parse(bool final) {
     return out;
 }
 
+bool readKeyFile(const std::string &path, std::string &key, std::string &err) {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) {
+        err = "cannot open key file " + path + ": " + std::strerror(errno);
+        return false;
+    }
+    struct stat st{};
+    std::string data;
+    bool ok = fstat(fd, &st) == 0;
+    if (!ok) err = "cannot stat key file " + path;
+    else if (!S_ISREG(st.st_mode)) {
+        err = "key file " + path + " is not a regular file";
+        ok = false;
+    } else if (st.st_uid != geteuid()) {
+        err = "key file " + path + " is not owned by the current user";
+        ok = false;
+    } else if ((st.st_mode & 077) != 0) {
+        char mode[8];
+        std::snprintf(mode, sizeof mode, "%04o", static_cast<unsigned>(st.st_mode & 07777));
+        err = "key file " + path + " has mode " + mode + "; refusing (chmod 600 " + path + ")";
+        ok = false;
+    } else {
+        char buf[512];
+        ssize_t n;
+        while (data.size() < 4096 && (n = ::read(fd, buf, sizeof buf)) > 0) data.append(buf, static_cast<std::size_t>(n));
+    }
+    ::close(fd);
+    if (!ok) return false;
+    const auto nl = data.find('\n');
+    if (nl != std::string::npos) data.resize(nl);
+    while (!data.empty() && (data.back() == '\r' || data.back() == ' ' || data.back() == '\t')) data.pop_back();
+    std::size_t b = 0;
+    while (b < data.size() && (data[b] == ' ' || data[b] == '\t')) b++;
+    data.erase(0, b);
+    if (data.empty()) {
+        err = "key file " + path + " is empty";
+        return false;
+    }
+    for (char c : data)
+        if (c <= 0x20 || c >= 0x7f) {
+            err = "key file " + path + " contains invalid characters";
+            return false;
+        }
+    key = std::move(data);
+    return true;
+}
+
+std::string cacheGlyph(int state, bool pinned) {
+    const char *g = state == 2 ? "●" : state == 1 ? "◐" : state == 0 ? "○" : "";
+    return std::string(g) + (pinned && state >= 0 ? "*" : "");
+}
+
 const std::vector<std::string> &helpLines() {
     static const std::vector<std::string> lines = {
         "space      play / pause",
@@ -270,6 +329,7 @@ const std::vector<std::string> &helpLines() {
         "enter      play selected track",
         "j k ↑ ↓    move selection",
         "g G        first / last track",
+        "P          pin / unpin (remote: keep offline)",
         "?  esc     toggle / close this help",
         "q          quit",
     };

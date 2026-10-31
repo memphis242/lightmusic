@@ -184,7 +184,51 @@ static void testKeyParser() {
     CHECK(lmtui::mapKey("ctrl-z") == Command::Suspend);
 }
 
+static void testKeyFile() {
+    const fs::path dir = fs::temp_directory_path() / ("lm_keyfile_" + std::to_string(getpid()));
+    fs::create_directories(dir);
+    const std::string p = (dir / "key").string();
+    {
+        std::ofstream(p) << "  abcDEF0123456789  \r\nsecond line ignored\n";
+    }
+    std::string key, err;
+    fs::permissions(p, fs::perms::owner_read | fs::perms::owner_write);
+    CHECK(lmtui::readKeyFile(p, key, err));
+    CHECK(key == "abcDEF0123456789");
+    fs::permissions(p, fs::perms::owner_read); // 0400 is fine too
+    CHECK(lmtui::readKeyFile(p, key, err));
+    for (auto extra : {fs::perms::group_read, fs::perms::others_read, fs::perms::group_write}) {
+        fs::permissions(p, fs::perms::owner_read | fs::perms::owner_write | extra);
+        key.clear();
+        CHECK(!lmtui::readKeyFile(p, key, err));
+        CHECK(key.empty());
+        CHECK(err.find("chmod 600") != std::string::npos);
+    }
+    fs::permissions(p, fs::perms::owner_read | fs::perms::owner_write);
+    const std::string link = (dir / "link").string();
+    fs::create_symlink(p, link);
+    CHECK(!lmtui::readKeyFile(link, key, err)); // O_NOFOLLOW
+    CHECK(!lmtui::readKeyFile(dir.string(), key, err));
+    CHECK(!lmtui::readKeyFile((dir / "missing").string(), key, err));
+    {
+        std::ofstream(p) << "bad key\n";
+    }
+    CHECK(!lmtui::readKeyFile(p, key, err));
+    {
+        std::ofstream(p, std::ios::trunc) << "\n";
+    }
+    CHECK(!lmtui::readKeyFile(p, key, err));
+    fs::remove_all(dir);
+
+    CHECK(lmtui::cacheGlyph(2, false) == "●");
+    CHECK(lmtui::cacheGlyph(1, true) == "◐*");
+    CHECK(lmtui::cacheGlyph(0, false) == "○");
+    CHECK(lmtui::cacheGlyph(-1, true).empty());
+    CHECK(lmtui::mapKey("P") == Command::TogglePin);
+}
+
 int main() {
+    testKeyFile();
     testKeyParser();
     testNaturalSort();
     testExtensions();

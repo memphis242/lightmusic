@@ -31,3 +31,7 @@ target_link_libraries(tui_logic PRIVATE lm_warnings)
 add_executable(lightmusic main.cpp)
 target_link_libraries(lightmusic PRIVATE lm::tui_logic lm::player ftxui::screen ftxui::dom
                                          lm_warnings)
+if(TARGET lm::net)
+  target_compile_definitions(lightmusic PRIVATE LM_TUI_NET=1)
+  target_link_libraries(lightmusic PRIVATE lm::net)
+endif()

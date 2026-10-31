@@ -56,6 +56,7 @@ enum class Command {
     ToggleHelp,
     CloseHelp,
     Suspend,
+    TogglePin, // remote tracks: keep offline (never evicted, filled in the background)
 };
 
 // Maps a key name to a command. Printable keys are the character itself (" " for
@@ -86,6 +87,16 @@ private:
     std::vector<std::string> parse(bool final);
     std::string buf_;
 };
+
+// Reads the server API key from `path`: a regular file owned by the current user with
+// no group/other permission bits (0600 or 0400; anything looser is refused so a key is
+// never read from a file others can read). The key is the first line, trimmed; it must be
+// printable ASCII without spaces. Returns false with `err` set.
+bool readKeyFile(const std::string &path, std::string &key, std::string &err);
+
+// Cache-state marker for a queue row: "●" cached, "◐" partial, "○" remote only,
+// "" for a local file. `pinned` adds "*".
+std::string cacheGlyph(int state /* -1 local, 0 remote, 1 partial, 2 cached */, bool pinned);
 
 // Help text lines shown by '?'.
 const std::vector<std::string> &helpLines();

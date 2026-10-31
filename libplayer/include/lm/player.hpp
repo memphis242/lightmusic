@@ -85,6 +85,11 @@ struct PlayerConfig {
     // ring (before volume). Must be realtime-safe. Leave null in production.
     void (*outputTap)(void *user, const float *frames, std::uint32_t count) = nullptr;
     void *outputTapUser = nullptr;
+    // Opens queue entries that are URIs ("scheme://...", e.g. lm://server/track/42 from
+    // libnet) instead of file paths. Called on the control or decoder thread (never the
+    // audio callback); may block, but the source must honour ByteSource::interrupt().
+    // Returns nullptr with `err` set on failure. Unset: URIs fail to open like a missing file.
+    std::function<std::unique_ptr<ByteSource>(const std::string &uri, std::string *err)> openSource;
 };
 
 class Player {
@@ -94,6 +99,7 @@ public:
     Player(const Player &) = delete;
     Player &operator=(const Player &) = delete;
 
+    // File paths, or URIs handled by PlayerConfig::openSource.
     void enqueue(std::vector<std::string> paths);
     void clearQueue();       // stops playback
     void play();             // resume, or start the current/first track
