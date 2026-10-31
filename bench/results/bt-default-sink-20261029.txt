@@ -1,0 +1,87 @@
+Bluetooth default-sink check - little-forge, 2026-10-29 (~04:13-04:16 -05:00)
+Question: during the 03:35 bench run the BT headset was connected and default sink was
+bluez_output.XX_XX_XX_XX_XX_XX.1, yet miniaudio reported "Built-in Audio Analog Stereo". Which output does it pick?
+
+ANSWER: miniaudio follows the server default correctly. The headset dropped off during the bench run.
+
+Root cause (timeline from the journal):
+  03:35:49  bench report records "Default Sink: bluez_output.XX_XX_XX_XX_XX_XX.1"
+  03:36:04  gsd-media-keys: "Unable to get default sink" / "Unable to get default source" (the default sink disappeared, during the build step)
+  ~03:38    2b/2c playback opens the default device -> only the built-in sink is left -> "Built-in Audio Analog Stereo".
+            The report's internal_format=32-bit Signed Integer matches the built-in sink (s32le), not the BT sink (s16le),
+            so the stream really ran on the built-in sink; the name is not a mislabel. The built-in sink is MUTED (wpctl vol 0.60 MUTED), so that playback was silent.
+  04:10:57  kernel: "input: soundcore Q20i (AVRCP)" -> the headset reconnects (the BT sink index is now 619)
+  There is no explicit disconnect line in the journal (bluetoothd logs nothing); the drop is inferred from the 03:36:04 message, the s32 format and the 04:10:57 reconnect.
+
+miniaudio code path (third_party/miniaudio.h 0.11.21, ma_device_init__pulse):
+  default device -> pDeviceID == NULL -> devPlayback = NULL
+  -> pa_context_get_sink_info_by_name(NULL) (the server default; gives the sample spec)
+  -> pa_stream_connect_playback(stream, NULL, ...) with no DONT_MOVE flag (the server routes the stream and it can follow default changes).
+  An explicit device id sets MA_PA_STREAM_DONT_MOVE (pactl shows node.dont-reconnect=true and target.object=<id>).
+  miniaudio never substitutes a sink name of its own for the default.
+
+Tests (now, headset connected; the user confirmed hearing audio in the headset):
+  enumeration (bench/src/devlist.cpp):
+    PulseAudio: [0] alsa_output.pci-0000_00_1f.3.analog-stereo "Built-in Audio Analog Stereo" isDefault=0
+                [1] bluez_output.XX_XX_XX_XX_XX_XX.1 "soundcore Q20i" isDefault=1
+    ALSA:       null, pipewire, default (isDefault=1, "currently PipeWire Media Server"), :0,0 :0,1 :0,2 (hw)
+  playback, track 02, play_trim (PulseAudio backend), x0.3:
+    A  default (NULL), 8 s          -> bluez_output.XX_XX_XX_XX_XX_XX.1 (sink 619), 0 underruns, s16 internal
+    B  --dev isdefault, 5 s         -> bluez_output.XX_XX_XX_XX_XX_XX.1 (sink 619), 0 underruns, target.object set, dont-reconnect
+    C  --dev bluez_output...F5.1, 5 s -> bluez_output.XX_XX_XX_XX_XX_XX.1 (sink 619), 0 underruns, target.object set, dont-reconnect
+  BT latency, as seen by miniaudio: period 826 frames x4 = 74.9 ms buffer (same as the built-in sink; BT codec/transport latency is not included).
+
+Bench changes in this commit:
+  - src/devlist.cpp: new probe that lists playback devices (id, name, isDefault) for the PulseAudio and ALSA backends.
+  - src/play.cpp: "--dev SPEC" (isdefault | id/name substring) for an explicit device, and a
+    "RESULT pulse_connected_sink=" line from pa_stream_get_device_name (the sink the server actually used).
+  - run.sh 2b: logs `pactl get-default-sink` right before playback.
+  Recommendation for lightmusic: keep NULL/default routing (it follows the user's default and moves with it), and log
+  the connected sink rather than trusting the open-time name.
+
+==== raw captures ====
+--- before (04:13): pactl get-default-sink / list short sinks / wpctl
+bluez_output.XX_XX_XX_XX_XX_XX.1
+50 alsa_output.pci-0000_00_1f.3.analog-stereo PipeWire s32le 2ch 48000Hz SUSPENDED
+619 bluez_output.XX_XX_XX_XX_XX_XX.1 PipeWire s16le 2ch 48000Hz SUSPENDED
+wpctl Sinks: 50. Built-in Audio Analog Stereo [vol: 0.60 MUTED] | * 72. soundcore Q20i [vol: 0.21]
+
+--- devlist
+RESULT backend=PulseAudio index=0 isDefault=0 id="alsa_output.pci-0000_00_1f.3.analog-stereo" name="Built-in Audio Analog Stereo"
+RESULT backend=PulseAudio index=1 isDefault=1 id="bluez_output.XX_XX_XX_XX_XX_XX.1" name="soundcore Q20i"
+RESULT backend=PulseAudio playback_devices=2 marked_default=1
+RESULT backend=ALSA index=0 isDefault=0 id="null" name="Discard all samples (playback) or generate zero samples (capture)"
+RESULT backend=ALSA index=1 isDefault=0 id="pipewire" name="PipeWire Sound Server"
+RESULT backend=ALSA index=2 isDefault=1 id="default" name="Default ALSA Output (currently PipeWire Media Server)"
+RESULT backend=ALSA index=3 isDefault=0 id=":0,0" name="HDA Intel PCH, ALC3246 Analog"
+RESULT backend=ALSA index=4 isDefault=0 id=":0,1" name="HDA Intel PCH, HDMI 1"
+RESULT backend=ALSA index=5 isDefault=0 id=":0,2" name="HDA Intel PCH, HDMI 2"
+RESULT backend=ALSA playback_devices=6 marked_default=1
+
+--- play A-default-null
+RESULT build=trim miniaudio=0.11.21
+RESULT backend=PulseAudio null_fallback=0 device="soundcore Q20i"
+RESULT pulse_requested_sink=NULL pulse_connected_sink=bluez_output.XX_XX_XX_XX_XX_XX.1
+RESULT file_rate=44100 device_rate=44100 internal_rate=44100 internal_format=16-bit Signed Integer internal_channels=2 period_frames=826 periods=4 period_ms=18.7 buffer_latency_ms=74.9
+RESULT seg0 length_frames=5082624 play_from=0 play_to=352800
+RESULT played_frames=352800 played_s=8.00 wall_s=7.98 callbacks=428 max_callback_gap_ms=24.0 underruns=0 underrun_frames=0 finished=1
+
+--- play B-dev-isdefault
+RESULT build=trim miniaudio=0.11.21
+RESULT selected_device index=1 isDefault=1 id="bluez_output.XX_XX_XX_XX_XX_XX.1" name="soundcore Q20i"
+RESULT backend=PulseAudio null_fallback=0 device="soundcore Q20i"
+RESULT pulse_requested_sink=explicit pulse_connected_sink=bluez_output.XX_XX_XX_XX_XX_XX.1
+RESULT file_rate=44100 device_rate=44100 internal_rate=44100 internal_format=16-bit Signed Integer internal_channels=2 period_frames=826 periods=4 period_ms=18.7 buffer_latency_ms=74.9
+RESULT seg0 length_frames=5082624 play_from=0 play_to=220500
+RESULT played_frames=220500 played_s=5.00 wall_s=4.98 callbacks=267 max_callback_gap_ms=28.0 underruns=0 underrun_frames=0 finished=1
+
+--- play C-dev-bluez-id
+RESULT build=trim miniaudio=0.11.21
+RESULT selected_device index=1 isDefault=1 id="bluez_output.XX_XX_XX_XX_XX_XX.1" name="soundcore Q20i"
+RESULT backend=PulseAudio null_fallback=0 device="soundcore Q20i"
+RESULT pulse_requested_sink=explicit pulse_connected_sink=bluez_output.XX_XX_XX_XX_XX_XX.1
+RESULT file_rate=44100 device_rate=44100 internal_rate=44100 internal_format=16-bit Signed Integer internal_channels=2 period_frames=826 periods=4 period_ms=18.7 buffer_latency_ms=74.9
+RESULT seg0 length_frames=5082624 play_from=0 play_to=220500
+RESULT played_frames=220500 played_s=5.00 wall_s=4.98 callbacks=267 max_callback_gap_ms=23.2 underruns=0 underrun_frames=0 finished=1
+
+--- during each playback, pactl sink-inputs showed play_trim on Sink: 619, wpctl Streams: play_trim output_FL/FR > soundcore Q20i:playback_FL/FR [active]

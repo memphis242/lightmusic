@@ -271,3 +271,53 @@ in v1. Revisit if FLAC libraries are streamed over mobile data.
   `ui-overrides.yaml` layered on top.
 - v1 phone support: none (OpenSubsonic layer in v1.1) vs. a minimal OpenSubsonic subset in v1
   (ping, getAlbumList2, getAlbum, stream, getCoverArt, search3) so Symfonium works.
+
+## 6. Fedora verification (little-forge, 2026-10-29)
+
+Real run of `bench/run.sh` on Fedora 43, i5-7200U (4 threads), 7.5 GB RAM (~3.5 GB free,
+other load running), PipeWire 1.4.11. Full report:
+`bench/results/report-little-forge-20261029-033549.txt`. All 10 steps OK. These numbers come
+from the bench script as of commit `c82a3b3`; in that run the `vorbisfile` link check reported
+FAILED because of a bug in the probe itself (not the library), fixed afterwards (and a failed
+link check now fails the build step).
+
+**Packages**: every planned `dnf` name resolved. Notable versions: FTXUI **6.1.9**,
+cpp-httplib **0.48.0** (header at `/usr/include/httplib.h`, no pkg-config file), TagLib 1.13.1,
+SQLite 3.50.2, libcurl 8.15.0, mpg123 1.32.10, opusfile 0.12, FLAC 1.5.0, systemd 258.
+
+| Measurement | Result |
+|---|---|
+| MP3 decode, 10-track album (20.8 min) | dr_mp3 367× realtime, mpg123 396×; RSS 4–5 MB |
+| FLAC / Opus decode | dr_flac 392×, opusfile 128× realtime |
+| Real playback (miniaudio, trimmed build 424 KB) | PulseAudio backend on PipeWire, 18.7 ms period × 4, **74.9 ms** buffer latency, **0 underruns**, RSS 7.7 MB, ~3% CPU incl. startup |
+| Gapless join (one device, one ring) | no ring underrun at the join; but 52.5 ms of decoded silence with `ma_decoder` (untrimmed delay/padding); test opened both decoders before playback, so it doesn't exercise opening track N+1 mid-play (`play.cpp` now opens B in the decoder thread at A's EOF) |
+| ncurses / FTXUI idle | RSS 4.7 / 4.4 MB; idle CPU 0% / ~0.6% (coarse 5 s sample) |
+| MPRIS via sd-bus | `playerctl` lists and controls it; 0 idle CPU, 4.9 MB |
+| Server, 10 × 100 MB Range downloads | cpp-httplib: 9.4 MB peak RSS, 0.91 s CPU; sendfile: 4.1 MB, 0.18 s CPU (~5× cheaper; see caveat below) |
+| ffmpeg reference | ~72 MB RSS for any job |
+
+Findings that change the design:
+- **Don't use miniaudio's `ma_decoder` for MP3 gapless.** It reported 5,762,304 frames for
+  track 1 versus 5,758,942 from standalone dr_mp3 and from mpg123 (3,362 frames ≈ 76 ms of
+  untrimmed encoder delay/padding). Drive dr_mp3 (or mpg123) directly in the decoder thread;
+  use miniaudio for device output only.
+- **Device selection is correct** (re-checked, `bench/results/bt-default-sink-20261029.txt`).
+  The Bluetooth headset had dropped off mid-run, so the built-in sink was the only one left.
+  With the headset connected, miniaudio's default device lands on it (confirmed by ear and by
+  `pactl`). For the default device miniaudio passes NULL to `pa_stream_connect_playback`,
+  so PipeWire routes the stream. Default-sink following on change is expected from the code
+  path (NULL target, no `DONT_MOVE`) but not tested mid-stream; an explicit device pins it
+  (`dont-reconnect`). Note the 2b/2c run itself went to the muted built-in sink, so that
+  playback was not heard. v1: use the default device, and log the sink actually
+  connected (`pa_stream_get_device_name`), not the name at open time. Handle a device
+  disappearing mid-playback (BT drop) gracefully. Bluetooth codec/transport latency is on
+  top of the 75 ms miniaudio buffer.
+- 75 ms output latency is fine for a music player; seek/pause responsiveness is bounded by it.
+- Prefer the **`sendfile` path** in the server if CPU on a small host matters. Caveat on the
+  ~5× CPU gap: `sf.cpp` skipped auth and request validation that the httplib server did, so the
+  gap is partly missing work. A real sendfile path needs: clamp range end to size-1, 416 for
+  unsatisfiable ranges, suffix ranges (`bytes=-N`), case-insensitive header matching,
+  percent-decoding of the path, and reading the full request head (not one `recv`). The
+  prototype now does these (except auth); the measured numbers predate that.
+- Indexing figures from this run (10 files) are too small to extrapolate; the earlier
+  300-file numbers stand.
