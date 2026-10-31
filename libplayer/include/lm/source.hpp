@@ -1,0 +1,36 @@
+// Byte-level input for decoders. Decoders never touch files directly; they read through
+// a ByteSource so a network stream or an offline-cache file can be plugged in later
+// without changing any decoder.
+//
+// Implemented now: FileSource. Planned (not in this branch): a network source backed by a
+// compressed ring fed by libcurl, and a cache source that reads cached byte ranges and
+// blocks (or fails) on holes.
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+
+namespace lm {
+
+class ByteSource {
+public:
+    enum class Whence { Set, Cur, End };
+    virtual ~ByteSource() = default;
+    // Reads up to n bytes. Returns the bytes read; fewer than n only at end of stream or
+    // on error. May block (a network source would wait for data).
+    virtual std::size_t read(void *dst, std::size_t n) = 0;
+    // Returns false if the position is invalid or seeking is unsupported.
+    virtual bool seek(std::int64_t offset, Whence whence) = 0;
+    virtual std::int64_t tell() const = 0;
+    // Total size in bytes, or -1 when unknown.
+    virtual std::int64_t size() const = 0;
+    // Human-readable origin (path or URL) for logs.
+    virtual const std::string &name() const = 0;
+};
+
+// Plain file. Returns nullptr if the file cannot be opened.
+std::unique_ptr<ByteSource> openFileSource(const std::string &path);
+
+} // namespace lm
