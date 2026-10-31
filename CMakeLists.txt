@@ -18,6 +18,7 @@ option(LM_BUILD_TUI "Build the lightmusic TUI (needs FTXUI >= 6)" ON)
 option(LM_BUILD_NET "Build libnet: server client, streaming and offline cache (needs libcurl, SQLite)" ON)
 option(LM_BUILD_SERVER "Build the lightmusicd server (needs TagLib, SQLite)" ON)
 option(LM_FETCH_FTXUI "Fetch FTXUI v6.1.9 with FetchContent if no system package" OFF)
+option(LM_GC_SECTIONS "Link the shipped executables with --gc-sections in optimised builds (drops unused code)" ON)
 
 if(LM_ASAN AND LM_TSAN)
   message(FATAL_ERROR "LM_ASAN and LM_TSAN are mutually exclusive")
@@ -31,6 +32,15 @@ if(LM_TSAN)
   add_link_options(-fsanitize=thread)
 endif()
 
+# Release link flags for the shipped executables (lightmusic, lightmusicd), not for
+# libraries' consumers in general: libconfig compiles with per-function sections, and
+# --gc-sections drops the functions we never call.
+function(lm_release_link_options target)
+  if(LM_GC_SECTIONS)
+    target_link_options(${target} PRIVATE $<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:-Wl,--gc-sections>)
+  endif()
+endfunction()
+
 # Warnings for our own code only (third_party gets none of these).
 add_library(lm_warnings INTERFACE)
 target_compile_options(lm_warnings INTERFACE -Wall -Wextra -Werror)
@@ -41,6 +51,7 @@ pkg_check_modules(OPUSFILE REQUIRED IMPORTED_TARGET opusfile)
 pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
 
 add_subdirectory(libplayer)
+add_subdirectory(libconfig)
 if(LM_BUILD_NET)
   add_subdirectory(libnet)
 endif()

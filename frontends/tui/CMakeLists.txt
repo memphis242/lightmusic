@@ -29,7 +29,8 @@ target_include_directories(tui_logic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(tui_logic PRIVATE lm_warnings)
 
 add_executable(lightmusic main.cpp)
-target_link_libraries(lightmusic PRIVATE lm::tui_logic lm::player ftxui::screen ftxui::dom
+lm_release_link_options(lightmusic)
+target_link_libraries(lightmusic PRIVATE lm::tui_logic lm::player lm::config ftxui::screen ftxui::dom
                                          lm_warnings)
 if(TARGET lm::net)
   target_compile_definitions(lightmusic PRIVATE LM_TUI_NET=1)

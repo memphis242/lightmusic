@@ -15,7 +15,7 @@ MPRIS yet.
 ```sh
 sudo dnf install gcc-c++ cmake ninja-build pkgconf-pkg-config \
                  opusfile-devel libvorbis-devel libogg-devel ftxui-devel \
-                 libcurl-devel sqlite-devel systemd-devel
+                 libcurl-devel sqlite-devel systemd-devel yaml-cpp-devel
 # optional, only for the tests (generates audio fixtures at test time):
 sudo dnf install ffmpeg-free
 # optional, for the sanitizer builds:
@@ -28,7 +28,7 @@ ninja -C build
 miniaudio, dr_mp3 and dr_flac are vendored in `third_party/` (see
 `third_party/VERSIONS.md`). miniaudio loads PulseAudio/ALSA at runtime with `dlopen`, so
 no audio `-devel` package is needed. On Ubuntu/Debian the packages are
-`libopusfile-dev libvorbis-dev libogg-dev libcurl4-openssl-dev libsqlite3-dev libsystemd-dev
+`libopusfile-dev libvorbis-dev libogg-dev libcurl4-openssl-dev libsqlite3-dev libsystemd-dev libyaml-cpp-dev
 ffmpeg`. `libcurl-devel`/`sqlite-devel` are needed for `libnet` (`-DLM_BUILD_NET=OFF`
 skips it and the TUI's `--server`); `systemd-devel` is optional (sd-bus, for metered-network
 detection; without it networks count as unmetered, `-DLM_WITH_SDBUS=OFF` forces that).
@@ -100,6 +100,26 @@ ctest --test-dir build --output-on-failure
 - `test_player`: on miniaudio's Null backend: the frames sent to the device equal the
   concatenation of the decoded tracks (nothing inserted at joins), resampling of a 48 kHz
   track after 44.1 kHz ones, and the command/state machine. Skipped without `ffmpeg`.
+- `test_config`: libconfig: defaults, every client key from a full file (relative and
+  `~` paths), precedence defaults < file < overrides layer < flags, unknown keys
+  (warnings with line numbers), type/range/shape errors with line:col, duplicate and
+  dotted keys, `api_key` refusal in any spelling (`API_KEY`, `apiKey`, `api-key`; value
+  never echoed), accepted number/boolean forms (leading zeros, quoted, `!!float` refused),
+  `~`/`~user` expansion and unset `HOME`, permission checks (0600 ok, 0644 warns,
+  0620/0602/0666 refused, symlink target checked, group/world-writable directory without
+  sticky bit refused, missing/oversize/directory), `writeFileAtomic` (keeps the mode,
+  replaces a symlink's target, refuses a writable target), inotify reload in a temp dir
+  (rename-over and in-place writes; only hot keys applied, the rest listed as
+  restart-required, flags still win, a broken, missing or empty file not applied), a
+  simulated vim save (rename away, create empty, write, close; fast and slow) and an
+  atomic rename-over through the debounced watcher loop (settings never reset to the
+  defaults), and malformed/fuzzed YAML that must only produce diagnostics, including
+  inputs that used to crash rapidyaml and over-deep nesting (run it under ASan/UBSan;
+  `LM_FUZZ_ITERS=<n>`, default 4000).
+- `test_server_config`: `lightmusicd --config`: every key mapped onto `Config`, relative
+  music paths, flags overriding (lists replaced), defaults, errors with line numbers,
+  unknown keys, loopback/proxy checks on the merged result, missing and world-writable
+  files.
 - `test_tui_logic`: directory scanning, natural sort, terminal key parsing, key mapping,
   time/volume formatting.
 - `test_server_range`: Range header decisions (suffix, open-ended, past EOF, reversed,
@@ -121,7 +141,9 @@ ctest --test-dir build --output-on-failure
   without `ffmpeg`.
 - `test_tui_smoke`: runs `lightmusic` in a pty (`script`) on the Null backend with
   generated files, sends keys, expects a clean exit on `q` and a restored terminal; also
-  that `q` exits promptly with a FIFO in the queue.
+  that `q` exits promptly with a FIFO in the queue; with a temp `XDG_CONFIG_HOME`:
+  `cfg.yaml`'s volume applied at start, a live edit (volume hot-applied, replaygain
+  reported as restart-required), and a group-writable file / an `api_key` refused.
   Skipped without `script` or `ffmpeg`.
 - `test_range_set`: cache range sets: merge, split, holes, serialisation, random ops
   against a bitmap model.
@@ -132,7 +154,10 @@ ctest --test-dir build --output-on-failure
   got old bytes fails instead of splicing versions); ETag invalidation and deletion by
   sync; LRU eviction, pin cap refusal, playback over the cap, pinned entries never evicted
   by idle fill; idle fill paused by a mocked metered probe and by playback; read timeouts,
-  401, offline; concurrent seek/read/interrupt on two sources (meant for TSan).
+  401, offline; concurrent seek/read/interrupt on two sources (meant for TSan);
+  `setCacheSettings` (reload): fill off/on, a cap shrink evicts only after
+  `capTrimDelayMs` (and not at all if the cap is raised again first), fill off stops a
+  running idle fetch.
 - `test_stream_e2e`: starts `lightmusicd --port 0` on generated FLAC/MP3, syncs, plays two
   tracks through `lm::Player` (Null backend) via `lm://` URIs and compares the output
   sample for sample with a local decode, stops the server, and replays them offline from
@@ -179,8 +204,9 @@ build/server/lightmusicd --music ~/Music [--music /srv/more] \
 build/server/lightmusicd --music ~/Music --scan-only     # index once and exit
 ```
 
-Flags only for now (`--help` lists them); the YAML config comes later and will fill the
-same `Config` struct (`server/src/config.hpp`). The server listens on **127.0.0.1:8737**
+Settings come from flags (`--help` lists them) and optionally a YAML file given with
+`--config` (see [Configuration](#configuration)); both fill the same `Config` struct
+(`server/src/config.hpp`). The server listens on **127.0.0.1:8737**
 by default and prints `lightmusicd listening on ADDR:PORT` once bound (`--port 0` picks a
 free port). Logs go to stderr: one line per request (method, path without query string,
 status, client, and `via <proxy>` when the client came from `X-Forwarded-For`); keys are
@@ -323,7 +349,7 @@ build/frontends/tui/lightmusic --server URL --key-file K --list          # album
 build/frontends/tui/lightmusic --server URL --key-file K --album 3 --album 7
 ```
 
-Options (flags only; the YAML config comes later): `--cache-dir DIR` (default
+Options (also settable in `cfg.yaml`, see [Configuration](#configuration)): `--cache-dir DIR` (default
 `$XDG_CACHE_HOME/lightmusic`, else `~/.cache/lightmusic`), `--cache-max-mb N` (default
 100), `--no-fill` (no background fill), `--pause-on-metered` (pause the background fill
 while NetworkManager reports a metered connection). The key file must be a regular file
@@ -396,6 +422,168 @@ Measured on this repo's Ubuntu 24.04 container (4 cores, RelWithDebInfo, loopbac
 10 s (the network thread sleeps without a timer when nothing is due). RSS 15.7 MB
 throughout, 6 threads (UI, player control/decoder/audio, network, plus miniaudio's).
 
+## Configuration
+
+Both programs read YAML through `libconfig/` (`lm::config`, UI-free). A configuration is
+an ordered stack of layers, later ones winning:
+
+```
+defaults  <  cfg.yaml  <  [ui-overrides.yaml: reserved, not read yet]  <  command-line flags
+```
+
+Flags are turned into a layer of the same dotted keys and validated by the same typed
+schema, so a bad `--cache-max-mb 0` and a bad `max_size_mb: 0` give the same message.
+Unknown keys are **warnings** (`cfg.yaml:7:3: warning: unknown key 'cache.max_size_gb'
+(ignored)`); type, range and shape errors are **errors with file:line:col**, and the
+program exits with status 2 before touching the terminal. A key with no value (`cache:`
+or `volume:`) keeps the default. Anchors/aliases, duplicate keys and multi-document
+files are rejected.
+
+### Client: `~/.config/lightmusic/cfg.yaml`
+
+Path: `$XDG_CONFIG_HOME/lightmusic/cfg.yaml` (absolute `$XDG_CONFIG_HOME` only), else
+`~/.config/lightmusic/cfg.yaml`. A missing file is fine (defaults). `--config PATH` uses
+another file (which must then exist), `--no-config` ignores it, and `--no-server` skips
+a `server.url` from the file for one local-only run.
+
+```yaml
+# ~/.config/lightmusic/cfg.yaml  (chmod 600)
+server:
+  url: https://music.example.net    # http:// or https://; default: none (local files only)
+  key_file: key                     # file holding the API key (must be 0600); relative
+                                    # paths are relative to this file; ~/ ($HOME) and
+                                    # ~user/ (password database) are expanded
+  # api_key: ...                    # REFUSED: never put the key itself in here
+cache:
+  max_size_mb: 100                  # 1..2^30          (hot)
+  background_fill: true             # idle fill        (hot)
+  pause_on_metered: false           # pause it on metered networks (hot)
+  dir: ~/.cache/lightmusic          # default $XDG_CACHE_HOME/lightmusic
+playback:
+  volume: 100                       # percent, 0..100  (hot)
+  replaygain: off                   # off | track | album (album falls back to track
+                                    # gain for now, with a warning)
+ui:
+  show_cache_markers: true          # the ● ◐ ○ * column
+```
+
+| Key | Flag | Default | Hot |
+|---|---|---|---|
+| `server.url` | `--server URL` | none | restart |
+| `server.key_file` | `--key-file PATH` | none | restart |
+| `cache.max_size_mb` | `--cache-max-mb N` | 100 | yes |
+| `cache.background_fill` | `--no-fill` | true | yes |
+| `cache.pause_on_metered` | `--pause-on-metered` | false | yes |
+| `cache.dir` | `--cache-dir DIR` | `$XDG_CACHE_HOME/lightmusic` | restart |
+| `playback.volume` | – | 100 | yes |
+| `playback.replaygain` | `--rg` (= `track`) | off | restart |
+| `ui.show_cache_markers` | – | true | restart |
+
+**Value forms.** Numbers are plain decimal integers: an optional sign and digits, no
+leading zeros (`010` is an error, since YAML 1.1 reads it as octal), no `_`, `0x`,
+exponents or fractions, not quoted (`"7"` is a string), and untagged or tagged `!!int`.
+Booleans are `true`/`false`, `yes`/`no`, `on`/`off` (lower, Title or UPPER case),
+unquoted, untagged or tagged `!!bool`. Anything else (e.g. `!!float 5`, `'true'`, `y`)
+is an error with its line. On the command line, values are plain strings and use the
+same number/boolean syntax. A path starting with `~` needs `$HOME` set (`~/`) or an
+existing user (`~user/`); otherwise it is an error.
+
+**Security.** The file is refused if it is not a regular file owned by you, or if it is
+**group- or world-writable** (someone else could point `server.url` and `key_file`
+elsewhere); group/world-*readable* only warns (`chmod 600` recommended). Symlinks are
+followed and the checks apply to the target. The directory holding it (the named one and,
+for a symlink, the target's) must not be group/world-writable unless it has the sticky
+bit (like `/tmp`); the same holds for `lightmusicd --config`. An `api_key` key anywhere,
+in any spelling (`API_KEY`, `apiKey`, `api-key`, ...: the last key segment is compared
+lowercased without `-`/`_`), is an error; the key lives only in `key_file`, which must still be 0600/0400 and owned by you.
+Diagnostics never echo values of refused keys.
+
+**Live reload.** The TUI watches the config directory with inotify and reacts only to a
+finished write of `cfg.yaml` (`IN_CLOSE_WRITE`) or a file renamed onto it (`IN_MOVED_TO`),
+which is how both atomic rename-over saves and vim's "rename away, create, write, close"
+end; deletions, creations and `chmod` alone are ignored. Events are debounced (150 ms
+after the last one). The inotify fd sits in the same `poll()` as the terminal and the
+self-pipe, so an idle TUI still has no timers (the poll timeout is only set while a
+reload is pending). On a reload the whole stack is re-resolved (flags still win). Only
+the hot keys above are applied — cache cap, background fill, metered pause
+(`lm::net::Client::setCacheSettings`) and volume; any other changed key is reported in
+the status line as `settings reloaded; restart required for: server.url ...`. A file
+with errors (or now group-writable) is not applied and the error is shown; a missing or
+empty file is never taken as "use the defaults" — the running settings stay and the
+status line says `settings not reloaded`. A smaller cache cap applies to new downloads at
+once, but existing unpinned, unused entries are evicted down to it lazily (2 s later, when
+no download runs), so a cap briefly lowered and restored evicts nothing.
+
+**UI write-back: not implemented (open decision).** Two options are being weighed:
+(a) the UI rewrites `cfg.yaml` itself (simple, one file, but comments and formatting are
+lost unless a round-tripping emitter is added), or (b) the UI writes a generated
+`ui-overrides.yaml` next to it that is layered on top (hand-written `cfg.yaml` untouched,
+but two places to look). The infrastructure for either exists: `Layer` (dotted keys,
+any source), `Schema::resolve()` over any stack of layers (the `overrides` argument of
+`loadClientSettings()`/`reloadClientSettings()` is that slot, currently passed `nullptr`),
+`uiOverridesPath()`, and `writeFileAtomic()` (temp file in the same directory, `fchmod`,
+`fsync`, `rename`, directory `fsync`), which both options would write through.
+
+### Server: `lightmusicd --config FILE`
+
+No file is read unless `--config PATH` is given (e.g. `/etc/lightmusic/server.yaml` or
+`~/.config/lightmusic/server.yaml`). Flags override the file; `--music` and
+`--trusted-proxy` replace the file's list as a whole rather than appending to it. The same
+post-checks run on the merged result (loopback-only unless `allow_direct`, proxies must
+be IP addresses, at least one music directory). The file may be owned by you or by root
+and must not be group/world-writable, nor sit in a group/world-writable directory without
+the sticky bit; it holds no secrets, so 0644 is fine. There is **no
+hot reload** for the server: restart it (e.g. `systemctl restart`) after editing.
+
+```yaml
+# /etc/lightmusic/server.yaml
+music_dirs:                 # --music (repeatable); relative paths: to this file
+  - /srv/music
+  - /srv/more-music
+db: /var/lib/lightmusic/server.db   # --db; default $XDG_DATA_HOME/lightmusic/server.db
+listen: 127.0.0.1           # --listen
+port: 8737                  # --port (0 = ephemeral)
+trusted_proxies: [127.0.0.1] # --trusted-proxy (repeatable)
+allow_direct: false         # --allow-direct
+header_timeout: 10          # --header-timeout, seconds 1..3600
+max_conns_per_ip: 8         # --max-conns-per-ip
+threads: 16                 # --threads, 1..256
+watch: true                 # false = --no-watch
+```
+
+### Parser
+
+The system **yaml-cpp** (MIT; Fedora `yaml-cpp-devel`, Ubuntu/Debian `libyaml-cpp-dev`;
+tested with 0.8.0), found with `find_package(yaml-cpp)` and linked as the shared
+`libyaml-cpp.so`. Only `libconfig/src/yaml.cpp` sees its types. It uses the event API
+(`YAML::Parser` + `EventHandler`), not `YAML::Node`, because `Node` silently merges
+duplicate keys and resolves aliases: the events go into a flat node table that the walker
+checks itself (duplicate keys, anchors/aliases, a second document, non-scalar keys).
+yaml-cpp reports an untagged quoted or block scalar with the tag `!`; for a scalar with an
+explicit tag (`!!int "7"`) the source is inspected at the node's mark to see whether it
+is quoted. Core tags (`tag:yaml.org,2002:int`) are shown as `!!int`. Marks are 0-based
+and converted to 1-based `file:line:col`. Every yaml-cpp exception (and any
+`std::exception`) becomes a diagnostic.
+
+yaml-cpp's parser recurses once per nesting level, so input is bounded before parsing:
+files over 64 KiB and flow nesting (`[`/`{`) deeper than 32 are refused; block nesting
+(`- - - ...`) is stopped by yaml-cpp's own depth guard (500 levels, `DeepRecursion`,
+reported as "nesting too deep"); settings deeper than 16 levels are refused by the
+walker. Fuzzed for 4 x 330 s (~2.98 M inputs) under ASan/UBSan with no crash or
+sanitizer report.
+
+Measured cost (Ubuntu 24.04 container, GCC 13, RelWithDebInfo, `LM_GC_SECTIONS=ON`,
+stripped):
+
+| | no config (611dbea~1) | rapidyaml 0.10.0 (vendored) | yaml-cpp 0.8 (shared) |
+|---|---|---|---|
+| `lightmusic` | 1,183,976 | 1,691,880 | 1,343,720 |
+| `lightmusicd` | 630,160 | 1,129,880 | 769,432 |
+
+plus the 293,688-byte `libyaml-cpp.so.0.8` (shared by both executables, usually already
+installed). Peak RSS of `lightmusicd --list-keys` is ~6.6 MB without and ~6.9-7.1 MB with
+a `--config` file (rapidyaml: 6.9 MB).
+
 ## Layout
 
 ```
@@ -406,6 +594,8 @@ libplayer/              static library `lm::player` (namespace lm), no UI deps
   src/                  decoders (dr_mp3, dr_flac, opusfile, vorbisfile), miniaudio
                         output, player threads; miniaudio_impl.c / dr_impl.c are the
                         only TUs that compile the vendored implementations
+libconfig/              static library `lm::config`: YAML layers, typed schemas, file
+                        permission checks, inotify watcher (yaml-cpp)
 libnet/                 static library `lm::net`: server client (libcurl), library mirror and
                         offline cache (SQLite + sparse files), CachedStreamSource
 tools/                  lightmusic-play dev CLI

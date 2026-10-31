@@ -37,6 +37,7 @@
 // (15 ms animation thread + 20 ms stdin select timeout).
 #include "tui_logic.hpp"
 
+#include "lm/config/client.hpp"
 #include "lm/player.hpp"
 #ifdef LM_TUI_NET
 #include "lm/net/client.hpp"
@@ -270,6 +271,7 @@ struct Ui {
     std::string net; // "offline", cache usage, ... (empty without --server)
     lm::PlayerState st;
     std::string message; // last error / notice
+    bool showCacheMarkers = true;
     int selected = 0;
     bool help = false;
     // Last volume we asked for and the player has not yet confirmed. setVolume() is
@@ -313,8 +315,8 @@ Element render(const Ui &ui, int height) {
         char num[32];
         std::snprintf(num, sizeof num, "%3zu ", i + 1);
         const int cs = i < ui.cache.size() ? ui.cache[i] : -1;
-        Element mark = cs < 0 ? text("") : text(lmtui::cacheGlyph(cs, i < ui.pinned.size() && ui.pinned[i]) + " ");
-        if (cs == 2) mark = mark | color(Color::Cyan);
+        Element mark = cs < 0 || !ui.showCacheMarkers ? text("") : text(lmtui::cacheGlyph(cs, i < ui.pinned.size() && ui.pinned[i]) + " ");
+        if (cs == 2 && ui.showCacheMarkers) mark = mark | color(Color::Cyan);
         Element row = hbox({text(cur ? std::string(statusGlyph(st.status)) + " " : "  "), text(num) | dim,
                             mark, text(ui.names[i])});
         if (cur) row = row | bold | color(Color::Green);
@@ -360,7 +362,11 @@ void usage(FILE *f) {
     std::fputs("usage: lightmusic [--null] [--rg] FILE|DIR...\n"
                "       lightmusic --server URL --key-file PATH [--album ID]... [--list]\n"
                "                  [--cache-dir DIR] [--cache-max-mb N] [--no-fill] [--pause-on-metered]\n"
-               "                  [--null] [--rg] [FILE|DIR...]\n",
+               "                  [--null] [--rg] [FILE|DIR...]\n"
+               "  --config PATH  settings file (default $XDG_CONFIG_HOME/lightmusic/cfg.yaml);\n"
+               "                 command-line flags override it\n"
+               "  --no-config    ignore the settings file\n"
+               "  --no-server    do not connect to the server named in the settings file\n",
                f);
 }
 
@@ -407,13 +413,22 @@ void apply(Ui &ui, const lm::Event &ev) {
     }
 }
 
+// Hot-applies a reloaded configuration (UI thread).
+struct Live {
+    lm::config::ClientSettings running;
+    lm::config::Layer cli;
+    std::string path;
+};
+
 int run(int argc, char **argv) {
     lm::PlayerConfig cfg;
     std::vector<std::string> args;
-    std::string server, keyFile, cacheDir;
-    long cacheMaxMb = 100;
-    // Only read when built with libnet (LM_TUI_NET); still parsed so the flags are accepted.
-    [[maybe_unused]] bool noFill = false, pauseMetered = false, listOnly = false;
+    // Value flags become the "command line" configuration layer, which overrides the
+    // settings file: defaults < cfg.yaml < (ui-overrides.yaml, future) < flags.
+    Live live;
+    live.cli.name = "command line";
+    bool listOnly = false, noConfig = false, noServer = false;
+    std::string configPath;
     std::vector<std::int64_t> albumIds;
     for (int i = 1; i < argc; i++) {
         auto value = [&](const char *flag) -> const char * {
@@ -424,18 +439,15 @@ int run(int argc, char **argv) {
             return argv[++i];
         };
         if (!std::strcmp(argv[i], "--null")) cfg.nullBackend = true;
-        else if (!std::strcmp(argv[i], "--rg")) cfg.replayGain = true;
-        else if (!std::strcmp(argv[i], "--server")) server = value("--server");
-        else if (!std::strcmp(argv[i], "--key-file")) keyFile = value("--key-file");
-        else if (!std::strcmp(argv[i], "--cache-dir")) cacheDir = value("--cache-dir");
-        else if (!std::strcmp(argv[i], "--cache-max-mb")) {
-            char *end = nullptr;
-            cacheMaxMb = std::strtol(value("--cache-max-mb"), &end, 10);
-            if (!end || *end || cacheMaxMb < 1 || cacheMaxMb > (1L << 30)) {
-                std::fputs("lightmusic: --cache-max-mb needs a positive number\n", stderr);
-                return 2;
-            }
-        } else if (!std::strcmp(argv[i], "--album")) {
+        else if (!std::strcmp(argv[i], "--rg")) live.cli.set("playback.replaygain", "track");
+        else if (!std::strcmp(argv[i], "--server")) live.cli.set("server.url", value("--server"));
+        else if (!std::strcmp(argv[i], "--key-file")) live.cli.set("server.key_file", value("--key-file"));
+        else if (!std::strcmp(argv[i], "--cache-dir")) live.cli.set("cache.dir", value("--cache-dir"));
+        else if (!std::strcmp(argv[i], "--cache-max-mb")) live.cli.set("cache.max_size_mb", value("--cache-max-mb"));
+        else if (!std::strcmp(argv[i], "--config")) configPath = value("--config");
+        else if (!std::strcmp(argv[i], "--no-config")) noConfig = true;
+        else if (!std::strcmp(argv[i], "--no-server")) noServer = true;
+        else if (!std::strcmp(argv[i], "--album")) {
             char *end = nullptr;
             const long long id = std::strtoll(value("--album"), &end, 10);
             if (!end || *end || id <= 0) {
@@ -443,8 +455,8 @@ int run(int argc, char **argv) {
                 return 2;
             }
             albumIds.push_back(id);
-        } else if (!std::strcmp(argv[i], "--no-fill")) noFill = true;
-        else if (!std::strcmp(argv[i], "--pause-on-metered")) pauseMetered = true;
+        } else if (!std::strcmp(argv[i], "--no-fill")) live.cli.set("cache.background_fill", "false");
+        else if (!std::strcmp(argv[i], "--pause-on-metered")) live.cli.set("cache.pause_on_metered", "true");
         else if (!std::strcmp(argv[i], "--list")) listOnly = true;
         else if (!std::strcmp(argv[i], "-h") || !std::strcmp(argv[i], "--help")) {
             usage(stdout);
@@ -452,18 +464,40 @@ int run(int argc, char **argv) {
             return 0;
         } else args.emplace_back(argv[i]);
     }
+    if (!noConfig) live.path = configPath.empty() ? lm::config::defaultClientConfigPath() : configPath;
+    {
+        lm::config::Diags diags;
+        if (live.path.empty()) live.running = lm::config::clientSchema().resolve({&live.cli}, diags);
+        else lm::config::loadClientSettings(live.path, !configPath.empty(), nullptr, live.cli, live.running, diags);
+        for (const auto &d : diags) std::fprintf(stderr, "lightmusic: %s\n", d.str().c_str());
+        if (lm::config::hasError(diags)) return 2;
+    }
+    const lm::config::ClientSettings &set = live.running;
+    std::string server = noServer && live.cli.find("server.url") == nullptr ? std::string() : set.serverUrl;
+    const std::string keyFile = set.keyFile, cacheDir = set.cacheDir;
+    cfg.replayGain = set.replayGain != lm::config::ReplayGain::Off;
+    if (set.replayGain == lm::config::ReplayGain::Album)
+        std::fputs("lightmusic: playback.replaygain: album gain is not supported yet; using track gain\n", stderr);
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;
     if (args.empty() && server.empty()) {
         usage(stderr);
         return 2;
     }
-    if (server.empty() != keyFile.empty()) {
+    if (server.empty() != keyFile.empty() && !server.empty()) {
+        std::fputs("lightmusic: --server and --key-file go together (server.url needs server.key_file)\n", stderr);
+        return 2;
+    }
+    if (server.empty() && live.cli.find("server.key_file")) {
         std::fputs("lightmusic: --server and --key-file go together\n", stderr);
         return 2;
     }
 #ifndef LM_TUI_NET
     if (!server.empty()) {
         std::fputs("lightmusic: built without libnet (-DLM_BUILD_NET=OFF); --server unavailable\n", stderr);
+        return 2;
+    }
+    if (listOnly) {
+        std::fputs("lightmusic: built without libnet (-DLM_BUILD_NET=OFF); --list unavailable\n", stderr);
         return 2;
     }
 #endif
@@ -501,9 +535,9 @@ int run(int argc, char **argv) {
         cc.serverUrl = server;
         cc.apiKey = std::move(key);
         cc.cacheDir = cacheDir;
-        cc.cacheMaxBytes = static_cast<std::uint64_t>(cacheMaxMb) << 20;
-        cc.backgroundFill = !noFill;
-        cc.pauseOnMetered = pauseMetered;
+        cc.cacheMaxBytes = static_cast<std::uint64_t>(set.cacheMaxSizeMb) << 20;
+        cc.backgroundFill = set.backgroundFill;
+        cc.pauseOnMetered = set.pauseOnMetered;
         cc.log = [uiActive](const std::string &m) {
             if (!*uiActive) std::fprintf(stderr, "lightmusic: %s\n", m.c_str());
         };
@@ -573,6 +607,7 @@ int run(int argc, char **argv) {
     }
     std::vector<std::string> errors;
     Ui ui;
+    ui.showCacheMarkers = set.showCacheMarkers;
     if (!args.empty()) ui.paths = lmtui::collectTracks(args, &errors);
     for (const auto &e : errors) std::fprintf(stderr, "lightmusic: %s\n", e.c_str());
     for (const auto &p : ui.paths) ui.names.push_back(lmtui::displayName(p));
@@ -640,6 +675,10 @@ int run(int argc, char **argv) {
         pthread_sigmask(SIG_SETMASK, &oldMask, nullptr);
         lm::Player &player = *playerHolder;
         player.enqueue(ui.paths);
+        if (live.running.volume != 100) {
+            ui.volumeTarget = static_cast<float>(live.running.volume) / 100.0f;
+            player.setVolume(*ui.volumeTarget);
+        }
         ui.st = player.state();
         player.play();
 #ifdef LM_TUI_NET
@@ -657,6 +696,53 @@ int run(int argc, char **argv) {
             int width = 0, height = 0;
             Tty::size(width, height);
             bool running = true, dirty = true;
+            // Settings reload: inotify on the config directory, polled with the terminal
+            // and the self-pipe. Only cache cap/fill/metered and volume are hot.
+            std::optional<lm::config::FileWatcher> watcher;
+            if (!live.path.empty()) {
+                watcher.emplace(live.path);
+                if (!watcher->ok()) {
+                    ui.message = "settings reload off: " + watcher->error();
+                    watcher.reset();
+                }
+            }
+            auto reload = [&] {
+                auto r = lm::config::reloadClientSettings(live.path, nullptr, live.cli, live.running);
+                dirty = true;
+                if (!r.ok) {
+                    // Errors first; a missing/empty file (mid-save) is a warning.
+                    const lm::config::Diag *why = nullptr;
+                    for (const auto &d : r.diags)
+                        if (!why || (d.level == lm::config::Diag::Error && why->level != lm::config::Diag::Error))
+                            why = &d;
+                    if (why) ui.message = "settings not reloaded: " + why->str();
+                    return;
+                }
+                const auto &n = r.applied;
+                for (const auto &k : r.diff.hot) {
+                    if (k == "playback.volume") {
+                        ui.volumeTarget = static_cast<float>(n.volume) / 100.0f;
+                        player.setVolume(*ui.volumeTarget);
+                    }
+                }
+#ifdef LM_TUI_NET
+                if (client)
+                    client->setCacheSettings(static_cast<std::uint64_t>(n.cacheMaxSizeMb) << 20, n.backgroundFill,
+                                             n.pauseOnMetered);
+#endif
+                live.running = n;
+                std::string msg = "settings reloaded";
+                if (!r.diff.restart.empty()) {
+                    msg += "; restart required for:";
+                    for (const auto &k : r.diff.restart) msg += " " + k;
+                }
+                for (const auto &d : r.diags)
+                    if (d.level == lm::config::Diag::Warning) {
+                        msg += " (" + d.msg + ")";
+                        break;
+                    }
+                ui.message = msg;
+            };
             const int last = static_cast<int>(ui.paths.size()) - 1;
             auto select = [&](int i) { ui.selected = std::clamp(i, 0, last); };
 
@@ -735,16 +821,23 @@ int run(int argc, char **argv) {
                     Tty::put("\x1b[H" + screen.ToString());
                     dirty = false;
                 }
-                pollfd fds[2] = {{STDIN_FILENO, POLLIN, 0}, {pipeFds[0], POLLIN, 0}};
-                const int r = poll(fds, 2, parser.pending() ? 25 : -1);
+                pollfd fds[3] = {{STDIN_FILENO, POLLIN, 0}, {pipeFds[0], POLLIN, 0}, {watcher ? watcher->fd() : -1, POLLIN, 0}};
+                int timeout = parser.pending() ? 25 : -1;
+                if (watcher && watcher->timeoutMs() >= 0) // settings reload debounce
+                    timeout = timeout < 0 ? watcher->timeoutMs() : std::min(timeout, watcher->timeoutMs());
+                const int r = poll(fds, 3, timeout);
                 if (r < 0) {
                     if (errno == EINTR) continue;
                     break;
                 }
-                if (r == 0) { // escape-sequence timeout
-                    for (const auto &k : parser.flush()) handleKey(k);
+                if (r == 0) { // escape-sequence or reload-debounce timeout
+                    if (parser.pending())
+                        for (const auto &k : parser.flush()) handleKey(k);
+                    if (watcher && watcher->due()) reload();
                     continue;
                 }
+                if (fds[2].revents & POLLIN) watcher->changed();
+                if (watcher && watcher->due()) reload();
                 if (fds[1].revents & POLLIN) {
                     char drain[64];
                     while (read(pipeFds[0], drain, sizeof drain) > 0) {

@@ -2,6 +2,8 @@
 // has to produce the same struct.
 #pragma once
 
+#include "lm/config/config.hpp"
+
 #include <optional>
 #include <string>
 #include <vector>
@@ -32,5 +34,10 @@ struct Config {
 std::optional<Config> parse_args(int argc, char **argv, int &exit_code);
 
 std::string default_db_path();
+
+// Schema of the --config YAML file (keys: music_dirs, db, listen, port, trusted_proxies,
+// allow_direct, header_timeout, max_conns_per_ip, watch, threads).
+const lm::config::Schema<Config> &server_schema();
+lm::config::FilePolicy server_file_policy();
 
 }  // namespace lm::server
