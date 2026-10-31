@@ -39,6 +39,7 @@
 
 #include "lm/config/client.hpp"
 #include "lm/player.hpp"
+#include "mpris_hook.hpp"
 #ifdef LM_TUI_NET
 #include "lm/net/client.hpp"
 #endif
@@ -683,6 +684,13 @@ int run(int argc, char **argv) {
         }
         ui.st = player.state();
         player.play();
+        // MPRIS (media keys); sd-bus fd joins the poll below. Diagnostics go to the status
+        // line (stderr would corrupt the screen); shown on the next redraw.
+        bool mprisNote = false; // a diagnostic arrived: redraw
+        lmtui::MprisHook mpris(player, [&ui, &mprisNote](const std::string &m) {
+            ui.message = m;
+            mprisNote = true;
+        });
 #ifdef LM_TUI_NET
         if (client) updateFillQueue(ui, *client, -1);
         *uiActive = true;
@@ -823,16 +831,22 @@ int run(int argc, char **argv) {
                     Tty::put("\x1b[H" + screen.ToString());
                     dirty = false;
                 }
-                pollfd fds[3] = {{STDIN_FILENO, POLLIN, 0}, {pipeFds[0], POLLIN, 0}, {watcher ? watcher->fd() : -1, POLLIN, 0}};
+                pollfd fds[4] = {{STDIN_FILENO, POLLIN, 0},
+                                 {pipeFds[0], POLLIN, 0},
+                                 {watcher ? watcher->fd() : -1, POLLIN, 0},
+                                 mpris.pollFd()};
                 int timeout = parser.pending() ? 25 : -1;
                 if (watcher && watcher->timeoutMs() >= 0) // settings reload debounce
                     timeout = timeout < 0 ? watcher->timeoutMs() : std::min(timeout, watcher->timeoutMs());
-                const int r = poll(fds, 3, timeout);
+                const int r = poll(fds, 4, mpris.timeout(timeout)); // min of all; -1 when all idle
+                mpris.process();
+                if (mpris.quitRequested()) running = false;
+                if (mprisNote) mprisNote = false, dirty = true;
                 if (r < 0) {
                     if (errno == EINTR) continue;
                     break;
                 }
-                if (r == 0) { // escape-sequence or reload-debounce timeout
+                if (r == 0) { // escape-sequence, reload-debounce or sd-bus timeout
                     if (parser.pending())
                         for (const auto &k : parser.flush()) handleKey(k);
                     if (watcher && watcher->due()) reload();
@@ -846,6 +860,7 @@ int run(int argc, char **argv) {
                     }
                     for (const auto &ev : inbox.take()) {
                         apply(ui, ev);
+                        mpris.event(ev);
                         dirty = true;
 #ifdef LM_TUI_NET
                         if (client && ev.type == lm::EventType::TrackChanged) {
