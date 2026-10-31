@@ -1,0 +1,230 @@
+lightmusic bench report
+host=little-forge  date=2026-10-29T03:35:49-05:00  music_dir=~/Music/away-from-lake-of-secrets  mp3_tracks=10
+git: test/fedora-bench c82a3b3
+NOTE: machine may have other load running in parallel; steps run sequentially, builds serially (-j1).
+load (start):  03:35:49 up 3 days, 18:10,  2 users,  load average: 1.14, 0.70, 1.16
+  free -m |                total        used        free      shared  buff/cache   available
+  free -m | Mem:            7653        4028         294         756        4141        3625
+  free -m | Swap:           7652        1949        5703
+
+==== 1. environment ====
+os:      Fedora Linux 43 (Workstation Edition)
+kernel:  7.1.5-100.fc43.x86_64 x86_64
+cpu:     Intel(R) Core(TM) i5-7200U CPU @ 2.50GHz x4
+mem:     7.5 GB
+gcc:     g++ (GCC) 15.3.1 20260722 (Red Hat 15.3.1-1)
+cmake:   cmake version 3.31.11
+ninja:   1.13.1
+ffmpeg:  ffmpeg version 7.1.5 Copyright (c) 2000-2026 the FFmpeg developers
+missing
+pactl:   Server Name: PulseAudio (on PipeWire 1.4.11)
+pactl:   Server Version: 15.0.0
+pactl:   Default Sample Specification: float32le 2ch 48000Hz
+pactl:   Default Sink: bluez_output.XX_XX_XX_XX_XX_XX.1
+pw-cli:  	version: "1.4.11" 
+pw clock: clock.rate' value:'48000' clock.quantum' value:'1024' clock.min-quantum' value:'32' clock.max-quantum' value:'2048' clock.force-quantum' value:'0' clock.force-rate' value:'0' 
+pipewire --version: Compiled with libpipewire 1.4.11
+tools:   /usr/bin/time=yes script=yes playerctl=yes curl=yes bc=yes
+
+rpm -q (packages the user installed):
+  installed  gcc-c++  15.3.1-1.fc43
+  installed  cmake  3.31.11-1.fc43
+  installed  ninja-build  1.13.1-4.fc43
+  installed  pkgconf-pkg-config  2.3.0-3.fc43
+  installed  git  2.55.0-1.fc43
+  installed  time  1.9-27.fc43
+  installed  libcurl-devel  8.15.0-7.fc43
+  installed  opusfile-devel  0.12-17.fc43
+  installed  libvorbis-devel  1.3.7-13.fc43
+  installed  libogg-devel  1.3.6-2.fc43
+  installed  flac-devel  1.5.0-5.fc43
+  installed  mpg123-devel  1.32.10-2.fc43
+  installed  ncurses-devel  6.5-7.20250614.fc43
+  installed  ftxui-devel  6.1.9-1.fc43
+  installed  systemd-devel  258.11-1.fc43
+  installed  cpp-httplib-devel  0.48.0-1.fc43
+  installed  taglib-devel  1.13.1-6.fc43
+  installed  sqlite-devel  3.50.2-2.fc43
+  installed  ffmpeg-free  7.1.5-1.fc43
+  installed  playerctl  2.4.1-11.fc43
+
+pkg-config:
+  libmpg123: 1.32.10
+  opusfile: 0.12
+  vorbisfile: 1.3.7
+  ogg: 1.3.6
+  flac: 1.5.0
+  libcurl: 8.15.0
+  ncursesw: 6.5.20250614
+  libsystemd: 258
+  taglib: 1.13.1
+  sqlite3: 3.50.2
+  cpp-httplib: not-found
+  ftxui: 6.1.9
+
+==== build probes (-O2 -s) ====
+  build measure: OK  size=10 KB  compile=0.2s
+  build dec_dr: OK  size=147 KB  compile=13.3s
+  build dec_mpg123: OK  size=11 KB  compile=0.5s
+  build dec_opus: OK  size=10 KB  compile=0.5s
+  build play_full: OK  size=617 KB  compile=47.1s
+  build play_trim: OK  size=424 KB  compile=31.6s
+  (play_full = all miniaudio features/backends; play_trim = MA_NO_{ENCODING,GENERATION,ENGINE,NODE_GRAPH,RESOURCE_MANAGER,WAV} + only PulseAudio/ALSA/Null backends)
+  build nc_probe: OK  size=10 KB  compile=0.3s
+  build mpris_probe: OK  size=15 KB  compile=0.4s
+  ftxui source: system 6.1.9
+  build ftxui_probe: OK  size=348 KB  compile=3.6s
+  cpp-httplib: system /usr/include/httplib.h "0.48.0"
+  build httplib_srv: OK  size=349 KB  compile=33.5s
+  build sf_srv: OK  size=15 KB  compile=1.0s
+  build idx: OK  size=15 KB  compile=1.9s
+
+  link checks for other planned deps (tiny programs, not benchmarks):
+    libcurl: OK (8.15.0)
+    vorbisfile: FAILED ()
+    flac: OK (1.5.0)
+    ogg: OK (1.3.6)
+
+==== 2a. audio: decode-only throughput (dr_mp3 vs libmpg123) ====
+per track: decoder  x_realtime  decode_s  frames  peak_rss  (frames differ when mpg123 trims encoder delay/padding)
+  away from - lake of secrets - 01 dreamy visions.mp3  (4211 KB)
+    dec_dr     x333  0.392s  frames=5758942 rate=44100 audio=130.59s | wall=0.390 user=0.36 sys=0.00 maxrss_kb=4044 cpu_pct=92.3 exit=0 [time -v]
+    dec_mpg123 x336  0.388s  frames=5758942 rate=44100 audio=130.59s | wall=0.390 user=0.36 sys=0.01 maxrss_kb=4832 cpu_pct=94.9 exit=0 [time -v]
+  away from - lake of secrets - 02 shimmering light.mp3  (3459 KB)
+    dec_dr     x348  0.331s  frames=5080320 rate=44100 audio=115.20s | wall=0.330 user=0.31 sys=0.00 maxrss_kb=4188 cpu_pct=93.9 exit=0 [time -v]
+    dec_mpg123 x381  0.302s  frames=5080320 rate=44100 audio=115.20s | wall=0.300 user=0.28 sys=0.01 maxrss_kb=4648 cpu_pct=96.7 exit=0 [time -v]
+  away from - lake of secrets - 03 lake of secrets.mp3  (4932 KB)
+    dec_dr     x368  0.443s  frames=7197120 rate=44100 audio=163.20s | wall=0.440 user=0.41 sys=0.00 maxrss_kb=4188 cpu_pct=93.2 exit=0 [time -v]
+    dec_mpg123 x351  0.466s  frames=7197120 rate=44100 audio=163.20s | wall=0.470 user=0.41 sys=0.03 maxrss_kb=4828 cpu_pct=93.6 exit=0 [time -v]
+  away from - lake of secrets - 04 heavier eyes.mp3  (3499 KB)
+    dec_dr     x381  0.394s  frames=6615000 rate=44100 audio=150.00s | wall=0.400 user=0.37 sys=0.00 maxrss_kb=3916 cpu_pct=92.5 exit=0 [time -v]
+    dec_mpg123 x437  0.344s  frames=6615000 rate=44100 audio=150.00s | wall=0.340 user=0.30 sys=0.01 maxrss_kb=4584 cpu_pct=91.2 exit=0 [time -v]
+  away from - lake of secrets - 05 dissonant dreams.mp3  (2642 KB)
+    dec_dr     x362  0.289s  frames=4618473 rate=44100 audio=104.73s | wall=0.290 user=0.26 sys=0.00 maxrss_kb=4060 cpu_pct=89.7 exit=0 [time -v]
+    dec_mpg123 x419  0.250s  frames=4618473 rate=44100 audio=104.73s | wall=0.250 user=0.23 sys=0.01 maxrss_kb=4648 cpu_pct=96.0 exit=0 [time -v]
+  away from - lake of secrets - 06 in sequence.mp3  (3258 KB)
+    dec_dr     x398  0.297s  frames=5210585 rate=44100 audio=118.15s | wall=0.300 user=0.28 sys=0.00 maxrss_kb=3892 cpu_pct=93.3 exit=0 [time -v]
+    dec_mpg123 x415  0.285s  frames=5210585 rate=44100 audio=118.15s | wall=0.280 user=0.26 sys=0.01 maxrss_kb=4764 cpu_pct=96.4 exit=0 [time -v]
+  away from - lake of secrets - 07 pulse.mp3  (2541 KB)
+    dec_dr     x366  0.243s  frames=3920000 rate=44100 audio=88.89s | wall=0.240 user=0.22 sys=0.00 maxrss_kb=4060 cpu_pct=91.7 exit=0 [time -v]
+    dec_mpg123 x374  0.238s  frames=3920000 rate=44100 audio=88.89s | wall=0.240 user=0.21 sys=0.01 maxrss_kb=4656 cpu_pct=91.7 exit=0 [time -v]
+  away from - lake of secrets - 08 half-remembered.mp3  (2881 KB)
+    dec_dr     x372  0.317s  frames=5205246 rate=44100 audio=118.03s | wall=0.320 user=0.29 sys=0.00 maxrss_kb=4040 cpu_pct=90.6 exit=0 [time -v]
+    dec_mpg123 x432  0.273s  frames=5205246 rate=44100 audio=118.03s | wall=0.270 user=0.24 sys=0.02 maxrss_kb=4820 cpu_pct=96.3 exit=0 [time -v]
+  away from - lake of secrets - 09 afternoon doze.mp3  (2968 KB)
+    dec_dr     x357  0.337s  frames=5292000 rate=44100 audio=120.00s | wall=0.340 user=0.31 sys=0.00 maxrss_kb=3916 cpu_pct=91.2 exit=0 [time -v]
+    dec_mpg123 x427  0.281s  frames=5292000 rate=44100 audio=120.00s | wall=0.280 user=0.25 sys=0.02 maxrss_kb=4664 cpu_pct=96.4 exit=0 [time -v]
+  away from - lake of secrets - 10 blurred.mp3  (3842 KB)
+    dec_dr     x389  0.361s  frames=6204414 rate=44100 audio=140.69s | wall=0.360 user=0.33 sys=0.00 maxrss_kb=4060 cpu_pct=91.7 exit=0 [time -v]
+    dec_mpg123 x439  0.321s  frames=6204414 rate=44100 audio=140.69s | wall=0.320 user=0.29 sys=0.01 maxrss_kb=4752 cpu_pct=93.8 exit=0 [time -v]
+  TOTAL audio=1249.48s  dr_mp3 decode=3.404s  mpg123 decode=3.148s
+  TOTAL dr_mp3 x367  realtime
+  TOTAL mpg123 x396  realtime
+
+==== 2b. audio: real playback through default device ====
+track: away from - lake of secrets - 01 dreamy visions.mp3  (volume scaled x0.3)
+  play_trim, 10s:
+    build=trim miniaudio=0.11.21
+    backend=PulseAudio null_fallback=0 device="Built-in Audio Analog Stereo"
+    file_rate=44100 device_rate=44100 internal_rate=44100 internal_format=32-bit Signed Integer internal_channels=2 period_frames=826 periods=4 period_ms=18.7 buffer_latency_ms=74.9
+    seg0 length_frames=5762304 play_from=0 play_to=441000
+    played_frames=441000 played_s=10.00 wall_s=10.06 callbacks=535 max_callback_gap_ms=90.2 underruns=0 underrun_frames=0 finished=1
+    process: wall=10.150 user=0.18 sys=0.15 maxrss_kb=7668 cpu_pct=3.3 exit=0 [time -v]
+  play_full, 4s:
+    build=full miniaudio=0.11.21
+    backend=PulseAudio null_fallback=0 device="Built-in Audio Analog Stereo"
+    file_rate=44100 device_rate=44100 internal_rate=44100 internal_format=32-bit Signed Integer internal_channels=2 period_frames=826 periods=4 period_ms=18.7 buffer_latency_ms=74.9
+    seg0 length_frames=5762304 play_from=0 play_to=176400
+    played_frames=176400 played_s=4.00 wall_s=3.99 callbacks=214 max_callback_gap_ms=23.7 underruns=0 underrun_frames=0 finished=1
+    process: wall=4.110 user=0.08 sys=0.07 maxrss_kb=8052 cpu_pct=3.6 exit=0 [time -v]
+
+==== 2c. audio: gapless transition N -> N+1 ====
+last 3 s of 'away from - lake of secrets - 01 dreamy visions.mp3' -> first 3 s of 'away from - lake of secrets - 02 shimmering light.mp3', one device, one 0.5 s ring
+  (boundary_underrun_frames = silence inserted by the ring at the join (pipeline gap);
+   tail/head_zero_frames = digital silence decoded at the join (encoder delay/padding not trimmed, or real silence in the music))
+    build=trim miniaudio=0.11.21
+    backend=PulseAudio null_fallback=0 device="Built-in Audio Analog Stereo"
+    file_rate=44100 device_rate=44100 internal_rate=44100 internal_format=32-bit Signed Integer internal_channels=2 period_frames=826 periods=4 period_ms=18.7 buffer_latency_ms=74.9
+    seg0 length_frames=5762304 play_from=5630004 play_to=5762304
+    seg1 length_frames=5082624 play_from=0 play_to=132300
+    played_frames=264600 played_s=6.00 wall_s=5.99 callbacks=321 max_callback_gap_ms=24.2 underruns=0 underrun_frames=0 finished=1
+    gapless boundary_frame=132300 decodedA=132300 decodedB=132300 boundary_underrun_frames=0 tail_zero_frames_A=986 head_zero_frames_B=1331 decoded_silence_at_join_ms=52.5 sample_jump_L=0.0000 sample_jump_R=0.0000
+    process: wall=6.430 user=0.45 sys=0.11 maxrss_kb=7888 cpu_pct=8.7 exit=0 [time -v]
+  PASS no pipeline gap at track boundary
+  track A length: dr_mp3=5758942 frames, mpg123(gapless)=5758942 frames, diff=0; compare with seg0 length_frames above (miniaudio ma_decoder length; excess = untrimmed delay/padding)
+
+==== 2d. audio: FLAC/Opus conversion + decode ====
+source: away from - lake of secrets - 01 dreamy visions.mp3 (4211 KB)
+  ffmpeg -> FLAC: 18662 KB | wall=1.530 user=1.99 sys=0.19 maxrss_kb=73564 cpu_pct=142.5 exit=0 [time -v]
+  ffmpeg -> Opus 128k: 2370 KB | wall=3.710 user=4.78 sys=0.40 maxrss_kb=71896 cpu_pct=139.6 exit=0 [time -v]
+  dr_flac decode: frames=5758942 rate=44100 ch=2 audio_s=130.59 decode_s=0.333 x_realtime=392 | wall=0.330 user=0.32 sys=0.00 maxrss_kb=4148 cpu_pct=97.0 exit=0 [time -v]
+  opusfile decode: frames=6268237 rate=48000 ch=2 audio_s=130.59 decode_s=1.020 x_realtime=128 | wall=1.020 user=0.99 sys=0.00 maxrss_kb=4832 cpu_pct=97.1 exit=0 [time -v]
+  reference ffmpeg MP3 -> null: wall=0.970 user=1.12 sys=0.24 maxrss_kb=71624 cpu_pct=140.2 exit=0 [time -v]
+
+==== 3a. UI: ncurses / FTXUI idle in a pty ====
+  ncurses      size=10 KB  rss=4664 kB  idle_cpu_ticks_5s=0 (CLK_TCK=100, 0% cpu)  shared_libs=8
+  ftxui        size=348 KB  rss=4404 kB  idle_cpu_ticks_5s=3 (CLK_TCK=100, .60% cpu)  shared_libs=6
+
+==== 3b. UI: MPRIS (sd-bus) + playerctl ====
+  mpris_probe size=15 KB  (not in a pty; blocks in sd_bus_wait)
+  idle 5 s: cpu_ticks=0 (CLK_TCK=100) rss=4904 kB  shared_libs=8
+  playerctl -l: lightmusic_bench 
+  PASS playerctl lists lightmusic_bench
+  playerctl play-pause rc=0
+  playerctl status -> Playing
+  PASS PlayPause reached the probe
+
+==== 4a. server: cpp-httplib vs sendfile, 10 concurrent Range downloads ====
+  httplib source: system /usr/include/httplib.h "0.48.0"
+  generated ~/.cache/lightmusic-bench/run.04eqTt/media/big.bin (100 MB, /dev/urandom)
+  cpp-httplib: binary=349 KB  idle_rss=9004 kB  threads_idle=17
+    PASS 206 for bytes=1000-1999 (got 206)
+    PASS Content-Range header (Content-Range: bytes 1000-1999/104857600)
+    PASS body bytes 1000-1999 match file
+    PASS last 100 bytes match
+    PASS open-ended bytes=52428800- -> '206 52428800'
+    PASS suffix range bytes=-500
+    PASS no Range -> 200 full body ('200 104857600')
+    PASS 10/10 concurrent downloads complete with 206 + full size (got 10)
+    10 x 100 MB in 0.88s => 1132 MB/s ; peak_rss=9428 kB ; server_cpu=.91 s ; threads_after=17
+  sendfile: binary=15 KB  idle_rss=3956 kB  threads_idle=1
+    PASS 206 for bytes=1000-1999 (got 206)
+    PASS Content-Range header (Content-Range: bytes 1000-1999/104857600)
+    PASS body bytes 1000-1999 match file
+    PASS last 100 bytes match
+    PASS open-ended bytes=52428800- -> '206 52428800'
+    INFO suffix range bytes=-500 unsupported/incorrect -> '206 0' (prototype limitation)
+    PASS no Range -> 200 full body ('200 104857600')
+    PASS 10/10 concurrent downloads complete with 206 + full size (got 10)
+    10 x 100 MB in 0.69s => 1441 MB/s ; peak_rss=4140 kB ; server_cpu=.18 s ; threads_after=1
+
+==== 4b. server: TagLib + SQLite index of music dir ====
+  music dir: 11 files, 35M (read-only)
+  cold-ish (after posix_fadvise DONTNEED): files=10 ms=65.6 files_per_s=152 taglib=1.13 sqlite=3.50.2 | wall=0.080 user=0.00 sys=0.01 maxrss_kb=7012 cpu_pct=12.5 exit=0 [time -v]
+  warm #1: files=10 ms=7.2 files_per_s=1380 taglib=1.13 sqlite=3.50.2 | wall=0.020 user=0.00 sys=0.00 maxrss_kb=6984 cpu_pct=0.0 exit=0 [time -v]
+  warm #2: files=10 ms=5.3 files_per_s=1882 taglib=1.13 sqlite=3.50.2 | wall=0.020 user=0.00 sys=0.01 maxrss_kb=6948 cpu_pct=50.0 exit=0 [time -v]
+  warm #3: files=10 ms=6.2 files_per_s=1611 taglib=1.13 sqlite=3.50.2 | wall=0.020 user=0.00 sys=0.00 maxrss_kb=6904 cpu_pct=0.0 exit=0 [time -v]
+  rows in db: 10
+
+==== summary ====
+  OK      1. environment (4 s)
+  OK      build probes (-O2 -s) (137 s)
+  OK      2a. audio: decode-only throughput (dr_mp3 vs libmpg123) (8 s)
+  OK      2b. audio: real playback through default device (14 s)
+  OK      2c. audio: gapless transition N -> N+1 (7 s)
+  OK      2d. audio: FLAC/Opus conversion + decode (8 s)
+  OK      3a. UI: ncurses / FTXUI idle in a pty (24 s)
+  OK      3b. UI: MPRIS (sd-bus) + playerctl (6 s)
+  OK      4a. server: cpp-httplib vs sendfile, 10 concurrent Range downloads (4 s)
+  OK      4b. server: TagLib + SQLite index of music dir (0 s)
+load (end):  03:39:22 up 3 days, 18:13,  2 users,  load average: 5.08, 2.40, 1.72
+  free -m |                total        used        free      shared  buff/cache   available
+  free -m | Mem:            7653        4201         280         754        4043        3452
+  free -m | Swap:           7652        1879        5773
+  total runtime: 213 s
+report: ~/projects/lightmusic-wt/test-fedora-bench/bench/results/report-little-forge-20261029-033549.txt
+
+==== post-run note (added by hand after the run) ====
+  The "vorbisfile: FAILED ()" link check above is a probe bug, not a missing library: the test program
+  called ov_clear() on an uninitialized OggVorbis_File, which aborts at runtime (free(): invalid pointer, rc=134).
+  bench/run.sh now uses ov_clear(nullptr). Rebuilt standalone against the same system libvorbisfile: links and exits 0.

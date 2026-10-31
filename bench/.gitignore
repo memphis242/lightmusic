@@ -1,0 +1,9 @@
+build/
+*.o
+*.mp3
+*.flac
+*.opus
+*.wav
+*.db
+*.db-*
+*.bin
