@@ -58,6 +58,9 @@ struct ClientConfig {
     long stallTimeoutSec = 20;   // transfers below 1 B/s this long are aborted
     std::size_t commitBytes = 256 * 1024; // batch: fdatasync + SQLite every 256 KiB ...
     int commitMs = 1000;                  // ... or 1 s, whichever first
+    // After setCacheSettings() lowers the cap, eviction down to it waits this long and
+    // for the network to be idle (new entries respect the lower cap at once).
+    int capTrimDelayMs = 2000;
     // A playback fetch already running at most this far before the read position is
     // kept; otherwise it is cancelled and restarted at the read position.
     std::uint64_t seekRestartBytes = 512 * 1024;
@@ -124,6 +127,12 @@ public:
     // Tracks to fill in the background next (e.g. the next few in the play queue);
     // replaces the previous list.
     void setFillQueue(std::vector<std::int64_t> trackIds);
+    // Hot reload (any thread): cache cap, idle fill and its metered pause. A smaller cap
+    // applies to new entries at once; existing unpinned, unused entries are evicted down
+    // to it lazily (capTrimDelayMs later, when no download runs; raising the cap again
+    // before then evicts nothing). Turning the fill off stops a running idle fetch that
+    // no reader uses. No-op after shutdown.
+    void setCacheSettings(std::uint64_t capBytes, bool backgroundFill, bool pauseOnMetered);
 
     // A ByteSource for the track (cache first, network for holes). Blocking reads;
     // decoder thread only. nullptr with *err if the track is unknown.

@@ -402,6 +402,58 @@ void idleFill() {
     fs::remove_all(dir);
 }
 
+// ------------------------------------------------------------------ hot settings
+
+// Client::setCacheSettings (cfg.yaml reload): fill on/off; a cap shrink evicts lazily
+// (capTrimDelayMs later, when idle), and not at all if the cap is raised again first.
+void hotSettings() {
+    FakeServer srv;
+    std::vector<std::string> data;
+    for (int i = 1; i <= 3; i++) {
+        data.push_back(FakeServer::randomBytes(300000, unsigned(40 + i)));
+        srv.setTrack(i, data.back(), "\"h" + std::to_string(i) + "\"");
+    }
+    const std::string dir = tempDir("hot");
+    auto cfg = baseCfg(srv.url(), dir);
+    cfg.cacheMaxBytes = 1000000;
+    cfg.backgroundFill = false;
+    cfg.capTrimDelayMs = 300;
+    auto c = open(cfg);
+    CHECK(c && syncOk(*c));
+    if (!c) return;
+    auto state = [&](int id) { return c->cacheInfo(id).state; };
+    c->setFillQueue({1, 2});
+    std::this_thread::sleep_for(300ms);
+    CHECK(state(1) == CacheState::Remote); // fill off
+    c->setCacheSettings(1000000, true, false);
+    CHECK(waitUntil([&] { return state(1) == CacheState::Cached && state(2) == CacheState::Cached; }, 5s));
+    CHECK(c->stats().usage == 600000);
+    // A transient shrink (e.g. an editor's half-written file) undone within the delay
+    // evicts nothing.
+    c->setCacheSettings(400000, false, false);
+    CHECK(c->stats().cap == 400000);
+    CHECK(c->stats().usage == 600000); // not at once
+    c->setCacheSettings(1000000, false, false);
+    std::this_thread::sleep_for(600ms);
+    CHECK(c->stats().usage == 600000);
+    CHECK(state(1) == CacheState::Cached && state(2) == CacheState::Cached);
+    c->setCacheSettings(400000, false, false); // a real shrink: evicts after the delay
+    CHECK(c->stats().cap == 400000);
+    CHECK(waitUntil([&] { return c->stats().usage <= 400000; }, 3s));
+    CHECK(state(1) == CacheState::Remote || state(2) == CacheState::Remote);
+    // Turning the fill off stops a running idle fetch.
+    srv.bytesPerSec = 100000;
+    c->setCacheSettings(1000000, true, false);
+    c->setFillQueue({3});
+    CHECK(waitUntil([&] { return c->stats().idleFillActive; }, 3s));
+    c->setCacheSettings(1000000, false, false);
+    CHECK(waitUntil([&] { return !c->stats().idleFillActive; }, 3s));
+    std::this_thread::sleep_for(300ms);
+    CHECK(state(3) != CacheState::Cached);
+    c.reset();
+    fs::remove_all(dir);
+}
+
 // ------------------------------------------------------------------ timeouts / errors
 
 void timeoutsAndErrors() {
@@ -820,6 +872,7 @@ int main(int argc, char **argv) {
         {"ignorerange", ignoreRange},    {"truncated", truncatedResponses}, {"wrongtotal", wrongTotal},
         {"orphan", orphanedIdle},        {"novalidator", noValidator},      {"adopt", adoptFinal},
         {"pincap", pinCapOnInvalidation}, {"loopback", loopbackWarning},
+        {"hot", hotSettings},
     };
     for (auto &[name, fn] : tests) {
         if (!only.empty() && only != name) continue;

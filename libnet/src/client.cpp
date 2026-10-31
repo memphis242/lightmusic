@@ -231,6 +231,11 @@ struct Entry {
 struct Client::Core : std::enable_shared_from_this<Client::Core> {
     ~Core() { shutdown(); }
     ClientConfig cfg;
+    // Hot-reloadable settings (Client::setCacheSettings, any thread); the matching cfg
+    // fields are only the initial values.
+    std::atomic<std::uint64_t> capBytes{0};
+    std::atomic<bool> fillOn{true}, pauseMetered{false};
+    std::int64_t cap() const { return static_cast<std::int64_t>(capBytes.load()); }
     std::string base; // server URL without trailing '/'
     std::string tracksDir;
     ClientDb db;
@@ -255,6 +260,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     std::map<std::int64_t, Clock::time_point> fillBackoff;
     std::optional<bool> metered;
     Clock::time_point meteredAt{};
+    std::optional<Clock::time_point> trimAt; // pending lazy eviction after a cap shrink
     bool meteredLogged = false;
 
     void log(const std::string &s) {
@@ -290,16 +296,16 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     // Evicts LRU unpinned, unused entries until `need` more bytes fit. cm held.
     bool makeRoomLocked(std::int64_t need, std::int64_t exclude) {
         std::int64_t usage = db.usage();
-        const auto cap = static_cast<std::int64_t>(cfg.cacheMaxBytes);
-        if (usage + need <= cap) return true;
+        const auto limit = cap();
+        if (usage + need <= limit) return true;
         for (const auto &row : db.entries()) { // oldest access first
-            if (usage + need <= cap) break;
+            if (usage + need <= limit) break;
             if (row.pinned || row.trackId == exclude || isLiveLocked(row.trackId)) continue;
             log("cache: evicting track " + std::to_string(row.trackId));
             removeEntryLocked(row.trackId);
             usage -= row.size;
         }
-        return usage + need <= cap;
+        return usage + need <= limit;
     }
 
     enum class Purpose { Playback, Fill };
@@ -415,7 +421,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             log("cache: track " + std::to_string(id) + " has no strong ETag; unpinned");
             return false;
         }
-        if (db.pinnedUsage() + size > static_cast<std::int64_t>(cfg.cacheMaxBytes)) {
+        if (db.pinnedUsage() + size > cap()) {
             log("cache: track " + std::to_string(id) + " grew past the pin cap; unpinned");
             return false;
         }
@@ -951,8 +957,8 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             cancelIdle();
             return;
         }
-        if (!cfg.backgroundFill) return;
-        if (cfg.pauseOnMetered && !idleFillAllowed(true, true, meteredNow())) {
+        if (!fillOn.load()) return;
+        if (pauseMetered.load() && !idleFillAllowed(true, true, meteredNow())) {
             cancelIdle();
             return;
         }
@@ -986,10 +992,21 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             else want(due);
         }
         schedule();
+        if (trimAt) {
+            if (now < *trimAt) {
+                want(*trimAt);
+            } else if (playbackFetches == 0 && !idleEntry) {
+                trimAt.reset();
+                std::lock_guard lk(cm);
+                makeRoomLocked(0, -1); // down to the current cap (pinned/in-use entries stay)
+            } else {
+                want(now + std::chrono::milliseconds(250)); // busy: try again shortly
+            }
+        }
         for (auto &[id, e] : reading)
             if (e->retryAt > now) want(e->retryAt);
-        if (!idleEntry && playbackFetches == 0 && cfg.backgroundFill && fillPending()) {
-            if (cfg.pauseOnMetered) want(now + std::chrono::milliseconds(cfg.meteredCheckMs));
+        if (!idleEntry && playbackFetches == 0 && fillOn.load() && fillPending()) {
+            if (pauseMetered.load()) want(now + std::chrono::milliseconds(cfg.meteredCheckMs));
             for (auto &[id, t] : fillBackoff) want(t);
         }
         return next;
@@ -1025,7 +1042,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             }
             if (readers == 0) {
                 reading.erase(e->id);
-                if (!cfg.backgroundFill && idleEntry == e) cancelFetch(e);
+                if (!fillOn.load() && idleEntry == e) cancelFetch(e);
             }
             setFlags();
             schedule();
@@ -1236,6 +1253,9 @@ std::unique_ptr<Client> Client::open(ClientConfig cfg, std::string *err) {
     nc.connectTimeoutSec = cfg.connectTimeoutSec;
     nc.stallTimeoutSec = cfg.stallTimeoutSec;
     nc.log = cfg.log;
+    core->capBytes = cfg.cacheMaxBytes;
+    core->fillOn = cfg.backgroundFill;
+    core->pauseMetered = cfg.pauseOnMetered;
     core->cfg = std::move(cfg);
     nc.tick = [c = core.get()] { return c->tick(); };
     core->net = std::make_unique<NetThread>(nc);
@@ -1352,7 +1372,7 @@ CacheStats Client::stats() {
     CacheStats s;
     s.usage = core_->db.usage();
     s.pinned = core_->db.pinnedUsage();
-    s.cap = core_->cfg.cacheMaxBytes;
+    s.cap = core_->capBytes.load();
     s.entries = core_->db.entries().size();
     s.downloaded = core_->downloaded.load();
     s.idleFillActive = core_->idleActiveFlag.load();
@@ -1377,10 +1397,10 @@ bool Client::pin(std::int64_t id, bool pinned, std::string *err) {
                 return false;
             }
             const std::int64_t add = row ? row->size : t->size;
-            if (c.db.pinnedUsage() + add > static_cast<std::int64_t>(c.cfg.cacheMaxBytes)) {
+            if (c.db.pinnedUsage() + add > c.cap()) {
                 if (err)
                     *err = "cannot pin: pinned tracks would exceed the cache cap (" +
-                           std::to_string(c.cfg.cacheMaxBytes >> 20) + " MB)";
+                           std::to_string(c.capBytes.load() >> 20) + " MB)";
                 return false;
             }
             if (!row) {
@@ -1400,6 +1420,24 @@ bool Client::pin(std::int64_t id, bool pinned, std::string *err) {
     if (!c.stopping) c.net->post([] {});
     c.changed();
     return true;
+}
+
+void Client::setCacheSettings(std::uint64_t capBytes, bool backgroundFill, bool pauseOnMetered) {
+    auto &c = *core_;
+    if (c.stopping) return;
+    const bool shrink = capBytes < c.capBytes.exchange(capBytes);
+    c.fillOn = backgroundFill;
+    c.pauseMetered = pauseOnMetered;
+    // NetThread::post() is a no-op once the loop is stopping (checked under its lock), and
+    // functions it settles during shutdown see `stopping` and do nothing.
+    c.net->post([w = std::weak_ptr<Core>(core_), shrink] {
+        auto core = w.lock();
+        if (!core || core->stopping) return;
+        if (shrink) core->trimAt = Clock::now() + std::chrono::milliseconds(core->cfg.capTrimDelayMs);
+        if (!core->fillOn.load() && core->idleEntry && !core->reading.count(core->idleEntry->id)) core->cancelIdle();
+        core->schedule();
+    });
+    c.changed();
 }
 
 void Client::setFillQueue(std::vector<std::int64_t> ids) {

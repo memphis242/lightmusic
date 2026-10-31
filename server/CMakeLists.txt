@@ -33,11 +33,12 @@ add_library(lm_server_core STATIC
 add_library(lm::server_core ALIAS lm_server_core)
 target_include_directories(lm_server_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(lm_server_core
-  PUBLIC PkgConfig::SQLITE3 Threads::Threads
+  PUBLIC PkgConfig::SQLITE3 Threads::Threads lm::config
   PRIVATE lm_warnings PkgConfig::TAGLIB)
 
 # api.cpp is the only TU that includes httplib.h (slow to compile).
 add_executable(lightmusicd src/main.cpp src/api.cpp)
+lm_release_link_options(lightmusicd)
 target_link_libraries(lightmusicd PRIVATE lm_server_core lm_httplib lm_warnings PkgConfig::TAGLIB)
 install(TARGETS lightmusicd RUNTIME DESTINATION bin)
 

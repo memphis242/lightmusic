@@ -14,6 +14,11 @@ gen 440 20 "-c:a flac" "$TMP/music/cd1/2 Second.flac"
 gen 550 20 "-c:a libvorbis" "$TMP/music/cd1/10 Tenth.ogg"
 gen 660 20 "-c:a libopus" "$TMP/music/1 First.opus"
 echo "not audio" > "$TMP/music/notes.txt"
+# Hermetic settings: cfg.yaml in a temp XDG_CONFIG_HOME (start volume 50%).
+export XDG_CONFIG_HOME="$TMP/xdg"
+mkdir -p "$XDG_CONFIG_HOME/lightmusic"
+CFG="$XDG_CONFIG_HOME/lightmusic/cfg.yaml"
+printf 'playback:\n  volume: 50\n' > "$CFG"; chmod 600 "$CFG"
 
 # Sanitizer reports go to files (the pty log would mix them with screen output and an
 # exit-status check alone misses non-fatal reports).
@@ -55,6 +60,11 @@ keys() {
         printf "$k"; sleep 0.1
     done
     wait_for "Paused"
+    # Live reload of cfg.yaml: volume is hot, replaygain needs a restart.
+    printf 'playback:\n  volume: 30\n  replaygain: track\n' > "$CFG.new"; chmod 600 "$CFG.new"
+    mv "$CFG.new" "$CFG"
+    wait_for "restart required for: playback.replaygain"
+    wait_for "vol  30%"
     c=$(count "$ESC\\[?1049h")
     printf '\032'
     wait_more "$ESC\\[?1049h" "$c"
@@ -69,7 +79,7 @@ if [ $rc -ne 0 ]; then
     echo "FAIL: exit status $rc"; cat -v "$TMP/log" | tail -c 2000; exit 1
 fi
 fail=0
-for want in "1 First" "2 Second" "10 Tenth" "Playing" "Paused" "vol"; do
+for want in "1 First" "2 Second" "10 Tenth" "Playing" "Paused" "vol  50%" "vol  30%" "settings reloaded"; do
     grep -q "$want" "$TMP/log" || { echo "FAIL: '$want' never shown"; fail=1; }
 done
 grep -q "$(printf '\033')\\[?1049l" "$TMP/log" || { echo "FAIL: terminal not restored"; fail=1; }
@@ -99,5 +109,13 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (FIFO run)"; cat "$f"; fail=1
 done
+# A group-writable cfg.yaml is refused before the terminal is touched.
+chmod 620 "$CFG"
+out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?
+[ $rc -eq 2 ] && echo "$out" | grep -q "group/world-writable" || { echo "FAIL: writable cfg.yaml not refused (rc $rc): $out"; fail=1; }
+chmod 600 "$CFG"
+printf 'server:\n  url: http://x\n  api_key: k\n' > "$CFG"
+out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?
+[ $rc -eq 2 ] && echo "$out" | grep -q "cfg.yaml:3:3: error: the API key must not be stored" || { echo "FAIL: api_key not refused (rc $rc): $out"; fail=1; }
 [ $fail -eq 0 ] && echo "test_tui_smoke: OK"
 exit $fail
