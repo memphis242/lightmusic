@@ -31,7 +31,8 @@ no audio `-devel` package is needed. On Ubuntu/Debian the packages are
 `libopusfile-dev libvorbis-dev libogg-dev libcurl4-openssl-dev libsqlite3-dev libsystemd-dev libyaml-cpp-dev
 ffmpeg`. `libcurl-devel`/`sqlite-devel` are needed for `libnet` (`-DLM_BUILD_NET=OFF`
 skips it and the TUI's `--server`); `systemd-devel` is optional (sd-bus, for metered-network
-detection; without it networks count as unmetered, `-DLM_WITH_SDBUS=OFF` forces that).
+detection, and for MPRIS media-key support in the TUI; without it networks count as
+unmetered and MPRIS is left out, `-DLM_WITH_SDBUS=OFF` / `-DLM_BUILD_MPRIS=OFF` force that).
 
 The TUI needs FTXUI >= 6 (Fedora's `ftxui-devel` is 6.1.9). Where no package exists
 (e.g. Ubuntu), `-DLM_FETCH_FTXUI=ON` fetches v6.1.9 at configure time (network) and links
@@ -145,6 +146,14 @@ ctest --test-dir build --output-on-failure
   `cfg.yaml`'s volume applied at start, a live edit (volume hot-applied, replaygain
   reported as restart-required), and a group-writable file / an `api_key` refused.
   Skipped without `script` or `ffmpeg`.
+- `test_mpris` (under `dbus-run-session`): libmpris driven by an sd-bus client and
+  `playerctl` (if installed): properties and metadata, Play/Pause/PlayPause/Next/Previous,
+  Seek and SetPosition (stale trackid or out-of-range position ignored), Volume write,
+  PropertiesChanged (never for Position) and Seeked signals, `.instance<pid>` fallback
+  name, Quit. Skipped without `dbus-run-session` or `ffmpeg`.
+- `test_tui_mpris`: the TUI in a pty on a private bus, controlled with busctl/playerctl;
+  while paused its main thread must make no context switches and use no CPU ticks over
+  5 s; MediaPlayer2.Quit must exit cleanly and restore the terminal.
 - `test_range_set`: cache range sets: merge, split, holes, serialisation, random ops
   against a bitmap model.
 - `test_cache` (in-process fake server, `tests/fake_server.hpp`): SIGKILL a downloading
@@ -339,6 +348,33 @@ RelWithDebInfo binary 581 KB): idle RSS 7.2 MB, 0 CPU ticks over 5 s idle; 10 co
 response: cpp-httplib's content-provider API does not expose the socket, so `sendfile`
 is not possible without bypassing it (the research bench measured `sendfile` at ~1/4 of
 the CPU; an option if a small host ever needs it).
+
+## MPRIS (media keys, desktop widgets, playerctl)
+
+The TUI publishes itself on the D-Bus session bus as `org.mpris.MediaPlayer2.lightmusic`
+(`...lightmusic.instance<pid>` when another lightmusic already holds the name), so
+keyboard media keys, the GNOME/KDE media widgets and `playerctl` control it. Built when
+`libsystemd` is found (Fedora: `sudo dnf install systemd-devel`; Debian/Ubuntu:
+`libsystemd-dev`); `-DLM_BUILD_MPRIS=OFF` disables it. `LIGHTMUSIC_NO_MPRIS=1` turns it off
+at run time; without a session bus the TUI simply runs without it.
+
+```sh
+playerctl -p lightmusic status            # Playing / Paused / Stopped
+playerctl -p lightmusic metadata          # title, artist, album, length, trackid
+playerctl -p lightmusic play-pause        # also: play, pause, stop, next, previous
+playerctl -p lightmusic position 30       # seek to 0:30 (position 5+ / 5- is relative)
+playerctl -p lightmusic volume 0.5        # 1.0 = normal (the player's 0..2 range)
+playerctl -p lightmusic metadata --follow # watch track changes
+busctl --user introspect org.mpris.MediaPlayer2.lightmusic /org/mpris/MediaPlayer2
+```
+
+Supported: `org.mpris.MediaPlayer2` (Identity, Quit — exits the TUI cleanly, Raise is a
+no-op with CanRaise=false, no TrackList) and `org.mpris.MediaPlayer2.Player` (Play, Pause,
+PlayPause, Stop, Next, Previous, Seek, SetPosition, PlaybackStatus, Metadata, Position,
+Volume, Rate fixed at 1.0, Can*). `OpenUri` is not supported. PropertiesChanged is sent for
+status, track and volume changes (not Position, per the spec) and `Seeked` after seeks.
+`libmpris` (`frontends/mpris/`) uses sd-bus directly with no thread or timer of its own:
+the sd-bus fd joins the TUI's `poll()` loop, so a paused player still makes zero wakeups.
 
 ## Streaming and offline cache (client)
 
@@ -609,6 +645,7 @@ libconfig/              static library `lm::config`: YAML layers, typed schemas,
 libnet/                 static library `lm::net`: server client (libcurl), library mirror and
                         offline cache (SQLite + sparse files), CachedStreamSource
 tools/                  lightmusic-play dev CLI
+frontends/mpris/        static library `lm::mpris`: MPRIS 2 over sd-bus (optional)
 frontends/tui/          `lightmusic` TUI (FTXUI DOM + own poll() loop); tui_logic.* is
                         the UI-free, unit-tested part
 server/                 `lightmusicd`: config, auth, range, db (SQLite), tags (TagLib),
