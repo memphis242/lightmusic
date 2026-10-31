@@ -25,6 +25,7 @@ const Schema<ClientSettings> &clientSchema() {
             stringField<S>("server.url", &S::serverUrl, false, checkUrl),
             pathField<S>("server.key_file", &S::keyFile),
             intField<S>("cache.max_size_mb", &S::cacheMaxSizeMb, 1, 1LL << 30, true),
+            intField<S>("cache.min_free_mb", &S::cacheMinFreeMb, 0, 1LL << 30),
             boolField<S>("cache.background_fill", &S::backgroundFill, true),
             boolField<S>("cache.pause_on_metered", &S::pauseOnMetered, true),
             pathField<S>("cache.dir", &S::cacheDir),

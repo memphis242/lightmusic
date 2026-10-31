@@ -13,7 +13,7 @@ probes in an **Ubuntu 24.04, 4-core container**. Package names were then verifie
 | Audio output + resample | miniaudio (PulseAudio/ALSA backends → PipeWire) | Unlicense (public domain) or MIT-0 | vendored |
 | Client HTTP | libcurl (multi API, Range, TLS, HTTP/2) | curl (MIT-like) | `libcurl-devel` |
 | Client offline cache | plain files + SQLite range/metadata DB | public domain | `sqlite-devel` |
-| Config file (YAML) | rapidyaml (or yaml-cpp) | MIT | vendored / `yaml-cpp-devel` |
+| Config file (YAML) | yaml-cpp (system shared library) | MIT | `yaml-cpp-devel` / `libyaml-cpp-dev` |
 | TUI | FTXUI (ncurses as minimal fallback) | MIT | `ftxui-devel` |
 | Desktop integration | MPRIS via sd-bus (libsystemd) | LGPL-2.1+ | `systemd-devel` |
 | Optional GUI later | FLTK 1.4 (measured 1.3; or Qt Widgets if polish matters) | LGPL+exception | `fltk-devel` |
@@ -205,10 +205,12 @@ streamed tracks are completed in the background during idle periods.
   tracks are shown as available when the server is unreachable.
 - **Invalidation.** Key cache entries by `trackId + ETag`; if the server reports a new ETag
   (file re-tagged/replaced), refetch.
-- **Size limit.** User-set cap with LRU eviction; "pin" (keep offline) flag exempts tracks
-  or albums from eviction and puts them in the idle queue proactively. Pinned items count
-  toward the cap and are never evicted; a pin that would exceed the cap is refused with a UI
-  error; idle prefetch never evicts pinned items.
+- **Size limit.** User-set cap (default 1 GB) with LRU eviction for the streaming cache.
+  A "pin" ("saved offline") flag exempts tracks or albums from eviction *and from the
+  cap* (pinned bytes are not counted toward it) and puts them in the idle queue
+  proactively. Pinned data is bounded by a disk-space floor instead: a pin is refused, and
+  pinned tracks are not downloaded, while free space on the cache filesystem would drop
+  below max(`cache.min_free_mb`, default 1 GB; 5% of the filesystem) (statvfs).
 - Cost: one SQLite DB (`sqlite-devel`, already used server-side) plus plain files. No
   extra memory pressure: writes stream from the same buffers already in RAM.
 
@@ -220,24 +222,27 @@ streamed tracks are completed in the background during idle periods.
 - **Transcoding: not in v1.** Serve original files only. Opus transcoding may come later as an
   opt-in for FLAC sources on metered/slow links (see below).
 - **Offline cache** (section 5) is a v1 requirement:
-  - Default size cap **100 MB**, user-configurable. 100 MB ≈ 14 tracks at 192 kbps, so users
-    with larger offline needs should raise it.
+  - Default size cap **1 GB** (1024 MB), user-configurable. It covers the streaming
+    (unpinned) cache only: tracks saved offline (pinned) are excluded and never evicted.
+  - Saved-offline data is limited by a **disk-space floor**, max(1 GB, 5% of the disk),
+    configurable as `cache.min_free_mb`: new pins are refused, and pinned downloads not
+    started, below it.
   - Idle background fill is **active by default**, with an option to pause it on metered
     connections (detected via NetworkManager's `Metered` property over D-Bus, using the
     sd-bus dependency already planned for MPRIS).
 - **Configuration**: `~/.config/lightmusic/cfg.yaml` (honour `$XDG_CONFIG_HOME`), editable
-  from the UI too. Parser: **rapidyaml** (MIT, compiled library, also available as a
-  single-header amalgamation; very fast/low-alloc; vendored) or **yaml-cpp** (MIT,
-  `yaml-cpp-devel`, simpler API, heavier). Neither emitter reliably preserves comments, so
-  how the UI writes back is open (see below). Created `0600`; warn at startup if group/world-
-  readable (it holds the API key). Writes are temp → fsync → rename. Reloaded on inotify
+  from the UI too. Parser: **yaml-cpp** (MIT,
+  system shared library: `yaml-cpp-devel` on Fedora, `libyaml-cpp-dev` on Ubuntu; about
+  +160 KB per binary plus the 294 KB shared `.so`). Its emitter does not preserve
+  comments, so how the UI writes back is open (see below). Created `0600`; warn at startup
+  if group/world-readable (it holds the API key). Writes are temp → fsync → rename. Reloaded on inotify
   change; unknown keys warn, not fail. Example:
   ```yaml
   server:
     url: https://music.example.net
     api_key: ...
   cache:
-    max_size_mb: 100
+    max_size_mb: 1024
     background_fill: true
     pause_on_metered: false
   ```

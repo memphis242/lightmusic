@@ -8,7 +8,7 @@
 // tracks (all, or the given albums) are queued as lm://server/track/<id> URIs, which the
 // player opens through the client's offline cache. Offline (sync fails), only fully
 // cached tracks are queued. Rows show the cache state (● cached, ◐ partial, ○ remote,
-// * pinned); the next three remote tracks are handed to the idle fill queue.
+// * pinned = saved offline); the next three remote tracks are handed to the idle fill queue.
 //
 // Event loop and threading. The main thread owns all UI state (`Ui`) and blocks in
 // poll() on two fds: the terminal (keys) and a self-pipe. Nothing else wakes it, so a
@@ -380,9 +380,10 @@ void refreshCache(Ui &ui, lm::net::Client &client, bool offline) {
         ui.pinned[i] = ci.pinned;
     }
     const auto st = client.stats();
-    char buf[96];
-    std::snprintf(buf, sizeof buf, "%scache %lld/%llu MB", offline ? "offline · " : "",
-                  static_cast<long long>(st.usage >> 20), static_cast<unsigned long long>(st.cap >> 20));
+    char buf[128];
+    std::snprintf(buf, sizeof buf, "%scache %lld/%llu MB, saved offline %lld MB", offline ? "offline · " : "",
+                  static_cast<long long>(st.unpinned >> 20), static_cast<unsigned long long>(st.cap >> 20),
+                  static_cast<long long>(st.pinned >> 20));
     ui.net = buf;
 }
 
@@ -536,6 +537,7 @@ int run(int argc, char **argv) {
         cc.apiKey = std::move(key);
         cc.cacheDir = cacheDir;
         cc.cacheMaxBytes = static_cast<std::uint64_t>(set.cacheMaxSizeMb) << 20;
+        cc.minFreeBytes = static_cast<std::uint64_t>(set.cacheMinFreeMb) << 20;
         cc.backgroundFill = set.backgroundFill;
         cc.pauseOnMetered = set.pauseOnMetered;
         cc.log = [uiActive](const std::string &m) {
@@ -572,8 +574,8 @@ int run(int argc, char **argv) {
                 }
             }
             const auto st = client->stats();
-            std::printf("cache: %lld of %llu MB used, %zu entries, %lld MB pinned\n",
-                        static_cast<long long>(st.usage >> 20), static_cast<unsigned long long>(st.cap >> 20), st.entries,
+            std::printf("cache: %lld of %llu MB used, %zu entries, %lld MB saved offline (not counted)\n",
+                        static_cast<long long>(st.unpinned >> 20), static_cast<unsigned long long>(st.cap >> 20), st.entries,
                         static_cast<long long>(st.pinned >> 20));
             return 0;
         }
@@ -796,12 +798,12 @@ int run(int argc, char **argv) {
                     if (client && sel < ui.remote.size() && ui.remote[sel]) {
                         std::string err;
                         if (!client->pin(ui.remote[sel], !ui.pinned[sel], &err)) ui.message = err;
-                        else ui.message = ui.pinned[sel] ? "unpinned" : "pinned: kept offline";
+                        else ui.message = ui.pinned[sel] ? "no longer saved offline" : "saved offline";
                         refreshCache(ui, *client, offline);
                         break;
                     }
 #endif
-                    ui.message = "only remote tracks can be pinned";
+                    ui.message = "only remote tracks can be saved offline";
                     break;
                 }
                 case lmtui::Command::ToggleHelp: ui.help = !ui.help; break;

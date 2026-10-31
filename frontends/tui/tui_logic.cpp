@@ -329,7 +329,7 @@ const std::vector<std::string> &helpLines() {
         "enter      play selected track",
         "j k ↑ ↓    move selection",
         "g G        first / last track",
-        "P          pin / unpin (remote: keep offline)",
+        "P          save offline / unsave (remote; not counted in the cache limit)",
         "?  esc     toggle / close this help",
         "q          quit",
     };

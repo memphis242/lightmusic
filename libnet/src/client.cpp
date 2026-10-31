@@ -42,10 +42,14 @@
 // user releases it (no persistence, no pinning). A size change is then the only change
 // signal and always restarts the entry.
 //
-// Eviction: entry sizes are reserved up front (sparse files). Before a new entry is
-// created, least-recently-used unpinned entries that nobody has open are deleted until
-// it fits. Idle fills never exceed the cap; a track opened for playback may (the cap is
-// enforced again when it closes). Pinned entries are never evicted.
+// Eviction: entry sizes are reserved up front (sparse files). The cap applies to
+// unpinned entries only: before a new entry is created, least-recently-used unpinned
+// entries that nobody has open are deleted until the unpinned total fits. Idle fills
+// never exceed the cap; a track opened for playback may (the cap is enforced again when
+// it closes). Pinned ("saved offline") entries are never evicted and not counted; they
+// are bounded instead by a disk-space floor: a pin is refused, and pinned data is not
+// fetched in the background, while free space would fall below
+// max(minFreeBytes, 5% of the filesystem).
 #include "lm/net/client.hpp"
 
 #include "client_db.hpp"
@@ -59,6 +63,7 @@
 #include <netinet/in.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -293,9 +298,10 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         return it != live.end() && !it->second.expired();
     }
 
-    // Evicts LRU unpinned, unused entries until `need` more bytes fit. cm held.
+    // Evicts LRU unpinned, unused entries until `need` more unpinned bytes fit. Pinned
+    // bytes are not counted. cm held.
     bool makeRoomLocked(std::int64_t need, std::int64_t exclude) {
-        std::int64_t usage = db.usage();
+        std::int64_t usage = db.usage() - db.pinnedUsage();
         const auto limit = cap();
         if (usage + need <= limit) return true;
         for (const auto &row : db.entries()) { // oldest access first
@@ -332,7 +338,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             const bool pinned = row->pinned;
             removeEntryLocked(id);
             row.reset();
-            if (pinned && repinAllowedLocked(id, t->size, t->etag)) {
+            if (pinned && repinAllowedLocked(id, t->etag)) {
                 EntryRow r{id, t->etag, t->size, false, "", 0, true, wallNow()};
                 db.putEntry(r);
                 row = r;
@@ -414,18 +420,49 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         return e;
     }
 
-    // May a pinned row be re-created for this track (after invalidation)? Not when the
-    // pinned total would exceed the cap, and never without a strong validator. cm held.
-    bool repinAllowedLocked(std::int64_t id, std::int64_t size, const std::string &etag) {
+    // May a pinned row be re-created for this track (after invalidation)? Never without
+    // a strong validator. (The cap does not apply to pins; the disk floor is checked when
+    // the new version is fetched.) cm held.
+    bool repinAllowedLocked(std::int64_t id, const std::string &etag) {
         if (!strongEtag(etag)) {
             log("cache: track " + std::to_string(id) + " has no strong ETag; unpinned");
             return false;
         }
-        if (db.pinnedUsage() + size > cap()) {
-            log("cache: track " + std::to_string(id) + " grew past the pin cap; unpinned");
-            return false;
-        }
         return true;
+    }
+
+    // ------------------------------------------------------------------ disk floor
+    struct DiskSpace {
+        std::uint64_t avail = 0, floor = 0;
+    };
+    // nullopt when the probe fails (the floor is then not enforced).
+    std::optional<DiskSpace> diskSpace() {
+        std::uint64_t avail = 0, total = 0;
+        bool ok;
+        if (cfg.diskSpaceProbe) {
+            ok = cfg.diskSpaceProbe(tracksDir, &avail, &total);
+        } else {
+            struct statvfs v{};
+            ok = ::statvfs(tracksDir.c_str(), &v) == 0;
+            if (ok) {
+                avail = std::uint64_t(v.f_bavail) * v.f_frsize;
+                total = std::uint64_t(v.f_blocks) * v.f_frsize;
+            }
+        }
+        if (!ok) return std::nullopt;
+        return DiskSpace{avail, std::max<std::uint64_t>(cfg.minFreeBytes, total / 20)};
+    }
+    // Would writing `missing` more bytes keep free space at or above the floor?
+    bool diskFits(std::int64_t missing, std::string *why) {
+        auto d = diskSpace();
+        if (!d) return true;
+        const auto m = std::uint64_t(std::max<std::int64_t>(0, missing));
+        if (d->avail >= d->floor && d->avail - d->floor >= m) return true;
+        if (why)
+            *why = "not enough free disk space to save offline: " + std::to_string(m >> 20) + " MB needed, " +
+                   std::to_string(d->avail >> 20) + " MB free, keeping at least " + std::to_string(d->floor >> 20) +
+                   " MB free";
+        return false;
     }
 
     // Last reference to an entry dropped (any thread). Re-check invalidation and the cap
@@ -915,6 +952,11 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             auto row = db.entry(id);
             if (row && row->complete) continue;
             std::string err;
+            if (row && row->pinned && !diskFits(row->size - row->cached, &err)) {
+                log("cache: pinned track " + std::to_string(id) + " not fetched: " + err);
+                fillBackoff[id] = now + std::chrono::seconds(60);
+                continue;
+            }
             auto e = acquire(id, Purpose::Fill, &err);
             if (!e) {
                 fillBackoff[id] = now + std::chrono::seconds(60);
@@ -1326,7 +1368,7 @@ bool Client::sync(std::string *err) {
                 c.log("cache: invalidating track " + std::to_string(id));
                 const bool pinned = row->pinned;
                 c.removeEntryLocked(id);
-                if (pinned && t && c.repinAllowedLocked(id, t->size, t->etag)) c.db.putEntry(EntryRow{id, t->etag, t->size, false, "", 0, true, wallNow()});
+                if (pinned && t && c.repinAllowedLocked(id, t->etag)) c.db.putEntry(EntryRow{id, t->etag, t->size, false, "", 0, true, wallNow()});
             }
         }
     }
@@ -1372,7 +1414,12 @@ CacheStats Client::stats() {
     CacheStats s;
     s.usage = core_->db.usage();
     s.pinned = core_->db.pinnedUsage();
+    s.unpinned = s.usage - s.pinned;
     s.cap = core_->capBytes.load();
+    if (auto d = core_->diskSpace()) {
+        s.diskAvail = d->avail;
+        s.diskFloor = d->floor;
+    }
     s.entries = core_->db.entries().size();
     s.downloaded = core_->downloaded.load();
     s.idleFillActive = core_->idleActiveFlag.load();
@@ -1396,18 +1443,14 @@ bool Client::pin(std::int64_t id, bool pinned, std::string *err) {
                 if (err) *err = "cannot pin: the server gives no strong ETag for this track (not cacheable)";
                 return false;
             }
-            const std::int64_t add = row ? row->size : t->size;
-            if (c.db.pinnedUsage() + add > c.cap()) {
-                if (err)
-                    *err = "cannot pin: pinned tracks would exceed the cache cap (" +
-                           std::to_string(c.capBytes.load() >> 20) + " MB)";
+            // Pinned bytes do not count toward the cap; only the disk floor limits them.
+            const std::int64_t missing = row ? row->size - row->cached : t->size;
+            std::string why;
+            if (!c.diskFits(missing, &why)) {
+                if (err) *err = "cannot pin: " + why;
                 return false;
             }
             if (!row) {
-                if (!c.makeRoomLocked(t->size, id)) {
-                    // Room is taken by tracks in use; the pin stands and fills later.
-                    c.log("cache: no room yet for pinned track " + std::to_string(id));
-                }
                 c.db.putEntry(EntryRow{id, t->etag, t->size, false, "", 0, true, wallNow()});
             } else {
                 c.db.setPinned(id, true);
