@@ -38,9 +38,12 @@ public:
         const ogg_int64_t total = ov_pcm_total(&vf_, -1);
         total_ = total > 0 ? static_cast<std::uint64_t>(total) : 0;
         if (const vorbis_comment *vc = ov_comment(&vf_, -1)) {
-            for (int i = 0; i < vc->comments && !gain_; i++)
-                gain_ = parseVorbisCommentGain(
-                    std::string_view(vc->user_comments[i], static_cast<std::size_t>(vc->comment_lengths[i])));
+            for (int i = 0; i < vc->comments; i++) {
+                if (!vc->user_comments[i] || vc->comment_lengths[i] < 0) continue;
+                const std::string_view s(vc->user_comments[i], static_cast<std::size_t>(vc->comment_lengths[i]));
+                if (!gain_) gain_ = parseVorbisCommentGain(s);
+                applyVorbisComment(s, tags_);
+            }
         }
         return true;
     }

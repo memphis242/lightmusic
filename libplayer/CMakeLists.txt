@@ -14,7 +14,7 @@ add_library(player STATIC
   src/dec_flac.cpp
   src/dec_opus.cpp
   src/dec_vorbis.cpp
-  src/replaygain.cpp
+  src/tags.cpp
   src/output.cpp
   src/player.cpp
 )

@@ -55,15 +55,14 @@ private:
     }
     static void onMeta(void *u, drflac_metadata *m) {
         auto *self = static_cast<FlacDecoder *>(u);
-        if (m->type != DRFLAC_METADATA_BLOCK_TYPE_VORBIS_COMMENT || self->gain_) return;
+        if (m->type != DRFLAC_METADATA_BLOCK_TYPE_VORBIS_COMMENT) return;
         drflac_vorbis_comment_iterator it;
         drflac_init_vorbis_comment_iterator(&it, m->data.vorbis_comment.commentCount, m->data.vorbis_comment.pComments);
         drflac_uint32 len = 0;
         while (const char *c = drflac_next_vorbis_comment(&it, &len)) {
-            if (auto g = parseVorbisCommentGain(std::string_view(c, len))) {
-                self->gain_ = g;
-                break;
-            }
+            const std::string_view s(c, len);
+            if (!self->gain_) self->gain_ = parseVorbisCommentGain(s);
+            applyVorbisComment(s, self->tags_);
         }
     }
 

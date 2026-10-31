@@ -39,6 +39,7 @@ struct TrackInfo {
     std::uint32_t channels = 0;
     double duration = 0; // seconds; 0 if unknown
     std::optional<float> trackGainDb;
+    Tags tags;
 };
 
 struct PlayerState {

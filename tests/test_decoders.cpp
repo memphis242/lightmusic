@@ -165,8 +165,10 @@ static void parsers() {
     const auto g = parseId3v2TrackGain(tag.data(), tag.size());
     CHECK(g.has_value());
     if (g) CHECK_NEAR(*g, -1.23, 1e-4);
-    tag[5] = 0x80; // unsynchronised: not handled, must not crash
-    CHECK(!parseId3v2TrackGain(tag.data(), tag.size()));
+    tag[5] = 0x80; // whole-tag unsynchronisation (no 0xFF bytes here, so same result)
+    const auto gu = parseId3v2TrackGain(tag.data(), tag.size());
+    CHECK(gu.has_value());
+    if (gu) CHECK_NEAR(*gu, -1.23, 1e-4);
 }
 
 int main() {

@@ -1,6 +1,10 @@
 # Vendored third-party headers
 
-Exact copies of the headers used by the research bench (`bench/third_party/`). They are
+Exact copies of the headers used by the research bench (`bench/third_party/`), except for
+one local patch: `dr_flac.h`'s `drflac__be2host_32_ptr_unaligned` /
+`drflac__le2host_32_ptr_unaligned` shift `drflac_uint32` instead of `int` (a corrupt
+Vorbis comment length >= 0x80000000 was signed-overflow UB, found by `test_tags` under
+UBSan); marked `lightmusic:` in the source, so the sha256 below is of the upstream file. They are
 compiled without our `-Wall -Wextra -Werror` flags.
 
 | File | Version | License | sha256 |

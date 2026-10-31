@@ -116,6 +116,15 @@ std::vector<std::string> collectTracks(const std::vector<std::string> &args, std
     return out;
 }
 
+std::string trackLabel(std::string_view artist, std::string_view title, std::string_view path) {
+    if (title.empty()) return displayName(path);
+    if (artist.empty()) return std::string(title);
+    std::string s(artist);
+    s += " — ";
+    s += title;
+    return s;
+}
+
 std::string displayName(std::string_view path) {
     const auto slash = path.find_last_of('/');
     if (slash != std::string_view::npos) path.remove_prefix(slash + 1);

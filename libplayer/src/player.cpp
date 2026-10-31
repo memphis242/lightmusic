@@ -96,6 +96,7 @@ TrackInfo infoFor(const std::string &path, const Decoder &d) {
     t.channels = d.channels();
     t.duration = d.sampleRate() ? static_cast<double>(d.totalFrames()) / d.sampleRate() : 0;
     t.trackGainDb = d.trackGainDb();
+    t.tags = d.tags();
     return t;
 }
 

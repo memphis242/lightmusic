@@ -30,8 +30,14 @@ public:
         total_ = total > 0 ? static_cast<std::uint64_t>(total) : 0;
         int q8 = 0;
         // R128_TRACK_GAIN is relative to -23 LUFS; ReplayGain's reference is ~-18 LUFS.
-        if (const OpusTags *tags = op_tags(of_, -1); tags && opus_tags_get_track_gain(tags, &q8) == 0)
-            gain_ = static_cast<float>(q8) / 256.0f + 5.0f;
+        if (const OpusTags *tags = op_tags(of_, -1)) {
+            if (opus_tags_get_track_gain(tags, &q8) == 0) gain_ = static_cast<float>(q8) / 256.0f + 5.0f;
+            for (int i = 0; i < tags->comments; i++)
+                if (tags->user_comments[i] && tags->comment_lengths[i] >= 0)
+                    applyVorbisComment(std::string_view(tags->user_comments[i],
+                                                        static_cast<std::size_t>(tags->comment_lengths[i])),
+                                       tags_);
+        }
         return true;
     }
 
