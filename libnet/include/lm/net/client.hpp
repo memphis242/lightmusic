@@ -46,7 +46,16 @@ struct ClientConfig {
     std::string apiKey;    // sent only as "Authorization: Bearer"; never logged
     // Default: $XDG_CACHE_HOME/lightmusic, else ~/.cache/lightmusic. Created 0700.
     std::string cacheDir;
-    std::uint64_t cacheMaxBytes = 100ull * 1024 * 1024;
+    // Cap for the unpinned ("streaming") cache. Pinned ("saved offline") tracks do not
+    // count toward it and are never evicted; they are bounded by the disk-space floor.
+    std::uint64_t cacheMaxBytes = 1024ull * 1024 * 1024;
+    // Disk-space floor for pinned data: a new pin is refused, and pinned tracks are not
+    // fetched, while free space on the cache filesystem would drop below
+    // max(minFreeBytes, 5% of the filesystem).
+    std::uint64_t minFreeBytes = 1024ull * 1024 * 1024;
+    // Free-space probe (tests): fills available and total bytes of the filesystem holding
+    // `path`; false on error (then the floor is not enforced). Default: statvfs().
+    std::function<bool(const std::string &path, std::uint64_t *avail, std::uint64_t *total)> diskSpaceProbe;
     bool backgroundFill = true;  // idle fill queue
     bool pauseOnMetered = false; // pause the idle fill on metered networks
     // Metered probe; default: NetworkManager's Metered property over D-Bus (sd-bus) when
@@ -79,9 +88,12 @@ struct CacheInfo {
 };
 
 struct CacheStats {
-    std::int64_t usage = 0;     // bytes reserved by cache entries (sparse file sizes)
-    std::int64_t pinned = 0;
-    std::uint64_t cap = 0;
+    std::int64_t usage = 0;     // bytes reserved by all cache entries (sparse file sizes)
+    std::int64_t pinned = 0;    // of which pinned ("saved offline"; not counted toward cap)
+    std::int64_t unpinned = 0;  // of which unpinned (held to cap by LRU eviction)
+    std::uint64_t cap = 0;      // limit for unpinned bytes
+    std::uint64_t diskFloor = 0; // free-space floor for pinned data (0: probe failed)
+    std::uint64_t diskAvail = 0; // free bytes on the cache filesystem (0: probe failed)
     std::size_t entries = 0;
     std::uint64_t downloaded = 0; // body bytes received since open
     bool idleFillActive = false;
@@ -121,8 +133,9 @@ public:
     CacheInfo cacheInfo(std::int64_t trackId);
     std::optional<CacheEntryInfo> cacheEntry(std::int64_t trackId);
     CacheStats stats();
-    // Pinned tracks are never evicted and are filled in the background. Pinning fails
-    // when the pinned total would exceed the cap.
+    // Pinned ("saved offline") tracks are never evicted, do not count toward the cap, and
+    // are filled in the background. Pinning fails when the track's missing bytes would
+    // leave less free disk space than the floor (ClientConfig::minFreeBytes).
     bool pin(std::int64_t trackId, bool pinned, std::string *err);
     // Tracks to fill in the background next (e.g. the next few in the play queue);
     // replaces the previous list.

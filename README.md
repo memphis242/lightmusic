@@ -152,8 +152,9 @@ ctest --test-dir build --output-on-failure
   (no unwritten zeros) and that resuming fetches only what is missing; If-Range: a file
   changed on the server comes back as 200 and restarts the entry (a reader that already
   got old bytes fails instead of splicing versions); ETag invalidation and deletion by
-  sync; LRU eviction, pin cap refusal, playback over the cap, pinned entries never evicted
-  by idle fill; idle fill paused by a mocked metered probe and by playback; read timeouts,
+  sync; LRU eviction, pinned (saved-offline) bytes over the cap kept and not counted,
+  unpinned cap enforced with pins present, the disk-space floor (statvfs shim), playback
+  over the cap, pinned entries never evicted by idle fill; idle fill paused by a mocked metered probe and by playback; read timeouts,
   401, offline; concurrent seek/read/interrupt on two sources (meant for TSan);
   `setCacheSettings` (reload): fill off/on, a cap shrink evicts only after
   `capTrimDelayMs` (and not at all if the cap is raised again first), fill off stops a
@@ -362,7 +363,8 @@ same-user ptrace/`/proc/PID/mem` access to the key in memory.
 
 The TUI syncs at start (offline: it uses the mirror and queues only fully cached tracks),
 then queues every remote track (or the `--album`s) after any local files given. Rows show
-`●` cached, `◐` partial, `○` remote only, `*` pinned; `P` pins/unpins the selected track.
+`●` cached, `◐` partial, `○` remote only, `*` saved offline (pinned); `P` saves/unsaves the selected track offline. The status
+line shows `cache X/1024 MB, saved offline Y MB`.
 The next three tracks are handed to the idle fill queue. A richer browser (albums →
 tracks, search, queue editing) is left for a later branch.
 
@@ -407,8 +409,12 @@ Design (`libnet/`, see `libnet/include/lm/net/client.hpp` and the top of
 - **Eviction.** Entry sizes are reserved up front; before a new entry is created the
   least-recently-played unpinned entries not in use are deleted until it fits. Idle fills
   never exceed the cap; a track opened for playback may, and the cap is enforced again
-  when it closes. Pinned tracks are never evicted, and a pin that would make pins exceed
-  the cap is refused.
+  when it closes. The cap (default 1 GB) counts unpinned entries only: tracks saved
+  offline (pinned) are never evicted and do not count toward it. They are limited by a
+  disk-space floor instead: a pin is refused (with an error naming the free space), and
+  pinned tracks are not downloaded in the background, while free space on the cache
+  filesystem (`statvfs`) would fall below max(`cache.min_free_mb`, 5% of the filesystem).
+  `Client::stats()` reports pinned and unpinned bytes separately.
 
 Known gaps: the player opens the first decoder of a `startAt` on its control thread, so
 a slow server delays later commands by up to the read timeout; transcoded streams and
@@ -455,7 +461,10 @@ server:
                                     # ~user/ (password database) are expanded
   # api_key: ...                    # REFUSED: never put the key itself in here
 cache:
-  max_size_mb: 100                  # 1..2^30          (hot)
+  max_size_mb: 1024                 # 1..2^30          (hot); saved-offline (pinned)
+                                    # tracks are NOT counted toward this limit
+  min_free_mb: 1024                 # keep this much disk free (and >= 5% of it) when
+                                    # saving tracks offline
   background_fill: true             # idle fill        (hot)
   pause_on_metered: false           # pause it on metered networks (hot)
   dir: ~/.cache/lightmusic          # default $XDG_CACHE_HOME/lightmusic
@@ -471,7 +480,8 @@ ui:
 |---|---|---|---|
 | `server.url` | `--server URL` | none | restart |
 | `server.key_file` | `--key-file PATH` | none | restart |
-| `cache.max_size_mb` | `--cache-max-mb N` | 100 | yes |
+| `cache.max_size_mb` | `--cache-max-mb N` | 1024 (pinned tracks excluded) | yes |
+| `cache.min_free_mb` | – | 1024 | restart |
 | `cache.background_fill` | `--no-fill` | true | yes |
 | `cache.pause_on_metered` | `--pause-on-metered` | false | yes |
 | `cache.dir` | `--cache-dir DIR` | `$XDG_CACHE_HOME/lightmusic` | restart |

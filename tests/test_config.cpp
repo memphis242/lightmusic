@@ -58,7 +58,8 @@ void testDefaults() {
     const auto s = clientSchema().resolve({}, d);
     CHECK(d.empty());
     CHECK(s.serverUrl.empty() && s.keyFile.empty() && s.cacheDir.empty());
-    CHECK_EQ(s.cacheMaxSizeMb, 100);
+    CHECK_EQ(s.cacheMaxSizeMb, 1024); // 1 GB; saved-offline tracks are not counted
+    CHECK_EQ(s.cacheMinFreeMb, 1024);
     CHECK(s.backgroundFill);
     CHECK(!s.pauseOnMetered);
     CHECK_EQ(s.volume, 100);
@@ -83,6 +84,7 @@ void testFullFile() {
                         "  key_file: keys/lm.key   # relative to this file\n"
                         "cache:\n"
                         "  max_size_mb: 2048\n"
+                        "  min_free_mb: 512\n"
                         "  background_fill: no\n"
                         "  pause_on_metered: true\n"
                         "  dir: ~/lmcache\n"
@@ -97,6 +99,7 @@ void testFullFile() {
     CHECK(s.serverUrl == "https://music.example.net");
     CHECK(s.keyFile == g_dir + "/keys/lm.key");
     CHECK_EQ(s.cacheMaxSizeMb, 2048);
+    CHECK_EQ(s.cacheMinFreeMb, 512);
     CHECK(!s.backgroundFill);
     CHECK(s.pauseOnMetered);
     CHECK(s.cacheDir == std::string(std::getenv("HOME")) + "/lmcache");
@@ -169,7 +172,7 @@ void testUnknownAndTypes() {
     const Diag *e = findDiag(d, "'loud' is not one of off|track|album");
     CHECK(e && e->line == 9);
     CHECK(t && t->str().find(g_dir + "/cfg.yaml:5:") == 0);
-    CHECK(s.cacheMaxSizeMb == 100); // bad values keep the default
+    CHECK(s.cacheMaxSizeMb == 1024); // bad values keep the default
     // Unknown keys alone are only warnings.
     Diags w;
     load("cache:\n  max_size_gb: 1\n", w);

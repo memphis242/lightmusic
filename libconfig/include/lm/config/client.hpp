@@ -16,7 +16,8 @@ struct ClientSettings {
     std::string serverUrl; // empty: no server
     std::string keyFile;   // file holding the API key (must be 0600); never the key itself
     // cache (hot: maxSizeMb, backgroundFill, pauseOnMetered)
-    std::int64_t cacheMaxSizeMb = 100;
+    std::int64_t cacheMaxSizeMb = 1024; // unpinned tracks only; "saved offline" ones are excluded
+    std::int64_t cacheMinFreeMb = 1024; // disk-space floor for saved-offline tracks (also >= 5% of the disk)
     bool backgroundFill = true;
     bool pauseOnMetered = false;
     std::string cacheDir; // empty: $XDG_CACHE_HOME/lightmusic

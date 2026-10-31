@@ -48,6 +48,12 @@ lm::net::ClientConfig baseCfg(const std::string &url, const std::string &dir) {
     c.apiKey = FakeServer::kKey;
     c.cacheDir = dir;
     c.readTimeoutSec = 10;
+    // Plenty of free disk unless a test shims it: the floor must not depend on the host.
+    c.diskSpaceProbe = [](const std::string &, std::uint64_t *avail, std::uint64_t *total) {
+        *avail = 1ull << 40;
+        *total = 1ull << 41;
+        return true;
+    };
     if (std::getenv("LM_TEST_VERBOSE")) c.log = [](const std::string &s) { std::fprintf(stderr, "  [client] %s\n", s.c_str()); };
     return c;
 }
@@ -310,33 +316,51 @@ void evictionAndPins() {
     CHECK(c->pin(2, true, &err));
     CHECK(c->pin(3, true, &err));
     CHECK(c->pin(4, true, &err));
-    CHECK(!c->pin(5, true, &err)); // 1.2 MB of pins > 1 MB cap
-    CHECK(err.find("cap") != std::string::npos);
-    CHECK(!c->cacheInfo(5).pinned);
-    // Playback of an unpinned track while pins fill the cache: allowed while open,
-    // evicted when closed; pinned tracks are never touched.
+    // Saved-offline tracks do not count toward the cap: a fourth pin (1.2 MB of pins over
+    // a 1 MB cap) is accepted, filled, and nothing pinned is evicted to make room.
+    CHECK(c->pin(5, true, &err));
+    CHECK(c->cacheInfo(5).pinned);
+    CHECK(c->stats().unpinned == 0);
     {
         auto s = c->openTrack(5, &err);
-        CHECK(readAll(*s) == data[4]);
+        CHECK(s && readAll(*s) == data[4]);
     }
-    CHECK(waitUntil([&] { return c->cacheEntry(5) == std::nullopt; }, 5s));
-    CHECK(state(2) == CacheState::Cached && state(3) == CacheState::Cached && state(4) == CacheState::Cached);
-    CHECK(c->stats().pinned == 900000);
-    // Unpin 4, then let the idle fill bring back 1: it may evict 4 (unpinned), never 2/3.
-    CHECK(c->pin(4, false, &err));
+    std::this_thread::sleep_for(300ms);
+    for (int id = 2; id <= 5; id++) CHECK(state(id) == CacheState::Cached && c->cacheInfo(id).pinned);
+    CHECK(c->stats().pinned == 1200000);
+    CHECK(c->stats().usage == 1200000);
+    // Unpinned playback while pins exceed the cap: the unpinned budget is still the full
+    // cap, so track 1 stays cached after it closes.
+    play(1);
+    CHECK(state(1) == CacheState::Cached);
+    CHECK(c->stats().unpinned == 300000);
+    for (int id = 2; id <= 5; id++) CHECK(state(id) == CacheState::Cached);
+    // Unpin 2 and 3: they now count toward the cap (0.9 MB with 1, still fits); pinned
+    // 4/5 are untouched.
+    CHECK(c->pin(2, false, &err) && c->pin(3, false, &err));
+    CHECK(c->stats().unpinned <= 1000000);
+    CHECK(c->cacheInfo(4).pinned && c->cacheInfo(5).pinned);
+    CHECK(state(4) == CacheState::Cached && state(5) == CacheState::Cached);
+    CHECK(c->stats().unpinned == 900000); // 1, 2, 3 fit: 0.9 MB
+    // Background fill with pins present: the unpinned cap is still enforced.
     c.reset();
+    srv.setTrack(6, FakeServer::randomBytes(300000, 99), "\"e6\"");
     cfg.backgroundFill = true;
     c = open(cfg);
-    c->setFillQueue({1});
-    CHECK(waitUntil([&] { return state(1) == CacheState::Cached; }, 5s));
-    CHECK(state(2) == CacheState::Cached && state(3) == CacheState::Cached);
-    CHECK(state(4) == CacheState::Remote);
-    CHECK(c->cacheInfo(2).pinned && c->cacheInfo(3).pinned);
+    CHECK(c && syncOk(*c));
+    c->setFillQueue({6});
+    CHECK(waitUntil([&] { return state(6) == CacheState::Cached; }, 5s));
+    CHECK(c->stats().unpinned <= 1000000);
+    CHECK(state(4) == CacheState::Cached && state(5) == CacheState::Cached);
+    CHECK(state(2) == CacheState::Remote); // least recently played unpinned entry
+    CHECK(state(1) == CacheState::Cached && state(3) == CacheState::Cached);
     // A pinned track that is not cached yet is filled in the background.
-    CHECK(c->pin(2, false, &err) && c->pin(5, true, &err));
-    CHECK(waitUntil([&] { return state(5) == CacheState::Cached; }, 5s));
-    CHECK(state(3) == CacheState::Cached);
-    CHECK(c->stats().usage <= 1000000);
+    srv.setTrack(7, FakeServer::randomBytes(300000, 98), "\"e7\"");
+    CHECK(syncOk(*c));
+    CHECK(c->pin(7, true, &err));
+    CHECK(waitUntil([&] { return state(7) == CacheState::Cached; }, 5s));
+    CHECK(c->stats().pinned == 900000);
+    CHECK(c->stats().unpinned <= 1000000);
     c.reset();
     fs::remove_all(dir);
 }
@@ -810,7 +834,8 @@ void adoptFinal() {
     fs::remove_all(dir);
 }
 
-// A pinned track whose new version no longer fits the pin cap is re-created unpinned.
+// A pinned track whose new version is larger than the cap stays pinned (pins are not
+// counted toward the cap) and is filled again in the background.
 void pinCapOnInvalidation() {
     FakeServer srv;
     srv.setTrack(1, FakeServer::randomBytes(600 << 10, 59), "\"p1\"");
@@ -825,10 +850,68 @@ void pinCapOnInvalidation() {
     CHECK(c->pin(1, true, &err));
     srv.setTrack(1, FakeServer::randomBytes(1536 << 10, 60), "\"p2\"");
     CHECK(syncOk(*c));
-    CHECK(!c->cacheInfo(1).pinned);
-    CHECK(c->stats().pinned <= std::int64_t(cfg.cacheMaxBytes));
+    CHECK(c->cacheInfo(1).pinned);
+    CHECK(c->stats().pinned == 1536 << 10);
+    CHECK(c->stats().unpinned == 0);
+    c->setCacheSettings(cfg.cacheMaxBytes, true, false);
+    CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Cached; }, 5s));
     c.reset();
     fs::remove_all(dir);
+}
+
+// The disk-space floor (statvfs shim): pins are refused, and pinned data is not fetched,
+// while free space would fall below max(minFreeBytes, 5% of the filesystem).
+void diskFloor() {
+    FakeServer srv;
+    srv.setTrack(1, FakeServer::randomBytes(300000, 71), "\"d1\"");
+    srv.setTrack(2, FakeServer::randomBytes(300000, 72), "\"d2\"");
+    const std::string dir = tempDir("diskfloor");
+    auto cfg = baseCfg(srv.url(), dir);
+    cfg.backgroundFill = false;
+    cfg.minFreeBytes = 1000000;
+    auto avail = std::make_shared<std::atomic<std::uint64_t>>(1200000);
+    auto total = std::make_shared<std::atomic<std::uint64_t>>(10000000); // 5% = 500000
+    cfg.diskSpaceProbe = [avail, total](const std::string &, std::uint64_t *a, std::uint64_t *t) {
+        *a = avail->load();
+        *t = total->load();
+        return true;
+    };
+    auto c = open(cfg);
+    CHECK(c && syncOk(*c));
+    if (!c) return;
+    std::string err;
+    // 1.2 MB free - 0.3 MB = 0.9 MB < 1 MB floor: refused with a clear message.
+    CHECK(!c->pin(1, true, &err));
+    CHECK(err.find("free disk space") != std::string::npos);
+    CHECK(!c->cacheInfo(1).pinned && !c->cacheEntry(1));
+    // The 5% term: with a 40 MB filesystem the floor is 2 MB.
+    *avail = 2200000;
+    *total = 40000000;
+    CHECK(!c->pin(1, true, &err));
+    *total = 10000000;
+    CHECK(c->stats().diskFloor == 1000000 && c->stats().diskAvail == 2200000);
+    CHECK(c->pin(1, true, &err));
+    CHECK(c->pin(2, true, &err));
+    // Space shrinks before the background fill runs: pinned data is not fetched.
+    *avail = 1100000;
+    c->setCacheSettings(cfg.cacheMaxBytes, true, false);
+    std::this_thread::sleep_for(500ms);
+    CHECK(c->cacheInfo(1).state == CacheState::Remote && c->cacheInfo(2).state == CacheState::Remote);
+    CHECK_EQ(srv.streams.load(), 0);
+    // Playback is never blocked by the floor (only pinned background downloads are).
+    {
+        auto s = c->openTrack(1, &err);
+        CHECK(s != nullptr);
+    }
+    c.reset();
+    fs::remove_all(dir);
+}
+
+// Default cap is 1 GB.
+void defaultCap() {
+    lm::net::ClientConfig c;
+    CHECK_EQ(c.cacheMaxBytes, 1024ull << 20);
+    CHECK_EQ(c.minFreeBytes, 1024ull << 20);
 }
 
 // The plain-http warning parses the host exactly.
@@ -872,7 +955,7 @@ int main(int argc, char **argv) {
         {"ignorerange", ignoreRange},    {"truncated", truncatedResponses}, {"wrongtotal", wrongTotal},
         {"orphan", orphanedIdle},        {"novalidator", noValidator},      {"adopt", adoptFinal},
         {"pincap", pinCapOnInvalidation}, {"loopback", loopbackWarning},
-        {"hot", hotSettings},
+        {"hot", hotSettings},            {"diskfloor", diskFloor},          {"defaultcap", defaultCap},
     };
     for (auto &[name, fn] : tests) {
         if (!only.empty() && only != name) continue;
