@@ -22,7 +22,7 @@ struct ClientSettings {
     bool pauseOnMetered = false;
     std::string cacheDir; // empty: $XDG_CACHE_HOME/lightmusic
     // playback (hot: volume)
-    int volume = 100; // percent, 0..100
+    int volume = 100; // percent, 0..150 (above 100: software gain, as the volume keys)
     ReplayGain replayGain = ReplayGain::Off;
     // ui
     bool showCacheMarkers = true;

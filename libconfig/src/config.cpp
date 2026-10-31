@@ -365,46 +365,62 @@ bool writeFileAtomic(const std::string &path, std::string_view content, unsigned
 
 bool updateConfigValues(const std::string &path, const std::vector<std::pair<std::string, std::string>> &values,
                         std::string &err, std::string *written, const FilePolicy &policy, std::string_view header) {
-    std::string text;
-    bool missing = false;
-    Diags diags;
-    if (!readConfigFile(path, policy, text, missing, diags)) {
-        if (!missing) {
-            err = "not saved: ";
-            for (const auto &d : diags)
-                if (d.level == Diag::Error) {
-                    err += d.str();
-                    break;
+    // The file is read, edited, and read again right before the write: if the user saved
+    // it in between (an editor open on cfg.yaml), the edit is redone on their version
+    // instead of overwriting it. What is left is the window of the rename itself.
+    for (int attempt = 0;; attempt++) {
+        std::string text;
+        bool missing = false;
+        Diags diags;
+        if (!readConfigFile(path, policy, text, missing, diags)) {
+            if (!missing) {
+                err = "not saved: ";
+                for (const auto &d : diags)
+                    if (d.level == Diag::Error) {
+                        err += d.str();
+                        break;
+                    }
+                return false;
+            }
+            text = std::string(header);
+            // Create missing parent directories (0700), e.g. ~/.config/lightmusic.
+            const std::string dir = dirOf(path);
+            for (std::size_t p = 1; p <= dir.size(); p++) {
+                if (p < dir.size() && dir[p] != '/') continue;
+                const std::string sub = dir.substr(0, p);
+                if (::mkdir(sub.c_str(), 0700) != 0 && errno != EEXIST) {
+                    err = "not saved: cannot create " + sub + ": " + std::strerror(errno);
+                    return false;
                 }
+            }
+        }
+        std::string out;
+        if (!editYamlValues(text, values, out, err)) {
+            err = "not saved: " + path + ": " + err;
             return false;
         }
-        text = std::string(header);
-        // Create missing parent directories (0700), e.g. ~/.config/lightmusic.
-        const std::string dir = dirOf(path);
-        for (std::size_t p = 1; p <= dir.size(); p++) {
-            if (p < dir.size() && dir[p] != '/') continue;
-            const std::string sub = dir.substr(0, p);
-            if (::mkdir(sub.c_str(), 0700) != 0 && errno != EEXIST) {
-                err = "not saved: cannot create " + sub + ": " + std::strerror(errno);
+        if (out == text && !missing) {
+            if (written) *written = std::move(out);
+            return true;
+        }
+        {
+            std::string again;
+            bool goneNow = false;
+            Diags ignored;
+            const bool readOk = readConfigFile(path, policy, again, goneNow, ignored);
+            if (readOk ? (missing || again != text) : !(missing && goneNow)) { // changed under us
+                if (attempt < 3) continue;
+                err = "not saved: " + path + " keeps changing";
                 return false;
             }
         }
-    }
-    std::string out;
-    if (!editYamlValues(text, values, out, err)) {
-        err = "not saved: " + path + ": " + err;
-        return false;
-    }
-    if (out == text && !missing) {
+        if (!writeFileAtomic(path, out, 0600, &err, policy)) {
+            err = "not saved: " + err;
+            return false;
+        }
         if (written) *written = std::move(out);
         return true;
     }
-    if (!writeFileAtomic(path, out, 0600, &err, policy)) {
-        err = "not saved: " + err;
-        return false;
-    }
-    if (written) *written = std::move(out);
-    return true;
 }
 
 // ---------------------------------------------------------------- watcher

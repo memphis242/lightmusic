@@ -513,7 +513,7 @@ cache:
   pause_on_metered: false           # pause it on metered networks (hot)
   dir: ~/.cache/lightmusic          # default $XDG_CACHE_HOME/lightmusic
 playback:
-  volume: 100                       # percent, 0..100  (hot)
+  volume: 100                       # percent, 0..150  (hot; >100 = gain)
   replaygain: off                   # off | track | album (album falls back to track
                                     # gain for now, with a warning)
 ui:
@@ -574,10 +574,13 @@ no download runs), so a cap briefly lowered and restored evicts nothing.
 editing it in place: only the bytes of the changed value are replaced, so comments
 (also inline ones after the value), blank lines, key order, indentation, CRLF line
 endings and the quoting style of strings are kept. Today that is the volume (`+`/`-`,
-saved 1 s after the last change and on quit; values above 100% are saved as 100). A key
+saved 1 s after the last change and on quit, up to 150% like the keys; a
+volume above 150% set over MPRIS is saved as 150). A UTF-8 byte order mark is kept. A key
 not yet in the file is inserted as `key: value` at the end of its section, at that
 section's indentation, or as a new section at the end of the file; a missing `cfg.yaml`
-is created (0600, with a comment header and the saved keys). Values that are not a
+is created (0600, with a comment header and the saved keys). If the file changes
+between reading and writing (saved from an editor), the edit is redone on the new
+content rather than overwriting it. Values that are not a
 one-line value in an indented mapping are never guessed at: flow collections
 (`playback: {volume: 80}`, `[...]`), block scalars (`|`, `>`), values spanning several
 lines, tags (`!!int 5`), quoted keys, or a file that currently has errors make the save

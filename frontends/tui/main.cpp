@@ -730,8 +730,8 @@ int run(int argc, char **argv) {
             auto save = [&](std::string *quitErr = nullptr) {
                 saveDue.reset();
                 if (live.path.empty() || !live.running.saveSettings) return;
-                // The keys go up to 150% (software gain); playback.volume is 0..100.
-                const int pct = std::min(volumePct(), 100);
+                // The keys go up to 150% (software gain), as does playback.volume.
+                const int pct = std::clamp(volumePct(), 0, static_cast<int>(lmtui::kVolumeMax * 100.0f + 0.5f));
                 if (pct == live.running.volume) return;
                 std::string err;
                 if (lm::config::updateConfigValues(live.path, {{"playback.volume", std::to_string(pct)}}, err,

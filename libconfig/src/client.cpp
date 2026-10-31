@@ -29,7 +29,7 @@ const Schema<ClientSettings> &clientSchema() {
             boolField<S>("cache.background_fill", &S::backgroundFill, true),
             boolField<S>("cache.pause_on_metered", &S::pauseOnMetered, true),
             pathField<S>("cache.dir", &S::cacheDir),
-            intField<S>("playback.volume", &S::volume, 0, 100, true),
+            intField<S>("playback.volume", &S::volume, 0, 150, true),
             enumField<S>("playback.replaygain", &S::replayGain,
                          {{"off", ReplayGain::Off}, {"track", ReplayGain::Track}, {"album", ReplayGain::Album}}),
             boolField<S>("ui.show_cache_markers", &S::showCacheMarkers),

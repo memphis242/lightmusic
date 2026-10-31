@@ -158,7 +158,7 @@ void testUnknownAndTypes() {
                         "  max_size_mb: lots\n"
                         "  background_fill: maybe\n"
                         "playback:\n"
-                        "  volume: 101\n"
+                        "  volume: 151\n"
                         "  replaygain: loud\n"
                         "frobnicate: 1\n",
                         d);
@@ -171,7 +171,7 @@ void testUnknownAndTypes() {
     CHECK(t && t->level == Diag::Error && t->line == 5 && t->col > 0);
     const Diag *b = findDiag(d, "cache.background_fill: expected true or false");
     CHECK(b && b->line == 6);
-    const Diag *r = findDiag(d, "playback.volume: 101 is out of range (0..100)");
+    const Diag *r = findDiag(d, "playback.volume: 151 is out of range (0..150)");
     CHECK(r && r->line == 8);
     const Diag *e = findDiag(d, "'loud' is not one of off|track|album");
     CHECK(e && e->line == 9);
@@ -759,6 +759,19 @@ void testEditPreserves() {
           "playback:\r\n  volume: 9\r\n  replaygain: track\r\n");
     // No trailing newline.
     CHECK(edit("playback:\n  volume: 9", {{"playback.volume", "1"}}) == "playback:\n  volume: 1");
+    // A UTF-8 BOM is kept and does not shift positions.
+    CHECK(edit("\xEF\xBB\xBFplayback:\n  volume: 5 # v\n", {{"playback.volume", "7"}}) ==
+          "\xEF\xBB\xBFplayback:\n  volume: 7 # v\n");
+    CHECK(edit("\xEF\xBB\xBF# c\nplayback:\n  volume: 5\n", {{"playback.replaygain", "track"}}) ==
+          "\xEF\xBB\xBF# c\nplayback:\n  volume: 5\n  replaygain: track\n");
+    // Null words are strings here: always quoted; other typed words stay plain.
+    CHECK(edit("a: x\n", {{"a", "null"}}) == "a: \"null\"\n");
+    CHECK(edit("a: 'x'\n", {{"a", "~"}}) == "a: '~'\n");
+    CHECK(edit("a: x\n", {{"a", "yes"}}) == "a: yes\n");
+    // '#' and escaped quotes inside quotes, tabs around the value.
+    CHECK(edit("a: \"x\\\" # y\" # c\n", {{"a", "z"}}) == "a: \"z\" # c\n");
+    CHECK(edit("a: 'it''s # no' # c\n", {{"a", "z"}}) == "a: 'z' # c\n");
+    CHECK(edit("a:\t5\t# c\n", {{"a", "6"}}) == "a:\t6\t# c\n");
     // Four-space and deeper indentation are respected.
     CHECK(edit("playback:\n    volume: 9\n", {{"playback.volume", "1"}}) == "playback:\n    volume: 1\n");
 }
@@ -903,8 +916,8 @@ void testEditFuzz() {
                 switch (rng() % 6) {
                 case 0: break;
                 case 1: t += " " + std::to_string(rng() % 1000); break;
-                case 2: t += " 'single q'"; break;
-                case 3: t += " \"dq \\\" x\""; break;
+                case 2: t += rng() % 2 ? " 'single q'" : "\t'it''s # x'"; break;
+                case 3: t += rng() % 2 ? " \"dq \\\" x\"" : " \"h # \\\\\""; break;
                 case 4: t += " true"; break;
                 default: t += " ~"; break;
                 }
@@ -918,13 +931,14 @@ void testEditFuzz() {
             }
         }
         if (!t.empty() && rng() % 3 == 0) t.resize(t.size() - nl.size()); // no final newline
+        if (rng() % 6 == 0) t.insert(0, "\xEF\xBB\xBF"); // byte order mark
         std::vector<std::pair<std::string, std::string>> edits;
         const int ne = 1 + static_cast<int>(rng() % 3);
         for (int e = 0; e < ne; e++) {
             std::string key = (!keys.empty() && rng() % 2) ? keys[rng() % keys.size()]
                                                            : pick({"playback.volume", "cache.fill", "new.sub.k", "top"});
             std::string val = pick({"0", "100", "true", "off", "a b", "x # y", "k: v", "", "'q'", "\"d\"", "-1", "~x",
-                                    "tab\tc", "é"});
+                                    "tab\tc", "é", "null", "~", "yes", " lead", "a:b", "#x"});
             edits.emplace_back(key, val);
         }
         Layer before;

@@ -389,9 +389,14 @@ std::string doubleQuoted(const std::string &v) {
     return r + "\"";
 }
 
+bool isNullWord(const std::string &v) { return v == "~" || v == "null" || v == "Null" || v == "NULL"; }
+
 // `quote` is the original value's quote character ('\'' or '"'), or 0 if it was plain.
+// Numbers and booleans are written plain; a null word ("null", "~") is a string here
+// and is always quoted (plain it would read back as no value).
 std::string formatScalar(const std::string &v, char quote) {
-    if (quote && !looksTyped(v)) {
+    if (isNullWord(v) && !quote) quote = '"';
+    if (quote && (!looksTyped(v) || isNullWord(v))) {
         if (quote == '\'') {
             bool ok = true;
             for (char ch : v)
@@ -643,7 +648,11 @@ bool editOne(const std::string &text, const std::vector<std::string> &segs, cons
 
 bool editYamlValues(std::string_view text, const std::vector<std::pair<std::string, std::string>> &values,
                     std::string &out, std::string &err) {
-    std::string cur(text);
+    // A UTF-8 byte order mark (some Windows editors add one) is set aside while editing:
+    // yaml-cpp's marks do not count it, so every position would be 3 bytes off.
+    constexpr std::string_view bom = "\xEF\xBB\xBF";
+    const bool hasBom = text.substr(0, bom.size()) == bom;
+    std::string cur(hasBom ? text.substr(bom.size()) : text);
     for (const auto &[key, value] : values) {
         std::vector<std::string> segs;
         for (std::size_t p = 0;;) {
@@ -692,7 +701,7 @@ bool editYamlValues(std::string_view text, const std::vector<std::pair<std::stri
         }
         cur = std::move(next);
     }
-    out = std::move(cur);
+    out = hasBom ? std::string(bom) + cur : std::move(cur);
     return true;
 }
 
