@@ -2,6 +2,10 @@
 
 #include <cstdio>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace lm {
 namespace {
 
@@ -28,8 +32,22 @@ private:
 } // namespace
 
 std::unique_ptr<ByteSource> openFileSource(const std::string &path) {
-    std::FILE *f = std::fopen(path.c_str(), "rb");
-    if (!f) return nullptr;
+    // Regular files only: opening a FIFO (or a device) would block or never end. The
+    // open itself is non-blocking so a FIFO without a writer is rejected, not waited on.
+    const int fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return nullptr;
+    struct stat st{};
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        ::close(fd);
+        return nullptr;
+    }
+    const int fl = fcntl(fd, F_GETFL);
+    if (fl >= 0) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
+    std::FILE *f = fdopen(fd, "rb");
+    if (!f) {
+        ::close(fd);
+        return nullptr;
+    }
     std::int64_t size = -1;
     if (fseeko(f, 0, SEEK_END) == 0) size = static_cast<std::int64_t>(ftello(f));
     if (fseeko(f, 0, SEEK_SET) != 0) {

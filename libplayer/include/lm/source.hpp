@@ -30,7 +30,8 @@ public:
     virtual const std::string &name() const = 0;
 };
 
-// Plain file. Returns nullptr if the file cannot be opened.
+// Plain file. Returns nullptr if the file cannot be opened or is not a regular file
+// (FIFOs, devices and directories are rejected without blocking).
 std::unique_ptr<ByteSource> openFileSource(const std::string &path);
 
 } // namespace lm

@@ -80,5 +80,24 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f"; cat "$f"; fail=1
 done
+
+# Regression: a FIFO given as a track (no writer, so any blocking open/read would hang
+# forever) must not stop q from exiting promptly. The tag scanner and the player only
+# open regular files, and quitting never waits for the scanner.
+mkfifo "$TMP/fifo.mp3" || exit 1
+: > "$TMP/log2"
+start=$(date +%s)
+{ n=200; while [ $n -gt 0 ] && ! grep -q Playing "$TMP/log2"; do sleep 0.05; n=$((n - 1)); done
+  sleep 0.5; printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+    timeout 20 script -qfec "$BIN --null '$TMP/music/1 First.opus' '$TMP/fifo.mp3'" "$TMP/log2" >/dev/null 2>&1
+rc=$?
+el=$(( $(date +%s) - start ))
+[ $rc -eq 0 ] || { echo "FAIL: FIFO run exit status $rc (124 = hung after q)"; tail -c 1000 "$TMP/log2" | cat -v; fail=1; }
+grep -q Playing "$TMP/log2" || { echo "FAIL: FIFO run never played"; fail=1; }
+[ $el -le 15 ] || { echo "FAIL: FIFO run took ${el}s"; fail=1; }
+for f in "$TMP"/san*; do
+    [ -e "$f" ] || continue
+    echo "FAIL: sanitizer report $f (FIFO run)"; cat "$f"; fail=1
+done
 [ $fail -eq 0 ] && echo "test_tui_smoke: OK"
 exit $fail

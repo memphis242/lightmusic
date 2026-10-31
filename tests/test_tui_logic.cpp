@@ -84,6 +84,9 @@ static void testFormat() {
     CHECK(lmtui::formatTime(3 * 3600 + 5 * 60 + 7) == "3:05:07");
     CHECK(lmtui::displayName("/a/b/03 Song.name.flac") == "03 Song.name");
     CHECK(lmtui::displayName("noext") == "noext");
+    CHECK(lmtui::trackLabel("Björk", "Jóga", "/x/01.flac") == "Björk — Jóga");
+    CHECK(lmtui::trackLabel("", "Jóga", "/x/01.flac") == "Jóga");
+    CHECK(lmtui::trackLabel("Björk", "", "/x/01 Song.flac") == "01 Song");
     CHECK(lmtui::displayName("dir/.hidden") == ".hidden");
 }
 

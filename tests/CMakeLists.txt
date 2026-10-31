@@ -13,8 +13,11 @@ endfunction()
 lm_test(test_ring)
 lm_test(test_decoders)
 lm_test(test_player)
+lm_test(test_tags)
+lm_test(test_tags_files)
 # Unit tests of internal tag parsers need the private headers.
 target_include_directories(test_decoders PRIVATE ${PROJECT_SOURCE_DIR}/libplayer/src)
+target_include_directories(test_tags PRIVATE ${PROJECT_SOURCE_DIR}/libplayer/src)
 # The gapless test resamples its reference with miniaudio's converter, like the player.
 target_include_directories(test_player SYSTEM PRIVATE ${PROJECT_SOURCE_DIR}/libplayer/src ${PROJECT_SOURCE_DIR}/third_party)
 target_link_libraries(test_player PRIVATE lm_third_party)

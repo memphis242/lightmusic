@@ -11,6 +11,8 @@
 //     thread drains the inbox and applies the events in order. No UI state is touched
 //     off the UI thread. Position events (~1 Hz, only while playing) drive the progress
 //     redraw; there is no UI timer.
+//   - Queue labels come from a detached tag-scanner thread through a shared `LabelBox`
+//     and the same pipe; quitting never waits for it.
 //   - SIGWINCH/SIGINT/SIGTERM/SIGHUP/SIGCONT handlers set a flag and write to the same
 //     pipe. These signals (and SIGTSTP/SIGQUIT) are blocked before the player starts its
 //     threads, which inherit the mask, so asynchronous signals are only ever handled on
@@ -48,8 +50,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <string>
 #include <utility>
 #include <vector>
@@ -175,6 +179,38 @@ private:
     std::vector<lm::Event> events_;
 };
 
+// Queue labels from the (detached) tag scanner thread: (queue index, label). Shared
+// between the scanner and the UI thread through a shared_ptr, so it lives as long as
+// either needs it.
+class LabelBox {
+public:
+    void push(std::size_t i, std::string label) {
+        {
+            std::lock_guard lk(m_);
+            if (stop_) return;
+            labels_.emplace_back(i, std::move(label));
+        }
+        wake();
+    }
+    std::vector<std::pair<std::size_t, std::string>> take() {
+        std::lock_guard lk(m_);
+        return std::exchange(labels_, {});
+    }
+    void stop() {
+        std::lock_guard lk(m_);
+        stop_ = true;
+    }
+    bool stopped() {
+        std::lock_guard lk(m_);
+        return stop_;
+    }
+
+private:
+    std::mutex m_;
+    bool stop_ = false;
+    std::vector<std::pair<std::size_t, std::string>> labels_;
+};
+
 // Raw-ish terminal mode on the alternate screen; restored by the destructor (and by
 // the crash/stop handlers through the same globals).
 class Tty {
@@ -267,9 +303,15 @@ Element render(const Ui &ui, int height) {
     if (rows.empty()) rows.push_back(text("(no tracks)") | dim);
     Element queue = vbox(std::move(rows)) | yframe | flex;
 
-    // Now playing.
-    std::string title = "—";
-    if (st.index >= 0 && st.index < static_cast<int>(ui.names.size())) title = ui.names[st.index];
+    // Now playing: title (or file name), then artist and album when tagged.
+    std::string title = "—", sub;
+    if (st.index >= 0 && st.index < static_cast<int>(ui.names.size())) {
+        const auto &tg = st.track.tags;
+        title = tg.title.empty() ? lmtui::displayName(st.track.path) : tg.title;
+        sub = tg.artist;
+        if (!tg.album.empty()) sub += (sub.empty() ? "" : " · ") + tg.album;
+        if (!sub.empty()) sub = "  " + sub;
+    }
     const double dur = st.track.duration;
     const float frac = dur > 0 ? static_cast<float>(std::clamp(st.position / dur, 0.0, 1.0)) : 0.0f;
     const std::string times = lmtui::formatTime(st.position) + " / " + (dur > 0 ? lmtui::formatTime(dur) : "?:??");
@@ -280,7 +322,7 @@ Element render(const Ui &ui, int height) {
 
     Element now = vbox({
         hbox({text(std::string(statusGlyph(st.status)) + " "), text(statusLabel(st.status)) | bold, text("  "),
-              text(title) | bold | flex, text(" "), text(pos) | dim}),
+              text(title) | bold, text(sub) | dim, filler(), text(" "), text(pos) | dim}),
         hbox({text(times + " "), gauge(frac) | flex, text(" "), text(vol)}),
         text(ui.message.empty() ? std::string("? help  q quit") : ui.message) | dim,
     });
@@ -302,6 +344,10 @@ void apply(Ui &ui, const lm::Event &ev) {
     case lm::EventType::TrackChanged:
         ui.message.clear();
         if (ev.state.index >= 0) ui.selected = ev.state.index;
+        if (ev.state.index >= 0 && static_cast<std::size_t>(ev.state.index) < ui.names.size() &&
+            ev.state.track.path == ui.paths[static_cast<std::size_t>(ev.state.index)])
+            ui.names[static_cast<std::size_t>(ev.state.index)] =
+                lmtui::trackLabel(ev.state.track.tags.artist, ev.state.track.tags.title, ev.state.track.path);
         break;
     case lm::EventType::EndOfQueue: ui.message = "end of queue"; break;
     default: break;
@@ -372,6 +418,22 @@ int run(int argc, char **argv) {
         cfg.onEvent = [&inbox](const lm::Event &ev) {
             if (ev.type != lm::EventType::Log) inbox.push(ev);
         };
+        // Labels the queue from tags in the background (file names until then). The
+        // scanner owns its state through a shared_ptr and is detached: quitting never
+        // waits for it, even if a read blocks (slow or network file). It is started
+        // while the async signals are still blocked, so it inherits that mask.
+        auto labels = std::make_shared<LabelBox>();
+        std::thread([labels, paths = ui.paths] {
+            for (std::size_t i = 0; i < paths.size() && !labels->stopped(); i++) {
+                lm::Tags t;
+                if (lm::readTags(paths[i], t) && !t.title.empty())
+                    labels->push(i, lmtui::trackLabel(t.artist, t.title, paths[i]));
+            }
+        }).detach();
+        struct StopScan {
+            LabelBox &box;
+            ~StopScan() { box.stop(); }
+        } stopScan{*labels};
         std::optional<lm::Player> playerHolder;
         try {
             playerHolder.emplace(std::move(cfg));
@@ -475,6 +537,10 @@ int run(int argc, char **argv) {
                     }
                     for (const auto &ev : inbox.take()) {
                         apply(ui, ev);
+                        dirty = true;
+                    }
+                    for (auto &[i, label] : labels->take()) {
+                        if (i < ui.names.size()) ui.names[i] = std::move(label);
                         dirty = true;
                     }
                     if (g_resized.exchange(0)) {

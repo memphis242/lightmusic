@@ -29,6 +29,10 @@ std::vector<std::string> collectTracks(const std::vector<std::string> &args, std
 // Name shown in the queue: the file name without directory and extension.
 std::string displayName(std::string_view path);
 
+// Queue label from tags: "artist — title", just the title without an artist, and
+// displayName(path) without a title.
+std::string trackLabel(std::string_view artist, std::string_view title, std::string_view path);
+
 // "m:ss", or "h:mm:ss" from one hour on. Negative/NaN -> "0:00".
 std::string formatTime(double seconds);
 

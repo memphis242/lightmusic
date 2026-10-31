@@ -29,10 +29,23 @@ Format sniffAt(ByteSource &src, std::int64_t at) {
     const std::size_t n = src.read(b, sizeof b);
     if (n >= 4 && std::memcmp(b, "fLaC", 4) == 0) return Format::Flac;
     if (n >= 28 && std::memcmp(b, "OggS", 4) == 0) {
-        // First page: 27-byte header + segment table, then the codec's first header packet.
-        const std::size_t payload = 27 + b[26];
-        if (payload + 8 <= n && std::memcmp(b + payload, "OpusHead", 8) == 0) return Format::Opus;
-        if (payload + 7 <= n && std::memcmp(b + payload, "\x01vorbis", 7) == 0) return Format::Vorbis;
+        // The codec's first header packet starts the first page of its logical stream.
+        // Multiplexed files (e.g. a Skeleton stream first) put other streams' first
+        // pages before it, so look at the first few pages.
+        std::int64_t pos = at;
+        for (int page = 0; page < 8; page++) {
+            unsigned char h[27 + 255 + 8];
+            if (!src.seek(pos, ByteSource::Whence::Set)) break;
+            const std::size_t m = src.read(h, sizeof h);
+            if (m < 27 || std::memcmp(h, "OggS", 4) != 0) break;
+            const std::size_t payload = 27 + h[26];
+            if (payload + 8 <= m && std::memcmp(h + payload, "OpusHead", 8) == 0) return Format::Opus;
+            if (payload + 7 <= m && std::memcmp(h + payload, "\x01vorbis", 7) == 0) return Format::Vorbis;
+            if (m < payload) break;
+            std::int64_t body = 0;
+            for (std::size_t i = 27; i < payload; i++) body += h[i];
+            pos += static_cast<std::int64_t>(payload) + body;
+        }
         return Format::Unknown; // e.g. Ogg FLAC, Speex: not supported
     }
     if (n >= 10 && std::memcmp(b, "ID3", 3) == 0 && at == 0) {
@@ -77,6 +90,20 @@ std::unique_ptr<Decoder> openDecoderForFile(const std::string &path, std::string
         return nullptr;
     }
     return openDecoder(std::move(src), err);
+}
+
+bool readTags(const std::string &path, Tags &out, std::string *err) {
+    auto src = openFileSource(path);
+    if (!src) {
+        if (err) *err = "cannot open " + path;
+        return false;
+    }
+    out = Tags{};
+    if (!detail::readTagsFrom(*src, out, nullptr)) {
+        if (err) *err = "unrecognized format: " + path;
+        return false;
+    }
+    return true;
 }
 
 } // namespace lm

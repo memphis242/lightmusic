@@ -20,7 +20,11 @@ public:
     }
 
     bool init(std::string *err) {
-        if (!drmp3_init(&mp3_, onRead, onSeek, onTell, onMeta, this, nullptr)) {
+        // Same tag reader as lm::readTags (the source is rewound before decoding).
+        // TODO: APE tags (REPLAYGAIN_TRACK_GAIN) and the LAME header's RG field.
+        readTagsFrom(*src_, tags_, &gain_);
+        if (!src_->seek(0, ByteSource::Whence::Set) ||
+            !drmp3_init(&mp3_, onRead, onSeek, onTell, nullptr, this, nullptr)) {
             if (err) *err = "dr_mp3: not a decodable MP3: " + src_->name();
             return false;
         }
@@ -74,13 +78,6 @@ private:
         *cursor = static_cast<Mp3Decoder *>(u)->src_->tell();
         return *cursor >= 0 ? DRMP3_TRUE : DRMP3_FALSE;
     }
-    static void onMeta(void *u, const drmp3_metadata *m) {
-        auto *self = static_cast<Mp3Decoder *>(u);
-        if (m->type == DRMP3_METADATA_TYPE_ID3V2 && !self->gain_)
-            self->gain_ = parseId3v2TrackGain(static_cast<const unsigned char *>(m->pRawData), m->rawDataSize);
-        // TODO: APE tags (REPLAYGAIN_TRACK_GAIN) and the LAME header's RG field.
-    }
-
     std::unique_ptr<ByteSource> src_;
     drmp3 mp3_{};
     bool inited_ = false;
