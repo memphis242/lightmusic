@@ -4,14 +4,14 @@ A lightweight music player for Linux (Fedora/PipeWire first) with a small home s
 designed for low memory, near-zero idle CPU and fast response. Research and design notes:
 [docs/research.md](docs/research.md).
 
-Status: **playback core only** (`libplayer` + a dev CLI). No TUI, networking, cache or
-config yet.
+Status: playback core (`libplayer`), a dev CLI and a first terminal UI (`lightmusic`)
+for local files. No networking, cache, config or MPRIS yet.
 
 ## Build (Fedora 43)
 
 ```sh
 sudo dnf install gcc-c++ cmake ninja-build pkgconf-pkg-config \
-                 opusfile-devel libvorbis-devel libogg-devel
+                 opusfile-devel libvorbis-devel libogg-devel ftxui-devel
 # optional, only for the tests (generates audio fixtures at test time):
 sudo dnf install ffmpeg-free
 # optional, for the sanitizer builds:
@@ -26,7 +26,32 @@ miniaudio, dr_mp3 and dr_flac are vendored in `third_party/` (see
 no audio `-devel` package is needed. On Ubuntu/Debian the packages are
 `libopusfile-dev libvorbis-dev libogg-dev ffmpeg`.
 
+The TUI needs FTXUI >= 6 (Fedora's `ftxui-devel` is 6.1.9). Where no package exists
+(e.g. Ubuntu), `-DLM_FETCH_FTXUI=ON` fetches v6.1.9 at configure time (network) and links
+it statically; `-DLM_BUILD_TUI=OFF` skips the TUI altogether.
+
 ## Run
+
+```sh
+build/frontends/tui/lightmusic ~/Music/album              # files and/or directories
+build/frontends/tui/lightmusic --null ~/Music/a.flac      # Null backend (no sound card)
+```
+
+Directories are scanned recursively for `.mp3 .flac .opus .ogg .oga` and sorted
+naturally (`2` before `10`); files named explicitly are always queued (the core detects
+the format from the content). `--rg` applies ReplayGain track gain.
+
+| key | action | key | action |
+|-----|--------|-----|--------|
+| space | play / pause | enter | play selected |
+| n / p | next / previous | j k ↑ ↓ | move selection |
+| ← / → | seek −5 s / +5 s | g G Home End PgUp PgDn | jump selection |
+| + / - | volume ±5 % | ? / Esc | help / close help |
+| q | quit (also Ctrl-C) | | |
+
+The queue shows file names (the core does not expose title/artist tags yet).
+
+The dev CLI:
 
 ```sh
 build/tools/lightmusic-play ~/Music/album/*.mp3      # default PipeWire/Pulse sink
@@ -51,6 +76,11 @@ ctest --test-dir build --output-on-failure
 - `test_player`: on miniaudio's Null backend: the frames sent to the device equal the
   concatenation of the decoded tracks (nothing inserted at joins), resampling of a 48 kHz
   track after 44.1 kHz ones, and the command/state machine. Skipped without `ffmpeg`.
+- `test_tui_logic`: directory scanning, natural sort, terminal key parsing, key mapping,
+  time/volume formatting.
+- `test_tui_smoke`: runs `lightmusic` in a pty (`script`) on the Null backend with
+  generated files, sends keys, expects a clean exit on `q` and a restored terminal.
+  Skipped without `script` or `ffmpeg`.
 
 Sanitizer builds (own code is built with `-Wall -Wextra -Werror`; `third_party/` is not):
 
@@ -72,6 +102,8 @@ libplayer/              static library `lm::player` (namespace lm), no UI deps
                         output, player threads; miniaudio_impl.c / dr_impl.c are the
                         only TUs that compile the vendored implementations
 tools/                  lightmusic-play dev CLI
+frontends/tui/          `lightmusic` TUI (FTXUI DOM + own poll() loop); tui_logic.* is
+                        the UI-free, unit-tested part
 tests/                  ctest tests (no framework)
 bench/                  research probes and Fedora measurements (see bench/README.md)
 docs/research.md        dependency/architecture research

@@ -14,6 +14,8 @@ endif()
 option(LM_ASAN "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
 option(LM_TSAN "Build with ThreadSanitizer" OFF)
 option(LM_BUILD_TESTS "Build the tests" ON)
+option(LM_BUILD_TUI "Build the lightmusic TUI (needs FTXUI >= 6)" ON)
+option(LM_FETCH_FTXUI "Fetch FTXUI v6.1.9 with FetchContent if no system package" OFF)
 
 if(LM_ASAN AND LM_TSAN)
   message(FATAL_ERROR "LM_ASAN and LM_TSAN are mutually exclusive")
@@ -38,6 +40,9 @@ pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
 
 add_subdirectory(libplayer)
 add_subdirectory(tools)
+if(LM_BUILD_TUI)
+  add_subdirectory(frontends/tui)
+endif()
 
 if(LM_BUILD_TESTS)
   enable_testing()
