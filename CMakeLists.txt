@@ -1,0 +1,45 @@
+cmake_minimum_required(VERSION 3.20)
+project(lightmusic VERSION 0.1.0 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
+endif()
+
+option(LM_ASAN "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+option(LM_TSAN "Build with ThreadSanitizer" OFF)
+option(LM_BUILD_TESTS "Build the tests" ON)
+
+if(LM_ASAN AND LM_TSAN)
+  message(FATAL_ERROR "LM_ASAN and LM_TSAN are mutually exclusive")
+endif()
+if(LM_ASAN)
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined)
+  add_link_options(-fsanitize=address,undefined)
+endif()
+if(LM_TSAN)
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=thread)
+endif()
+
+# Warnings for our own code only (third_party gets none of these).
+add_library(lm_warnings INTERFACE)
+target_compile_options(lm_warnings INTERFACE -Wall -Wextra -Werror)
+
+find_package(Threads REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(OPUSFILE REQUIRED IMPORTED_TARGET opusfile)
+pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
+
+add_subdirectory(libplayer)
+add_subdirectory(tools)
+
+if(LM_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
