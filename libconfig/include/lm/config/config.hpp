@@ -68,6 +68,20 @@ struct Layer {
 // Returns false on any error. Never throws.
 bool parseYaml(std::string_view text, const std::string &file, Layer &out, Diags &diags);
 
+// Comment-preserving in-place edit of a YAML settings text: for each (dotted key, value)
+// in order, only the bytes of that key's value are replaced (inline comments, quoting
+// style where it still fits, indentation and everything else are kept). A missing key is
+// inserted as "key: value" at the end of its existing parent mapping, at that mapping's
+// indentation (missing parent sections are created, at the end of the file for a
+// top-level one). Values are written plain when possible ("35", "true"), else quoted.
+// Refused (false, `err` says why, `out` untouched) for anything that is not a one-line
+// value in a block mapping: flow collections ([..], {..}), block scalars (|, >),
+// multi-line plain or quoted values, tags, anchors, quoted keys, a value that is a
+// mapping or list, or a file that does not parse. Each edit is re-parsed and must read
+// back as the new value with every other entry unchanged.
+bool editYamlValues(std::string_view text, const std::vector<std::pair<std::string, std::string>> &values,
+                    std::string &out, std::string &err);
+
 // ---------------------------------------------------------------- files
 
 struct FilePolicy {
@@ -89,13 +103,25 @@ bool readConfigFile(const std::string &path, const FilePolicy &policy, std::stri
 bool loadLayer(const std::string &path, const FilePolicy &policy, Layer &out, bool &missing, Diags &diags);
 
 // Writes `content` to `path` atomically: temp file in the same directory, fsync, rename
-// over the file, fsync the directory. For the future UI write-back. A symlink is
+// over the file, fsync the directory (used by updateConfigValues()). A symlink is
 // resolved first and its target is replaced (the link stays). An existing file keeps
 // its mode (`mode` is for a new file) and must pass the reader's checks (regular file,
 // owned by the effective uid, not group/world-writable); the directory must pass the
 // directory check of readConfigFile(). `policy.allowRootOwned` is honoured.
 bool writeFileAtomic(const std::string &path, std::string_view content, unsigned mode, std::string *err,
                      const FilePolicy &policy = {});
+
+// Writes settings back into a config file with editYamlValues() (comments and layout
+// kept) through writeFileAtomic() (a symlink's target is replaced, the mode kept). The
+// file is read with the reader's checks first; if it does not exist it is created
+// (mode 0600, missing parent directories 0700) with `header` (comment lines) followed
+// by the keys. Nothing is written if nothing changes. `written` (optional) receives the
+// file's content afterwards, so a watcher can recognise the change as our own.
+bool updateConfigValues(const std::string &path, const std::vector<std::pair<std::string, std::string>> &values,
+                        std::string &err, std::string *written = nullptr, const FilePolicy &policy = {},
+                        std::string_view header = "# lightmusic settings; see the README (Configuration).\n"
+                                                  "# Created by lightmusic when a setting was changed in the UI;\n"
+                                                  "# edit freely: comments and layout are kept on later saves.\n");
 
 // The directory check of readConfigFile() for `dir`: false with `err` if it is
 // group/world-writable without the sticky bit.

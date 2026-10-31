@@ -29,10 +29,11 @@ const Schema<ClientSettings> &clientSchema() {
             boolField<S>("cache.background_fill", &S::backgroundFill, true),
             boolField<S>("cache.pause_on_metered", &S::pauseOnMetered, true),
             pathField<S>("cache.dir", &S::cacheDir),
-            intField<S>("playback.volume", &S::volume, 0, 100, true),
+            intField<S>("playback.volume", &S::volume, 0, 150, true),
             enumField<S>("playback.replaygain", &S::replayGain,
                          {{"off", ReplayGain::Off}, {"track", ReplayGain::Track}, {"album", ReplayGain::Album}}),
             boolField<S>("ui.show_cache_markers", &S::showCacheMarkers),
+            boolField<S>("ui.save_settings", &S::saveSettings, true),
         };
         const std::string keyMsg = "the API key must not be stored in the config file; put it in a file only you "
                                    "can read (chmod 600) and set server.key_file to its path";

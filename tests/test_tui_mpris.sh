@@ -18,6 +18,8 @@ ffmpeg -hide_banner -loglevel error -y -f lavfi -i "sine=frequency=440:duration=
     -metadata title=Alpha -metadata artist=Tester -c:a flac "$TMP/a.flac" || exit 1
 ffmpeg -hide_banner -loglevel error -y -f lavfi -i "sine=frequency=550:duration=30" -ac 2 \
     -metadata title=Beta -c:a flac "$TMP/b.flac" || exit 1
+# Hermetic settings: the TUI saves volume changes into cfg.yaml on quit.
+export XDG_CONFIG_HOME="$TMP/xdg"
 export ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}log_path=$TMP/san"
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:+$UBSAN_OPTIONS:}log_path=$TMP/san:print_stacktrace=1"
 export TSAN_OPTIONS="${TSAN_OPTIONS:+$TSAN_OPTIONS:}log_path=$TMP/san"

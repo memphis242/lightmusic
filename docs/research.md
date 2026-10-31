@@ -234,7 +234,14 @@ streamed tracks are completed in the background during idle periods.
   from the UI too. Parser: **yaml-cpp** (MIT,
   system shared library: `yaml-cpp-devel` on Fedora, `libyaml-cpp-dev` on Ubuntu; about
   +160 KB per binary plus the 294 KB shared `.so`). Its emitter does not preserve
-  comments, so how the UI writes back is open (see below). Created `0600`; warn at startup
+  comments, so the UI does not re-emit the file: **decided (2026-10-31)**, the UI edits
+  `cfg.yaml` in place, replacing only the source bytes of each changed value (located
+  with the event parser's marks; inline comments, blank lines, key order, quoting and
+  indentation kept) or inserting one `key: value` line into the existing section.
+  Anything else (flow collections, block or multi-line scalars, tags, anchors) is
+  refused with a message instead of guessed at, and every edit is re-parsed and verified
+  before the atomic write. A separate `ui-overrides.yaml` was rejected (two places to
+  look). Created `0600`; warn at startup
   if group/world-readable (it holds the API key). Writes are temp → fsync → rename. Reloaded on inotify
   change; unknown keys warn, not fail. Example:
   ```yaml
@@ -272,8 +279,9 @@ Conclusion: for a private server used mostly on home/LAN with largely MP3 source
 in v1. Revisit if FLAC libraries are streamed over mobile data.
 
 ## Open questions
-- UI write-back: rewrite `cfg.yaml` (drops comments) vs. a separate generated
-  `ui-overrides.yaml` layered on top.
+- ~~UI write-back: rewrite `cfg.yaml` (drops comments) vs. a separate generated
+  `ui-overrides.yaml` layered on top.~~ Closed: comment-preserving in-place edits of
+  `cfg.yaml` (see Configuration above).
 - v1 phone support: none (OpenSubsonic layer in v1.1) vs. a minimal OpenSubsonic subset in v1
   (ping, getAlbumList2, getAlbum, stream, getCoverArt, search3) so Symfonium works.
 

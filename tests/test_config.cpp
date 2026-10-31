@@ -14,6 +14,10 @@
 #include <cstdlib>
 #include <memory>
 #include <fstream>
+#include <iterator>
+#include <map>
+#include <utility>
+#include <vector>
 #include <random>
 #include <string>
 
@@ -154,7 +158,7 @@ void testUnknownAndTypes() {
                         "  max_size_mb: lots\n"
                         "  background_fill: maybe\n"
                         "playback:\n"
-                        "  volume: 101\n"
+                        "  volume: 151\n"
                         "  replaygain: loud\n"
                         "frobnicate: 1\n",
                         d);
@@ -167,7 +171,7 @@ void testUnknownAndTypes() {
     CHECK(t && t->level == Diag::Error && t->line == 5 && t->col > 0);
     const Diag *b = findDiag(d, "cache.background_fill: expected true or false");
     CHECK(b && b->line == 6);
-    const Diag *r = findDiag(d, "playback.volume: 101 is out of range (0..100)");
+    const Diag *r = findDiag(d, "playback.volume: 151 is out of range (0..150)");
     CHECK(r && r->line == 8);
     const Diag *e = findDiag(d, "'loud' is not one of off|track|album");
     CHECK(e && e->line == 9);
@@ -688,6 +692,291 @@ void testMalformed() {
     }
 }
 
+
+// ---- UI write-back: comment-preserving in-place edits ----------------------------
+
+std::string edit(const std::string &text, std::vector<std::pair<std::string, std::string>> v, bool expectOk = true,
+                 std::string *errOut = nullptr) {
+    std::string out = "<untouched>", err;
+    const bool ok = editYamlValues(text, v, out, err);
+    if (ok != expectOk) std::fprintf(stderr, "edit: unexpected %s: %s\n--\n%s--\n", ok ? "success" : "failure", err.c_str(), text.c_str());
+    CHECK(ok == expectOk);
+    if (!ok) CHECK(out == "<untouched>" && !err.empty());
+    if (errOut) *errOut = err;
+    return ok ? out : text;
+}
+
+std::string slurp(const std::string &p) {
+    std::ifstream f(p);
+    return std::string(std::istreambuf_iterator<char>(f), {});
+}
+
+void testEditPreserves() {
+    const std::string readme = "# ~/.config/lightmusic/cfg.yaml  (chmod 600)\n"
+                               "server:\n"
+                               "  url: https://music.example.net    # http:// or https://\n"
+                               "  key_file: key                     # file holding the API key\n"
+                               "                                    # (continued comment)\n"
+                               "\n"
+                               "cache:\n"
+                               "  max_size_mb: 1024                 # 1..2^30 (hot)\n"
+                               "  background_fill: true             # idle fill        (hot)\n"
+                               "  dir: \"~/.cache/lightmusic\"        # quoted\n"
+                               "playback:\n"
+                               "  volume: 100                       # percent, 0..100  (hot)\n"
+                               "  replaygain: off\n"
+                               "ui:\n"
+                               "  show_cache_markers: true\n";
+    // Only the value bytes change; the comment column moves by the length difference.
+    CHECK(edit(readme, {{"playback.volume", "35"}}) ==
+          std::string(readme).replace(readme.find("100                       #"), 3, "35"));
+    std::string out = edit(readme, {{"cache.background_fill", "false"}, {"playback.volume", "7"}});
+    CHECK(out.find("  background_fill: false             # idle fill        (hot)\n") != std::string::npos);
+    CHECK(out.find("  volume: 7                       # percent") != std::string::npos);
+    CHECK(out.find("# (continued comment)\n\ncache:") != std::string::npos);
+    // Quoting style kept for strings; numbers/booleans always plain.
+    out = edit(readme, {{"cache.dir", "/x y/z"}});
+    CHECK(out.find("  dir: \"/x y/z\"        # quoted\n") != std::string::npos);
+    CHECK(edit("a: 'x'\n", {{"a", "it's"}}) == "a: 'it''s'\n");
+    CHECK(edit("a: 'x'\n", {{"a", "5"}}) == "a: 5\n");
+    CHECK(edit("a: \"x\" # c\n", {{"a", "q\"\\"}}) == "a: \"q\\\"\\\\\" # c\n");
+    CHECK(edit("a: x\n", {{"a", "has # hash"}}) == "a: \"has # hash\"\n");
+    CHECK(edit("a: x\n", {{"a", "k: v"}}) == "a: \"k: v\"\n");
+    CHECK(edit("a: x\n", {{"a", ""}}) == "a: \"\"\n");
+    CHECK(edit("a: x\n", {{"a", "-3"}}) == "a: -3\n");
+    CHECK(edit("a: x#y\n", {{"a", "z"}}) == "a: z\n"); // '#' without a space is part of the value
+    // Unchanged value: identical text.
+    CHECK(edit(readme, {{"playback.volume", "100"}}) == readme);
+    // Empty value and explicit null.
+    CHECK(edit("playback:\n  volume:\n  replaygain: off\n", {{"playback.volume", "40"}}) ==
+          "playback:\n  volume: 40\n  replaygain: off\n");
+    CHECK(edit("playback:\n  volume:   # later\n", {{"playback.volume", "40"}}) == "playback:\n  volume: 40   # later\n");
+    CHECK(edit("playback:\n  volume: ~ # n\n", {{"playback.volume", "40"}}) == "playback:\n  volume: 40 # n\n");
+    // CRLF files stay CRLF, also for inserted lines.
+    CHECK(edit("# c\r\nplayback:\r\n  volume: 9 # v\r\n", {{"playback.volume", "10"}}) ==
+          "# c\r\nplayback:\r\n  volume: 10 # v\r\n");
+    CHECK(edit("playback:\r\n  volume: 9\r\n", {{"playback.replaygain", "track"}}) ==
+          "playback:\r\n  volume: 9\r\n  replaygain: track\r\n");
+    // No trailing newline.
+    CHECK(edit("playback:\n  volume: 9", {{"playback.volume", "1"}}) == "playback:\n  volume: 1");
+    // A UTF-8 BOM is kept and does not shift positions.
+    CHECK(edit("\xEF\xBB\xBFplayback:\n  volume: 5 # v\n", {{"playback.volume", "7"}}) ==
+          "\xEF\xBB\xBFplayback:\n  volume: 7 # v\n");
+    CHECK(edit("\xEF\xBB\xBF# c\nplayback:\n  volume: 5\n", {{"playback.replaygain", "track"}}) ==
+          "\xEF\xBB\xBF# c\nplayback:\n  volume: 5\n  replaygain: track\n");
+    // Null words are strings here: always quoted; other typed words stay plain.
+    CHECK(edit("a: x\n", {{"a", "null"}}) == "a: \"null\"\n");
+    CHECK(edit("a: 'x'\n", {{"a", "~"}}) == "a: '~'\n");
+    CHECK(edit("a: x\n", {{"a", "yes"}}) == "a: yes\n");
+    // '#' and escaped quotes inside quotes, tabs around the value.
+    CHECK(edit("a: \"x\\\" # y\" # c\n", {{"a", "z"}}) == "a: \"z\" # c\n");
+    CHECK(edit("a: 'it''s # no' # c\n", {{"a", "z"}}) == "a: 'z' # c\n");
+    CHECK(edit("a:\t5\t# c\n", {{"a", "6"}}) == "a:\t6\t# c\n");
+    // Four-space and deeper indentation are respected.
+    CHECK(edit("playback:\n    volume: 9\n", {{"playback.volume", "1"}}) == "playback:\n    volume: 1\n");
+}
+
+void testEditInsert() {
+    // Into an existing section, after its last line (and its indented trailing comments),
+    // before blank lines and the next section.
+    CHECK(edit("cache:\n  max_size_mb: 5   # c\n                   # more\n\n# about playback\nplayback:\n  volume: 1\n",
+               {{"cache.background_fill", "false"}}) ==
+          "cache:\n  max_size_mb: 5   # c\n                   # more\n  background_fill: false\n\n# about playback\n"
+          "playback:\n  volume: 1\n");
+    CHECK(edit("a:\n    b: 1\n    c:\n        d: 2\nz: 0\n", {{"a.e", "3"}}) ==
+          "a:\n    b: 1\n    c:\n        d: 2\n    e: 3\nz: 0\n");
+    CHECK(edit("a:\n  c:\n    d: 2\n", {{"a.c.e", "3"}}) == "a:\n  c:\n    d: 2\n    e: 3\n");
+    // Section created at the end of the file (missing newline added), indentation step
+    // taken from the file.
+    CHECK(edit("# top\ncache:\n    max_size_mb: 5", {{"playback.volume", "20"}}) ==
+          "# top\ncache:\n    max_size_mb: 5\nplayback:\n    volume: 20\n");
+    CHECK(edit("cache:\n  max_size_mb: 5\n", {{"ui.save_settings", "false"}}) ==
+          "cache:\n  max_size_mb: 5\nui:\n  save_settings: false\n");
+    // Under an empty section header.
+    CHECK(edit("playback:   # empty for now\nui:\n  x: 1\n", {{"playback.volume", "20"}}) ==
+          "playback:   # empty for now\n  volume: 20\nui:\n  x: 1\n");
+    // Empty / comment-only file.
+    CHECK(edit("", {{"playback.volume", "20"}}) == "playback:\n  volume: 20\n");
+    CHECK(edit("# only a comment\n", {{"a.b.c", "x"}}) == "# only a comment\na:\n  b:\n    c: x\n");
+    CHECK(edit("---\n", {{"a", "1"}}) == "---\na: 1\n");
+    // Missing section between others: inserted at the end (key order of others kept).
+    CHECK(edit("x: 1\ny: 2\n", {{"m.n", "3"}}) == "x: 1\ny: 2\nm:\n  n: 3\n");
+}
+
+void testEditRefusals() {
+    std::string err;
+    auto refused = [&](const std::string &text, const std::string &key, const std::string &needle) {
+        edit(text, {{key, "1"}}, false, &err);
+        if (err.find(needle) == std::string::npos) std::fprintf(stderr, "refusal message: %s\n", err.c_str());
+        CHECK(err.find(needle) != std::string::npos);
+    };
+    refused("playback: {volume: 80}\n", "playback.volume", "flow mapping");
+    refused("{a: 1}\n", "a", "flow mapping");
+    refused("a: [1, 2]\n", "a", "flow collection");
+    refused("a:\n  - 1\n", "a", "list");
+    refused("a:\n  b: 1\n", "a", "mapping");
+    refused("a: |\n  text\n", "a", "block scalar");
+    refused("a: >-\n  text\n", "a", "block scalar");
+    refused("a: one\n  two\n", "a", "several lines");
+    refused("a: \"one\n  two\"\n", "a", "several lines");
+    refused("a:\n  value\n", "a", "following line");
+    refused("a: !!int 5\n", "a", "tag");
+    refused("\"a\": 5\n", "a", "quoted");
+    refused("a: 1\nb: 2\nb: 3\n", "a", "has errors");
+    refused("a: &x 1\n", "a", "has errors"); // anchors: the parser rejects the whole file
+    refused("a: [\n", "a", "has errors");
+    refused("a: 5\n", "a.b", "is a value, not a section");
+    refused("a: 5\n", "a..b", "invalid key");
+    refused("a: 5\n", "a b", "invalid key");
+    refused("- 1\n", "a", "has errors");
+}
+
+void testUpdateFile() {
+    // In place, mode kept, comment kept.
+    const std::string p = writeFile("wb.yaml", "# keep me\nplayback:\n  volume: 50  # pct\n", 0640);
+    std::string err, written;
+    CHECK(updateConfigValues(p, {{"playback.volume", "65"}}, err, &written));
+    CHECK(slurp(p) == "# keep me\nplayback:\n  volume: 65  # pct\n" && written == slurp(p));
+    struct stat st{};
+    ::stat(p.c_str(), &st);
+    CHECK((st.st_mode & 07777) == 0640);
+    // Unchanged: no write (mtime/inode kept).
+    const auto ino = st.st_ino;
+    CHECK(updateConfigValues(p, {{"playback.volume", "65"}}, err));
+    ::stat(p.c_str(), &st);
+    CHECK(st.st_ino == ino);
+    // Refusal leaves the file alone.
+    writeFile("wb.yaml", "playback: {volume: 50}\n");
+    CHECK(!updateConfigValues(p, {{"playback.volume", "65"}}, err) && err.find("flow mapping") != std::string::npos);
+    CHECK(slurp(p) == "playback: {volume: 50}\n");
+    // Group-writable file: refused by the reader's checks.
+    writeFile("wb.yaml", "playback:\n  volume: 1\n", 0620);
+    CHECK(!updateConfigValues(p, {{"playback.volume", "2"}}, err) && err.find("group/world-writable") != std::string::npos);
+    // A new file (and directories): header + keys, 0600, loads back.
+    const std::string np = g_dir + "/new/sub/cfg.yaml";
+    CHECK(updateConfigValues(np, {{"playback.volume", "30"}}, err, &written));
+    CHECK(slurp(np).rfind("# lightmusic settings", 0) == 0 && slurp(np).find("playback:\n  volume: 30\n") != std::string::npos);
+    ::stat(np.c_str(), &st);
+    CHECK((st.st_mode & 07777) == 0600);
+    ::stat((g_dir + "/new/sub").c_str(), &st);
+    CHECK((st.st_mode & 0777) == 0700);
+    ClientSettings s;
+    Diags d;
+    CHECK(loadClientSettings(np, true, nullptr, {}, s, d) && s.volume == 30 && s.saveSettings);
+    // Symlinked config (dotfile manager): the target is edited, the link stays.
+    ::mkdir((g_dir + "/dots").c_str(), 0700);
+    const std::string target = g_dir + "/dots/cfg.yaml";
+    {
+        std::ofstream f(target);
+        f << "# dotfiles\nplayback:\n  volume: 10 # v\n";
+    }
+    ::chmod(target.c_str(), 0600);
+    const std::string link = g_dir + "/link.yaml";
+    ::unlink(link.c_str());
+    CHECK(::symlink(target.c_str(), link.c_str()) == 0);
+    CHECK(updateConfigValues(link, {{"playback.volume", "11"}, {"ui.save_settings", "true"}}, err));
+    struct stat lst{};
+    CHECK(::lstat(link.c_str(), &lst) == 0 && S_ISLNK(lst.st_mode));
+    CHECK(slurp(target) == "# dotfiles\nplayback:\n  volume: 11 # v\nui:\n  save_settings: true\n");
+    // ui.save_settings is a known boolean.
+    Diags d2;
+    load("ui:\n  save_settings: false\n", d2);
+    CHECK(d2.empty());
+    CHECK(!load("ui:\n  save_settings: false\n", d2).saveSettings);
+}
+
+// Random valid configs (random sections/keys/values, comments, blank lines, quoting,
+// indentation, CRLF) with random edits: every accepted edit must read back as the new
+// value with all other entries unchanged and every comment line kept. Run under ASan/UBSan.
+void testEditFuzz() {
+    const char *env = std::getenv("LM_FUZZ_SEED");
+    std::mt19937 rng(env ? static_cast<unsigned>(std::atoi(env)) : 777u);
+    auto pick = [&](std::initializer_list<const char *> l) { return std::string(*(l.begin() + rng() % l.size())); };
+    const int iters = std::getenv("LM_FUZZ_ITERS") ? std::atoi(std::getenv("LM_FUZZ_ITERS")) : 1500;
+    int accepted = 0;
+    for (int it = 0; it < iters; it++) {
+        const std::string nl = rng() % 5 == 0 ? "\r\n" : "\n";
+        const std::size_t ind = 2 + 2 * (rng() % 2);
+        std::string t;
+        std::vector<std::string> comments;
+        const int nsec = static_cast<int>(rng() % 4);
+        std::vector<std::string> keys;
+        for (int si = 0; si < nsec; si++) {
+            const std::string sec = pick({"cache", "playback", "ui", "server", "x"}) + std::to_string(si);
+            if (rng() % 2) {
+                comments.push_back("# section " + std::to_string(it) + "." + std::to_string(si));
+                t += comments.back() + nl;
+            }
+            t += sec + ":" + (rng() % 3 == 0 ? "   # sec" : "") + nl;
+            const int nk = static_cast<int>(rng() % 4);
+            for (int k = 0; k < nk; k++) {
+                const std::string key = pick({"volume", "dir", "max_size_mb", "fill", "a-b", "k_1"}) + std::to_string(k);
+                keys.push_back(sec + "." + key);
+                t += std::string(ind, ' ') + key + ":";
+                switch (rng() % 6) {
+                case 0: break;
+                case 1: t += " " + std::to_string(rng() % 1000); break;
+                case 2: t += rng() % 2 ? " 'single q'" : "\t'it''s # x'"; break;
+                case 3: t += rng() % 2 ? " \"dq \\\" x\"" : " \"h # \\\\\""; break;
+                case 4: t += " true"; break;
+                default: t += " ~"; break;
+                }
+                if (rng() % 2) t += std::string(1 + rng() % 6, ' ') + "# c" + std::to_string(k);
+                t += nl;
+                if (rng() % 4 == 0) {
+                    comments.push_back(std::string(ind + 4, ' ') + "# cont " + std::to_string(k));
+                    t += comments.back() + nl;
+                }
+                if (rng() % 5 == 0) t += nl;
+            }
+        }
+        if (!t.empty() && rng() % 3 == 0) t.resize(t.size() - nl.size()); // no final newline
+        if (rng() % 6 == 0) t.insert(0, "\xEF\xBB\xBF"); // byte order mark
+        std::vector<std::pair<std::string, std::string>> edits;
+        const int ne = 1 + static_cast<int>(rng() % 3);
+        for (int e = 0; e < ne; e++) {
+            std::string key = (!keys.empty() && rng() % 2) ? keys[rng() % keys.size()]
+                                                           : pick({"playback.volume", "cache.fill", "new.sub.k", "top"});
+            std::string val = pick({"0", "100", "true", "off", "a b", "x # y", "k: v", "", "'q'", "\"d\"", "-1", "~x",
+                                    "tab\tc", "é", "null", "~", "yes", " lead", "a:b", "#x"});
+            edits.emplace_back(key, val);
+        }
+        Layer before;
+        Diags d;
+        if (!parseYaml(t, "f", before, d)) continue; // generated something odd (e.g. dup)
+        std::string out, err;
+        if (!editYamlValues(t, edits, out, err)) {
+            CHECK(!err.empty());
+            continue;
+        }
+        ++accepted;
+        Layer after;
+        Diags d2;
+        CHECK(parseYaml(out, "f", after, d2));
+        std::map<std::string, std::string> want;
+        for (const auto &[k, v] : edits) want[k] = v;
+        for (const auto &[k, v] : want) {
+            const Value *x = after.find(k);
+            CHECK(x && x->kind == Value::Scalar && x->scalar == v);
+        }
+        for (const auto &[k, v] : before.entries) {
+            if (want.count(k)) continue;
+            bool parent = false;
+            for (const auto &[wk, wv] : want)
+                if (wk.rfind(k + ".", 0) == 0) parent = true;
+            if (parent && v.kind == Value::Null) continue;
+            const Value *x = after.find(k);
+            CHECK(x && x->kind == v.kind && x->scalar == v.scalar);
+        }
+        for (const auto &c : comments) CHECK(out.find(c + nl) != std::string::npos || out.find(c) + c.size() == out.size());
+        if (t.find("\r\n") != std::string::npos) {
+            for (std::size_t i = 0; i < out.size(); i++)
+                if (out[i] == '\n') CHECK(i > 0 && out[i - 1] == '\r');
+        }
+    }
+    CHECK(accepted > iters / 4);
+}
+
 } // namespace
 
 int main() {
@@ -706,6 +995,11 @@ int main() {
     testReload();
     testEditorSaves();
     testMalformed();
+    testEditPreserves();
+    testEditInsert();
+    testEditRefusals();
+    testUpdateFile();
+    testEditFuzz();
     std::filesystem::remove_all(g_dir);
     return lmtest::finish("test_config");
 }

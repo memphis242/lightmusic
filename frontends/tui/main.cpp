@@ -57,6 +57,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cerrno>
 #include <csignal>
 #include <cstdio>
@@ -696,6 +697,7 @@ int run(int argc, char **argv) {
         *uiActive = true;
 #endif
 
+        std::string quitSaveErr;
         {
             Tty term;
             if (!term.ok()) {
@@ -716,7 +718,47 @@ int run(int argc, char **argv) {
                     watcher.reset();
                 }
             }
+            // Settings write-back (ui.save_settings): volume changes are saved into cfg.yaml
+            // 1 s after the last change and on quit, editing only that value in place
+            // (comments and layout kept). `lastWritten` is the file as we left it, so the
+            // inotify event of our own save is recognised and reloads silently.
+            std::string lastWritten;
+            std::optional<std::chrono::steady_clock::time_point> saveDue;
+            auto volumePct = [&] {
+                return static_cast<int>(ui.volumeTarget.value_or(player.state().volume) * 100.0f + 0.5f);
+            };
+            auto save = [&](std::string *quitErr = nullptr) {
+                saveDue.reset();
+                if (live.path.empty() || !live.running.saveSettings) return;
+                // The keys go up to 150% (software gain), as does playback.volume.
+                const int pct = std::clamp(volumePct(), 0, static_cast<int>(lmtui::kVolumeMax * 100.0f + 0.5f));
+                if (pct == live.running.volume) return;
+                std::string err;
+                if (lm::config::updateConfigValues(live.path, {{"playback.volume", std::to_string(pct)}}, err,
+                                                   &lastWritten, lm::config::clientFilePolicy()))
+                    live.running.volume = pct;
+                else if (quitErr)
+                    *quitErr = err;
+                else
+                    ui.message = err, dirty = true;
+            };
+            auto saveTimeoutMs = [&]() -> int {
+                if (!saveDue) return -1;
+                const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(*saveDue -
+                                                                                      std::chrono::steady_clock::now())
+                                    .count();
+                return ms <= 0 ? 0 : static_cast<int>(ms) + 1;
+            };
             auto reload = [&] {
+                bool selfWrite = false;
+                if (!lastWritten.empty()) {
+                    std::string text;
+                    bool missing = false;
+                    lm::config::Diags ignored;
+                    selfWrite = lm::config::readConfigFile(live.path, lm::config::clientFilePolicy(), text, missing,
+                                                           ignored) &&
+                                text == lastWritten;
+                }
                 auto r = lm::config::reloadClientSettings(live.path, nullptr, live.cli, live.running);
                 dirty = true;
                 if (!r.ok) {
@@ -741,6 +783,7 @@ int run(int argc, char **argv) {
                                              n.pauseOnMetered);
 #endif
                 live.running = n;
+                if (selfWrite && r.diff.hot.empty() && r.diff.restart.empty()) return; // our own save
                 std::string msg = "settings reloaded";
                 if (!r.diff.restart.empty()) {
                     msg += "; restart required for:";
@@ -790,6 +833,7 @@ int run(int argc, char **argv) {
                     const float base = ui.volumeTarget.value_or(player.state().volume);
                     ui.volumeTarget = lmtui::stepVolume(base, cmd == lmtui::Command::VolumeUp ? +1 : -1);
                     player.setVolume(*ui.volumeTarget);
+                    saveDue = std::chrono::steady_clock::now() + std::chrono::seconds(1);
                     break;
                 }
                 case lmtui::Command::PlaySelected: player.playIndex(ui.selected); break;
@@ -838,6 +882,7 @@ int run(int argc, char **argv) {
                 int timeout = parser.pending() ? 25 : -1;
                 if (watcher && watcher->timeoutMs() >= 0) // settings reload debounce
                     timeout = timeout < 0 ? watcher->timeoutMs() : std::min(timeout, watcher->timeoutMs());
+                if (saveDue) timeout = timeout < 0 ? saveTimeoutMs() : std::min(timeout, saveTimeoutMs());
                 const int r = poll(fds, 4, mpris.timeout(timeout)); // min of all; -1 when all idle
                 mpris.process();
                 if (mpris.quitRequested()) running = false;
@@ -846,14 +891,16 @@ int run(int argc, char **argv) {
                     if (errno == EINTR) continue;
                     break;
                 }
-                if (r == 0) { // escape-sequence, reload-debounce or sd-bus timeout
+                if (r == 0) { // escape-sequence, reload/save-debounce or sd-bus timeout
                     if (parser.pending())
                         for (const auto &k : parser.flush()) handleKey(k);
                     if (watcher && watcher->due()) reload();
+                    if (saveDue && saveTimeoutMs() == 0) save();
                     continue;
                 }
                 if (fds[2].revents & POLLIN) watcher->changed();
                 if (watcher && watcher->due()) reload();
+                if (saveDue && saveTimeoutMs() == 0) save();
                 if (fds[1].revents & POLLIN) {
                     char drain[64];
                     while (read(pipeFds[0], drain, sizeof drain) > 0) {
@@ -899,7 +946,9 @@ int run(int argc, char **argv) {
                 }
             }
             quitSig = g_quitSignal.load();
+            save(&quitSaveErr); // a volume changed less than 1 s ago (or not yet saved) is kept
         } // terminal restored here
+        if (!quitSaveErr.empty()) std::fprintf(stderr, "lightmusic: settings %s\n", quitSaveErr.c_str());
         // A second Ctrl-C / SIGTERM during a slow player shutdown kills us outright.
         for (int sig : {SIGINT, SIGTERM, SIGHUP}) setHandler(sig, SIG_DFL);
         if (quitSig) setHandler(quitSig, SIG_DFL);
