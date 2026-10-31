@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  fedora:
+    name: fedora43 (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: normal
+            build_type: RelWithDebInfo
+            cmake_args: ""
+          - name: asan-ubsan
+            build_type: Debug
+            cmake_args: -DLM_ASAN=ON
+          - name: tsan
+            build_type: Debug
+            cmake_args: -DLM_TSAN=ON
+          - name: net-off
+            build_type: RelWithDebInfo
+            cmake_args: -DLM_BUILD_NET=OFF
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check for CMake project
+        id: check
+        run: |
+          if [ -f CMakeLists.txt ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No CMakeLists.txt on this ref yet; skipping build and tests."
+          fi
+
+      # ThreadSanitizer aborts with "unexpected memory mapping" under the
+      # 32-bit mmap ASLR entropy of the ubuntu-24.04 runner kernel. That is a
+      # host sysctl a container cannot change, so lower it here on the host and
+      # run the Fedora container ourselves (instead of `container:`), for every
+      # matrix entry so all jobs share one code path.
+      - name: Lower mmap ASLR entropy (TSan)
+        if: steps.check.outputs.present == 'true' && matrix.name == 'tsan'
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Build and test in fedora:43
+        if: steps.check.outputs.present == 'true'
+        run: |
+          docker run --rm --init \
+            -v "$PWD:/src" -w /src \
+            -e LM_FUZZ_SEED=${{ github.run_number }} \
+            fedora:43 \
+            .github/ci/build-test.sh ${{ matrix.build_type }} ${{ matrix.cmake_args }}
+
+      - name: Upload test log
+        if: failure() && steps.check.outputs.present == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: ctest-${{ matrix.name }}
+          path: |
+            ctest.log
+            build/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
