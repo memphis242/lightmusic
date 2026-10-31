@@ -4,8 +4,9 @@ A lightweight music player for Linux (Fedora/PipeWire first) with a small home s
 designed for low memory, near-zero idle CPU and fast response. Research and design notes:
 [docs/research.md](docs/research.md).
 
-Status: playback core (`libplayer`), a dev CLI and a first terminal UI (`lightmusic`)
-for local files. No networking, cache, config or MPRIS yet.
+Status: playback core (`libplayer`), a dev CLI, a first terminal UI (`lightmusic`) for
+local files, and the server MVP (`lightmusicd`, see [Server](#server-lightmusicd)). The
+client does not talk to the server yet; no cache, config or MPRIS yet.
 
 ## Build (Fedora 43)
 
@@ -95,6 +96,23 @@ ctest --test-dir build --output-on-failure
   track after 44.1 kHz ones, and the command/state machine. Skipped without `ffmpeg`.
 - `test_tui_logic`: directory scanning, natural sort, terminal key parsing, key mapping,
   time/volume formatting.
+- `test_server_range`: Range header decisions (suffix, open-ended, past EOF, reversed,
+  multiple ranges, overflow, empty file).
+- `test_server_auth`: SHA-256 test vectors, key generation, constant-time compare, the
+  failed-auth limiter (injected clock, eviction keeps blocks, IPv6 /64, threads), client
+  address / X-Forwarded-For rules, `--listen` checks, JSON UTF-8 sanitising, key storage,
+  database permissions, read-only readers and the bounded pool.
+- `test_server_index`: scan, unchanged rescan, mtime change, offline rename, delete, then
+  the inotify watcher: rename keeps ids, new nested directory, directory rename, in-place
+  rewrite, atomic save, move out/in, hard link (IN_CREATE only), `touch -m` (IN_ATTRIB);
+  symlink-safe opens (openat2 and the fallback walk); embedded cover read from an fd.
+  Skipped without `ffmpeg`.
+- `test_server_e2e`: starts `lightmusicd --port 0`, then ping, auth failures, changes,
+  browse/search, stream with Range/If-Range/If-None-Match, 416, cover, 10 concurrent
+  range downloads, ETag change after modifying the file, malformed Range ignored, cover
+  304, header deadline (slowloris), per-peer connection cap, rate limiting (valid key never
+  blocked), `X-Forwarded-For` through `--trusted-proxy`, `--listen` refusal. Skipped
+  without `ffmpeg`.
 - `test_tui_smoke`: runs `lightmusic` in a pty (`script`) on the Null backend with
   generated files, sends keys, expects a clean exit on `q` and a restored terminal; also
   that `q` exits promptly with a FIFO in the queue.
@@ -109,6 +127,172 @@ ninja -C build-asan && ctest --test-dir build-asan
 ninja -C build-tsan && ctest --test-dir build-tsan
 ```
 
+## Server (`lightmusicd`)
+
+A small private server for one user and up to ~10 devices. It indexes music folders
+(TagLib + SQLite in WAL mode, kept current with inotify) and serves the **original files**
+byte-for-byte over HTTP/1.1 with Range support, plus a small JSON API. No transcoding.
+
+### Build
+
+```sh
+sudo dnf install taglib-devel sqlite-devel cpp-httplib-devel   # plus the packages above
+cmake -S . -B build -G Ninja            # -DLM_BUILD_SERVER=OFF skips the server
+ninja -C build lightmusicd
+```
+
+cpp-httplib is header-only. The build uses `/usr/include/httplib.h` when it is at least
+the pinned 0.48.0 (Fedora 43's version), otherwise the vendored copy in
+`third_party/cpp-httplib/` (see `third_party/VERSIONS.md`; `-DLM_SYSTEM_HTTPLIB=OFF`
+forces it). On Ubuntu/Debian: `libtag1-dev libsqlite3-dev`.
+
+### Run
+
+```sh
+build/server/lightmusicd --add-key laptop        # prints a new key ONCE; store it
+build/server/lightmusicd --add-key phone
+build/server/lightmusicd --list-keys
+build/server/lightmusicd --revoke-key phone
+
+build/server/lightmusicd --music ~/Music [--music /srv/more] \
+    [--db ~/.local/share/lightmusic/server.db] [--listen 127.0.0.1] [--port 8737]
+build/server/lightmusicd --music ~/Music --scan-only     # index once and exit
+```
+
+Flags only for now (`--help` lists them); the YAML config comes later and will fill the
+same `Config` struct (`server/src/config.hpp`). The server listens on **127.0.0.1:8737**
+by default and prints `lightmusicd listening on ADDR:PORT` once bound (`--port 0` picks a
+free port). Logs go to stderr: one line per request (method, path without query string,
+status, client, and `via <proxy>` when the client came from `X-Forwarded-For`); keys are
+never logged. SIGINT/SIGTERM stop it cleanly.
+
+The database directory is created `0700` and the database file `0600` (it holds key
+hashes). The writer connection creates the schema and WAL mode at startup; HTTP workers
+use a bounded pool (`--threads` connections at most) of read-only connections.
+
+Keys are 32 random bytes (64 hex chars) from `getrandom(2)`; only their SHA-256 is stored
+(table `api_key`). Send them as `Authorization: Bearer <key>`. `?apiKey=<key>` is accepted
+**only** on `/stream` and `/cover` (for players that cannot set headers).
+
+Failed-auth limiting: only a request that **supplies a wrong key** counts (no key at all
+is a plain 401 and not counted). Ten wrong keys within a minute block the client for five
+minutes: further wrong keys get **429**. The key is always checked first, and a request
+with a **valid key is never refused**, even from a blocked address (a shared NAT address
+or proxy cannot lock out real devices). Clients are keyed by IPv4 address or IPv6 `/64`.
+The limiter tracks at most 10,000 clients; when full it evicts the oldest idle entries,
+never an active block.
+
+Connection limits: a client must send its request line and headers within
+`--header-timeout` seconds (default 10) of its first byte, or the connection is closed
+(slowloris); and each direct peer address may hold at most `--max-conns-per-ip`
+concurrent connections (default 8; trusted proxies are exempt).
+
+### TLS with Caddy (required for remote access)
+
+`lightmusicd` speaks plain HTTP and is meant to sit behind a reverse proxy that
+terminates TLS and buffers whole requests (Caddy does both). It therefore refuses a
+non-loopback `--listen` address unless `--allow-direct` is also given (and then logs a
+warning): exposing it directly sends keys in clear text and leaves the worker threads to
+slow clients. Keep it on loopback and let Caddy terminate TLS (automatic certificates):
+
+```
+music.example.net {
+    reverse_proxy 127.0.0.1:8737
+}
+```
+
+and start the server with `--trusted-proxy 127.0.0.1` (and/or `::1`).
+
+Trusted-proxy semantics: `X-Forwarded-For` is used **only** on connections whose socket
+peer address is a `--trusted-proxy` (exact IP match, IPv4-mapped IPv6 normalised);
+from any other peer the header is ignored. The client is the **rightmost** entry that is
+not itself a trusted proxy: entries to its left were supplied by the client and can be
+forged. (Caddy appends the address it saw to whatever the client sent.) If that entry is
+not a valid IP the peer address is used. Without `--trusted-proxy`, every request coming
+through a local Caddy appears as `127.0.0.1` and all clients would share one failed-auth
+limit; the server warns at startup when it listens on loopback without one.
+
+### API (`/api/v1`, JSON)
+
+| Endpoint | Notes |
+|---|---|
+| `GET /ping` | no auth: `{"status":"ok","server":"lightmusicd","version":"0.1.0","apiVersion":1}` |
+| `GET /library/changes?since=REV` | everything changed after revision `REV` (0 or unknown = full dump, `"full":true`) |
+| `GET /artists` · `/artists/{id}` | album artists; `/artists/{id}` adds `albums` |
+| `GET /albums?sort=title\|artist\|year\|newest&offset=0&limit=100` | `limit` ≤ 500; `{total,offset,limit,albums}` |
+| `GET /albums/{id}` | album + `tracks` (disc/track order) |
+| `GET /tracks/{id}` | one track |
+| `GET /search?q=TEXT&limit=20` | substring match on artist name, album title, track title/artist |
+| `GET /stream/{trackId}` | the original file; 200/206/304/416, `Accept-Ranges`, `ETag`, `Last-Modified`, `If-Range`, `If-None-Match` |
+| `GET /cover/{albumId}` | embedded front cover (first 3 tracks), else `cover.jpg`/`folder.jpg`/`cover.png`/… in the album folder; `size` is ignored for now |
+
+Shapes:
+
+```jsonc
+// artist
+{"id":1,"name":"Band","albumCount":2,"rev":7}
+// album
+{"id":3,"title":"Record","artistId":1,"artist":"Band","year":2001,"trackCount":10,
+ "durationMs":2412000,"rev":7}
+// track
+{"id":42,"title":"One","artist":"Band","albumId":3,"album":"Record","albumArtistId":1,
+ "albumArtist":"Band","trackNo":1,"discNo":1,"year":2001,"genre":"Rock","durationMs":241000,
+ "bitrate":320,"sampleRate":44100,"channels":2,"codec":"mp3","suffix":"mp3",
+ "size":9640123,"mtime":1793271148,"etag":"\"931a3b-18e2fa9bdb36946a\"","rev":7}
+// /library/changes
+{"revision":9,"since":7,"full":false,"artists":[…],"albums":[…],"tracks":[…],
+ "deleted":{"artists":[],"albums":[5],"tracks":[40,41]}}
+// errors
+{"error":"unauthorized"}
+```
+
+- **IDs** are SQLite `AUTOINCREMENT` rowids and are never reused. A track keeps its id
+  when it is re-tagged or rewritten in place, and when it is renamed or moved inside the
+  library while the server runs (inotify move pair; directory moves included). A move
+  made while the server was down keeps the id if exactly one vanished file and one new
+  file share size, mtime and file name (`mv` keeps mtime); otherwise the old id is
+  reported deleted and the file gets a new id.
+- **Revisions**: every index transaction that changes something gets the next number;
+  changed rows carry it in `rev` and deletions leave tombstones, so a client mirrors the
+  library with `changes?since=<last revision>`. An album's `rev` also moves when its
+  track list changes; empty albums and artists are deleted.
+- **ETag** is `"<size hex>-<mtime ns hex>"` from `fstat` of the open file at request time,
+  so it is correct even before the watcher re-indexes a modified file.
+- **Range** (`server/src/range.hpp`): `bytes=a-b` (end clamped to the file), `a-`,
+  `-n` (n larger than the file = whole file), several ranges → only the **first** is
+  served (single-part 206, no multipart). Start at/after EOF, `-0`, or any range on an
+  empty file → **416** with `Content-Range: bytes */size`. A malformed header (reversed
+  `5-3`, junk, another unit) is **ignored** → 200 with the whole file (RFC 9110). cpp-httplib
+  answers headers its own parser rejects with 416 before routing; the server catches that
+  in its error handler and routes the request itself, so the rule holds (and the request
+  is still authenticated). `If-Range` takes
+  the strong ETag or the exact `Last-Modified` date; anything else → full 200.
+- **Path safety**: files are opened only by track id from the index, never from a client
+  path, and relative to a descriptor of their music root with `openat2(2)`
+  `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS` (or, where `openat2` is unavailable, a
+  per-component `O_NOFOLLOW` walk), so a directory swapped for a symlink after indexing
+  is not followed. Embedded covers are read by TagLib from that same descriptor.
+- **Cover ETags** (an image hash) are cached per album and reused while the album's
+  `rev` is unchanged, so a 304 needs no file I/O. A `cover.jpg` replaced without any track
+  change keeps its old validator until the album changes or the server restarts. Symlinks inside the music folders are not followed or indexed.
+  Indexed suffixes: `.mp3 .flac .opus .ogg .oga`.
+- **Watcher**: one inotify watch per directory (new directories are watched first, then
+  scanned), files indexed on `IN_CLOSE_WRITE`, moves paired by cookie, a full rescan on
+  `IN_Q_OVERFLOW`, events debounced (250 ms quiet, 2 s max) and applied as one revision.
+  Very large trees may need a higher `fs.inotify.max_user_watches`. A scan whose
+  directory walk fails (e.g. an unmounted disk) deletes nothing.
+
+Not implemented yet: playlists, scrobbling, `/admin/rescan`, transcoding, cover
+thumbnails (`?size=`), OpenSubsonic `/rest/*`, paging of `/library/changes`, YAML config.
+
+Measured on this repo's Ubuntu 24.04 container (4 cores, loopback, stripped
+RelWithDebInfo binary 581 KB): idle RSS 7.2 MB, 0 CPU ticks over 5 s idle; 10 concurrent
+`Range: bytes=N-` downloads of a 100 MB file (1 GB total) take ~0.19 s wall,
+0.34–0.38 s server CPU, peak RSS 8.6 MB. Streaming uses `pread` into a 64 KiB buffer per
+response: cpp-httplib's content-provider API does not expose the socket, so `sendfile`
+is not possible without bypassing it (the research bench measured `sendfile` at ~1/4 of
+the CPU; an option if a small host ever needs it).
+
 ## Layout
 
 ```
@@ -122,6 +306,8 @@ libplayer/              static library `lm::player` (namespace lm), no UI deps
 tools/                  lightmusic-play dev CLI
 frontends/tui/          `lightmusic` TUI (FTXUI DOM + own poll() loop); tui_logic.* is
                         the UI-free, unit-tested part
+server/                 `lightmusicd`: config, auth, range, db (SQLite), tags (TagLib),
+                        indexer, watcher (inotify); api.cpp is the only httplib TU
 tests/                  ctest tests (no framework)
 bench/                  research probes and Fedora measurements (see bench/README.md)
 docs/research.md        dependency/architecture research
