@@ -268,6 +268,16 @@ private:
     bool ok_ = false;
 };
 
+// lm::Repeat and lm::config::RepeatMode (and lmtui's int form) share their values.
+static_assert(static_cast<int>(lm::Repeat::Off) == static_cast<int>(lm::config::RepeatMode::Off) &&
+                  static_cast<int>(lm::Repeat::All) == static_cast<int>(lm::config::RepeatMode::All) &&
+                  static_cast<int>(lm::Repeat::One) == static_cast<int>(lm::config::RepeatMode::One) &&
+                  static_cast<int>(lm::Repeat::Off) == 0 && static_cast<int>(lm::Repeat::All) == 1 &&
+                  static_cast<int>(lm::Repeat::One) == 2,
+              "repeat enums agree");
+lm::Repeat toRepeat(lm::config::RepeatMode m) { return static_cast<lm::Repeat>(static_cast<int>(m)); }
+const char *repeatConfigName(lm::Repeat r) { return lm::repeatName(r); } // "off" | "all" | "one"
+
 // UI-thread state only.
 struct Ui {
     std::vector<std::string> paths;
@@ -286,6 +296,9 @@ struct Ui {
     // Last volume we asked for and the player has not yet confirmed. setVolume() is
     // asynchronous, so both ui.st and player.state() can lag during key repeat.
     std::optional<float> volumeTarget;
+    // Same for repeat/shuffle (r and s can be pressed faster than ModeChanged arrives).
+    std::optional<lm::Repeat> repeatTarget;
+    std::optional<bool> shuffleTarget;
 };
 
 const char *statusLabel(lm::Status s) {
@@ -351,10 +364,14 @@ Element render(const Ui &ui, int height) {
     std::snprintf(vol, sizeof vol, "vol %3d%%", static_cast<int>(std::lround(st.volume * 100.0f)));
     char pos[32];
     std::snprintf(pos, sizeof pos, "%d/%zu", st.index + 1, st.queueSize);
+    std::string mode = lmtui::modeLabel(static_cast<int>(ui.repeatTarget.value_or(st.repeat)),
+                                        ui.shuffleTarget.value_or(st.shuffle));
+    if (!mode.empty()) mode = "  " + mode;
 
     Element now = vbox({
         hbox({text(std::string(statusGlyph(st.status)) + " "), text(statusLabel(st.status)) | bold, text("  "),
-              text(title) | bold, text(sub) | dim, filler(), text(" "), text(pos) | dim}),
+              text(title) | bold, text(sub) | dim, filler(), text(mode) | color(Color::Yellow), text(" "),
+              text(pos) | dim}),
         hbox({text(times + " "), gauge(frac) | flex, text(" "), text(vol)}),
         hbox({text(ui.message.empty() ? std::string("? help  q quit") : ui.message) | dim, filler(),
               text(ui.net) | dim}),
@@ -409,6 +426,8 @@ void updateFillQueue(const Ui &ui, lm::net::Client &client, int index) {
 void apply(Ui &ui, const lm::Event &ev) {
     ui.st = ev.state;
     if (ui.volumeTarget && ev.state.volume == *ui.volumeTarget) ui.volumeTarget.reset();
+    if (ui.repeatTarget && ev.state.repeat == *ui.repeatTarget) ui.repeatTarget.reset();
+    if (ui.shuffleTarget && ev.state.shuffle == *ui.shuffleTarget) ui.shuffleTarget.reset();
     switch (ev.type) {
     case lm::EventType::Error: ui.message = "error: " + ev.message; break;
     case lm::EventType::TrackChanged:
@@ -489,6 +508,8 @@ int run(int argc, char **argv) {
     const std::string keyFile = set.keyFile, cacheDir = set.cacheDir;
     cfg.replayGain = set.replayGain != lm::config::ReplayGain::Off;
     cfg.gapSeconds = set.gapSeconds;
+    cfg.repeat = toRepeat(set.repeat);
+    cfg.shuffle = set.shuffle;
     if (set.replayGain == lm::config::ReplayGain::Album)
         std::fputs("lightmusic: playback.replaygain: album gain is not supported yet; using track gain\n", stderr);
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;
@@ -728,8 +749,8 @@ int run(int argc, char **argv) {
                     watcher.reset();
                 }
             }
-            // Settings write-back (ui.save_settings): volume changes are saved into cfg.yaml
-            // 1 s after the last change and on quit, editing only that value in place
+            // Settings write-back (ui.save_settings): volume, repeat and shuffle changes (keys
+            // or MPRIS) are saved into cfg.yaml 1 s after the last change and on quit, editing only that value in place
             // (comments and layout kept). `lastWritten` is the file as we left it, so the
             // inotify event of our own save is recognised and reloads silently.
             std::string lastWritten;
@@ -742,11 +763,20 @@ int run(int argc, char **argv) {
                 if (live.path.empty() || !live.running.saveSettings) return;
                 // The keys go up to 150% (software gain), as does playback.volume.
                 const int pct = std::clamp(volumePct(), 0, static_cast<int>(std::lround(lmtui::kVolumeMax * 100.0f)));
-                if (pct == live.running.volume) return;
+                const lm::PlayerState now = player.state();
+                const lm::Repeat rep = ui.repeatTarget.value_or(now.repeat);
+                const bool shuf = ui.shuffleTarget.value_or(now.shuffle);
+                std::vector<std::pair<std::string, std::string>> values;
+                if (pct != live.running.volume) values.emplace_back("playback.volume", std::to_string(pct));
+                if (rep != toRepeat(live.running.repeat)) values.emplace_back("playback.repeat", repeatConfigName(rep));
+                if (shuf != live.running.shuffle) values.emplace_back("playback.shuffle", shuf ? "true" : "false");
+                if (values.empty()) return;
                 std::string err;
-                if (lm::config::updateConfigValues(live.path, {{"playback.volume", std::to_string(pct)}}, err,
-                                                   &lastWritten, lm::config::clientFilePolicy()))
+                if (lm::config::updateConfigValues(live.path, values, err, &lastWritten, lm::config::clientFilePolicy())) {
                     live.running.volume = pct;
+                    live.running.repeat = static_cast<lm::config::RepeatMode>(static_cast<int>(rep));
+                    live.running.shuffle = shuf;
+                }
                 else if (quitErr)
                     *quitErr = err;
                 else
@@ -787,6 +817,12 @@ int run(int argc, char **argv) {
                         player.setVolume(*ui.volumeTarget);
                     } else if (k == "playback.gap_seconds") {
                         player.setGap(n.gapSeconds); // from the next track transition
+                    } else if (k == "playback.repeat") {
+                        ui.repeatTarget = toRepeat(n.repeat);
+                        player.setRepeat(*ui.repeatTarget);
+                    } else if (k == "playback.shuffle") {
+                        ui.shuffleTarget = n.shuffle;
+                        player.setShuffle(n.shuffle);
                     }
                 }
 #ifdef LM_TUI_NET
@@ -870,6 +906,20 @@ int run(int argc, char **argv) {
                     ui.message = "only remote tracks can be saved offline";
                     break;
                 }
+                case lmtui::Command::CycleRepeat: {
+                    const lm::Repeat cur = ui.repeatTarget.value_or(ui.st.repeat);
+                    ui.repeatTarget = static_cast<lm::Repeat>(lmtui::nextRepeat(static_cast<int>(cur)));
+                    player.setRepeat(*ui.repeatTarget);
+                    ui.message = std::string("repeat: ") + lm::repeatName(*ui.repeatTarget);
+                    saveDue = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                    break;
+                }
+                case lmtui::Command::ToggleShuffle:
+                    ui.shuffleTarget = !ui.shuffleTarget.value_or(ui.st.shuffle);
+                    player.setShuffle(*ui.shuffleTarget);
+                    ui.message = *ui.shuffleTarget ? "shuffle on" : "shuffle off";
+                    saveDue = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                    break;
                 case lmtui::Command::ToggleHelp: ui.help = !ui.help; break;
                 case lmtui::Command::CloseHelp: ui.help = false; break;
                 }
@@ -921,6 +971,10 @@ int run(int argc, char **argv) {
                         apply(ui, ev);
                         mpris.event(ev);
                         dirty = true;
+                        // A change from MPRIS (or a reload) is saved like one from the keys;
+                        // save() writes nothing when cfg.yaml already has it.
+                        if (ev.type == lm::EventType::ModeChanged && !saveDue)
+                            saveDue = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 #ifdef LM_TUI_NET
                         if (client && ev.type == lm::EventType::TrackChanged) {
                             updateFillQueue(ui, *client, ev.state.index);

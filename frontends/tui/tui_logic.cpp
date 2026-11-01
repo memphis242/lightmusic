@@ -168,7 +168,17 @@ Command mapKey(std::string_view k) {
     if (k == "?") return Command::ToggleHelp;
     if (k == "escape") return Command::CloseHelp;
     if (k == "P") return Command::TogglePin;
+    if (k == "r") return Command::CycleRepeat;
+    if (k == "s") return Command::ToggleShuffle;
     return Command::None;
+}
+
+int nextRepeat(int repeat) { return repeat == 0 ? 1 : repeat == 1 ? 2 : 0; }
+
+std::string modeLabel(int repeat, bool shuffle) {
+    std::string s = repeat == 1 ? "repeat" : repeat == 2 ? "repeat one" : "";
+    if (shuffle) s += s.empty() ? "shuffle" : " · shuffle";
+    return s;
 }
 
 float stepVolume(float v, int dir) {
@@ -330,6 +340,8 @@ const std::vector<std::string> &helpLines() {
         "enter      play selected track",
         "j k ↑ ↓    move selection",
         "g G        first / last track",
+        "r          repeat: off → all → one",
+        "s          shuffle on / off",
         "P          save offline / unsave (remote; not counted in the cache limit)",
         "?  esc     toggle / close this help",
         "q          quit",

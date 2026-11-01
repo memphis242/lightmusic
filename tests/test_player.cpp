@@ -6,11 +6,13 @@
 //  - end of queue waits for the device buffer; an enqueue racing the end is not lost.
 //  - command/state machine: pause/resume/seek/next/prev/stop/volume/end of queue/errors.
 //  - decode errors become Error events; sync() from an event handler does not deadlock.
+//  - play order: repeat all/one, shuffle (stable for prev, toggle keeps the track, enqueue).
 #include "common.hpp"
 #include "lm/player.hpp"
 #include "lm/source.hpp"
 #include "lm_miniaudio.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -741,6 +743,190 @@ void interruptedOpenProceeds(const std::string &dir) {
         CHECK(p.state().position < 5.0);
     }
 }
+
+// Play order: repeat all/one, shuffle (permutation, stable for prev, kept current track
+// on toggle, reshuffle on a repeat-all wrap), hasNext, gapless across a repeat wrap.
+bool isPermutation(std::vector<int> v, int n) {
+    std::sort(v.begin(), v.end());
+    for (int i = 0; i < n; i++)
+        if (static_cast<int>(v.size()) != n || v[static_cast<std::size_t>(i)] != i) return false;
+    return true;
+}
+
+void playOrder(const std::string &dir) {
+    std::vector<std::string> shortTracks;
+    for (int i = 0; i < 6; i++) {
+        shortTracks.push_back(dir + "/order" + std::to_string(i) + ".flac");
+        CHECK(lmtest::makeTone(shortTracks.back(), 44100, 4410 + 441 * i, 300 + 50 * i, "-c:a flac -f flac"));
+    }
+    const std::string longT = dir + "/order_long.flac";
+    CHECK(lmtest::makeTone(longT, 44100, 44100 * 20, 500, "-c:a flac -f flac"));
+    auto baseCfg = [](Recorder &rec) {
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.onEvent = std::ref(rec);
+        cfg.shuffleSeed = 12345;
+        return cfg;
+    };
+    {
+        // Repeat all, queue order: 0 1 2 0 1 2 0 ...
+        Recorder rec;
+        auto cfg = baseCfg(rec);
+        cfg.repeat = lm::Repeat::All;
+        lm::Player p(cfg);
+        p.enqueue({shortTracks[0], shortTracks[1], shortTracks[2]});
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::TrackChanged, 15s, 7));
+        p.stop();
+        p.sync();
+        auto v = rec.trackIndexes();
+        v.resize(7);
+        CHECK((v == std::vector<int>{0, 1, 2, 0, 1, 2, 0}));
+        CHECK_EQ(rec.count(lm::EventType::EndOfQueue), 0u);
+    }
+    {
+        // Repeat one: the track replays (TrackChanged each time); next() moves on and
+        // wraps like repeat all.
+        Recorder rec;
+        auto cfg = baseCfg(rec);
+        cfg.repeat = lm::Repeat::One;
+        lm::Player p(cfg);
+        p.enqueue({shortTracks[0], shortTracks[1]});
+        p.playIndex(1);
+        CHECK(rec.waitFor(lm::EventType::TrackChanged, 15s, 3));
+        auto v = rec.trackIndexes();
+        CHECK(v.size() >= 3 && v[0] == 1 && v[1] == 1 && v[2] == 1);
+        p.setRepeat(lm::Repeat::Off);
+        p.sync();
+        CHECK(p.state().repeat == lm::Repeat::Off);
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s));
+        CHECK(rec.count(lm::EventType::ModeChanged) >= 1);
+    }
+    {
+        // Shuffle without repeat: every track exactly once, then the end of the queue.
+        Recorder rec;
+        auto cfg = baseCfg(rec);
+        cfg.shuffle = true;
+        lm::Player p(cfg);
+        p.enqueue(shortTracks);
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 20s));
+        const auto v = rec.trackIndexes();
+        CHECK(isPermutation(v, 6));
+        CHECK(v != (std::vector<int>{0, 1, 2, 3, 4, 5})); // fixed seed: not the queue order
+    }
+    {
+        // Shuffle + repeat all: each round is a permutation, a new one per wrap, and the
+        // same track never plays twice in a row.
+        Recorder rec;
+        auto cfg = baseCfg(rec);
+        cfg.shuffle = true;
+        cfg.repeat = lm::Repeat::All;
+        lm::Player p(cfg);
+        p.enqueue({shortTracks[0], shortTracks[1], shortTracks[2], shortTracks[3]});
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::TrackChanged, 25s, 12));
+        p.stop();
+        p.sync();
+        auto v = rec.trackIndexes();
+        v.resize(12);
+        for (int r = 0; r < 3; r++)
+            CHECK(isPermutation(std::vector<int>(v.begin() + r * 4, v.begin() + r * 4 + 4), 4));
+        for (std::size_t i = 1; i < v.size(); i++) CHECK(v[i] != v[i - 1]);
+    }
+    {
+        // Stable order for prev; toggling keeps the current track; hasNext.
+        Recorder rec;
+        auto cfg = baseCfg(rec);
+        lm::Player p(cfg);
+        std::vector<std::string> q(6, longT);
+        p.enqueue(q);
+        p.playIndex(5);
+        p.sync();
+        CHECK(!p.state().hasNext); // last track, repeat off
+        p.setRepeat(lm::Repeat::All);
+        p.sync();
+        CHECK(p.state().hasNext);
+        p.setRepeat(lm::Repeat::Off);
+        p.playIndex(2);
+        p.sync();
+        const std::size_t changes = rec.count(lm::EventType::TrackChanged);
+        p.setShuffle(true);
+        p.sync();
+        auto st = p.state();
+        CHECK(st.shuffle);
+        CHECK_EQ(st.index, 2);
+        CHECK(st.status == lm::Status::Playing);
+        CHECK_EQ(rec.count(lm::EventType::TrackChanged), changes); // no restart
+        std::vector<int> seen{2};
+        for (int i = 0; i < 5; i++) {
+            CHECK(p.state().hasNext);
+            p.next();
+            p.sync();
+            seen.push_back(p.state().index);
+        }
+        CHECK(isPermutation(seen, 6));
+        CHECK(!p.state().hasNext);
+        for (int i = 4; i >= 0; i--) { // walk back the same order (each within 3 s of the start)
+            p.prev();
+            p.sync();
+            CHECK_EQ(p.state().index, seen[static_cast<std::size_t>(i)]);
+        }
+        p.prev(); // first of the order, repeat off: restarts it
+        p.sync();
+        CHECK_EQ(p.state().index, 2);
+        p.setShuffle(false);
+        p.next();
+        p.sync();
+        CHECK_EQ(p.state().index, 3); // queue order again, from the current track
+        CHECK(!p.state().shuffle);
+    }
+    {
+        // Enqueue with shuffle on: the new tracks join the unplayed part of the order.
+        Recorder rec;
+        auto cfg = baseCfg(rec);
+        cfg.shuffle = true;
+        lm::Player p(cfg);
+        p.enqueue({longT, longT});
+        p.playIndex(0);
+        p.sync();
+        p.enqueue({longT, longT, longT});
+        std::vector<int> seen{0};
+        for (int i = 0; i < 4; i++) {
+            p.next();
+            p.sync();
+            seen.push_back(p.state().index);
+        }
+        CHECK(isPermutation(seen, 5));
+    }
+    {
+        // Gapless across a repeat-all wrap: a b a b ..., sample-exact.
+        const std::string a = shortTracks[0], b = shortTracks[1];
+        const auto av = decodeAll(a), bv = decodeAll(b);
+        std::vector<float> expect;
+        for (int r = 0; r < 2; r++) {
+            expect.insert(expect.end(), av.begin(), av.end());
+            expect.insert(expect.end(), bv.begin(), bv.end());
+        }
+        Recorder rec;
+        Tap tap(200000);
+        auto cfg = baseCfg(rec);
+        cfg.repeat = lm::Repeat::All;
+        cfg.outputTap = &Tap::fn;
+        cfg.outputTapUser = &tap;
+        lm::Player p(cfg);
+        p.enqueue({a, b});
+        p.play();
+        for (int i = 0; i < 500 && tap.frames.load() < expect.size() / 2; i++) std::this_thread::sleep_for(10ms);
+        p.stop();
+        p.sync();
+        CHECK(tap.frames.load() >= expect.size() / 2);
+        std::size_t mismatch = 0;
+        for (std::size_t i = 0; i < std::min(tap.frames.load() * 2, expect.size()); i++)
+            mismatch += tap.buf[i] != expect[i];
+        CHECK_EQ(mismatch, 0u);
+    }
+}
 } // namespace
 
 int main() {
@@ -759,5 +945,6 @@ int main() {
     commands(dir);
     stalledOpen();
     interruptedOpenProceeds(dir);
+    playOrder(dir);
     return lmtest::finish("test_player");
 }

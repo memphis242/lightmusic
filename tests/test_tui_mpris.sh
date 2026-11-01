@@ -59,6 +59,15 @@ else
 fi
 grep -q Paused "$TMP/log" || until_ 5 grep -q Paused "$TMP/log" || bad "TUI did not show Paused"
 
+# LoopStatus/Shuffle set over MPRIS: shown in the TUI and saved into cfg.yaml.
+busctl --user set-property $NAME $OBJ $PIF LoopStatus s Playlist || bad "set LoopStatus"
+busctl --user set-property $NAME $OBJ $PIF Shuffle b true || bad "set Shuffle"
+[ "$(prop LoopStatus)" = 's "Playlist"' ] || bad "LoopStatus not Playlist"
+[ "$(prop Shuffle)" = "b true" ] || bad "Shuffle not true"
+until_ 5 grep -q "repeat · shuffle" "$TMP/log" || bad "TUI did not show repeat · shuffle"
+CFG="$XDG_CONFIG_HOME/lightmusic/cfg.yaml"
+until_ 5 sh -c "grep -q 'repeat: all' '$CFG' && grep -q 'shuffle: true' '$CFG'" || bad "MPRIS repeat/shuffle not saved"
+
 # Idle: the paused TUI's main thread must sleep in poll() with no wakeups.
 PID=$(pgrep -P "$(pgrep -P $SPID | head -n1)" 2>/dev/null | head -n1)
 [ -n "$PID" ] || PID=$(pgrep -n -f "^$BIN --null" 2>/dev/null)
