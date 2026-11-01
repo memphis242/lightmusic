@@ -59,7 +59,9 @@ public:
     void setTags(std::int64_t id, std::string artist, std::string album, std::string title) {
         std::lock_guard lk(m_);
         auto &t = tracks_[id];
-        t.artist = std::move(artist), t.album = std::move(album), t.title = std::move(title);
+        t.artist = std::move(artist);
+        t.album = std::move(album);
+        t.title = std::move(title);
         rev_++;
     }
     void removeTrack(std::int64_t id) {

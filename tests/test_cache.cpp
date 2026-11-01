@@ -42,7 +42,7 @@ std::string g_self;
 
 std::string tempDir(const char *tag) {
     std::string t = (fs::temp_directory_path() / (std::string("lm_cache_") + tag + "_XXXXXX")).string();
-    return mkdtemp(t.data());
+    return lmtest::makeTempDir(t.data());
 }
 
 lm::net::ClientConfig baseCfg(const std::string &url, const std::string &dir) {

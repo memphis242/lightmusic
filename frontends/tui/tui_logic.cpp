@@ -223,6 +223,7 @@ std::vector<std::string> KeyParser::parse(bool final) {
                 i++;
                 continue;
             }
+            // cppcheck-suppress stlcstrConstructor ; (pointer, length) view into the middle of a string, not a c_str() copy
             const std::string_view params(buf_.data() + i + 2, j - i - 2);
             const char f = buf_[j];
             std::string key;

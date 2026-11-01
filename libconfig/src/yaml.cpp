@@ -625,6 +625,7 @@ bool editOne(const std::string &text, const std::vector<std::string> &segs, cons
             while (i < ce && !(text[i] == '#' && isSpace(text[i - 1]))) ++i;
             ve = i;
             while (ve > vs && isSpace(text[ve - 1])) --ve;
+            // cppcheck-suppress stlcstrConstructor ; (pointer, length) view into the middle of a string, not a c_str() copy
             const std::string_view span(text.data() + vs, ve - vs);
             const bool match = vn.kind == Node::Scalar ? (vn.value == span && vn.tag == "?")
                                                        : (span == "~" || span == "null" || span == "Null" || span == "NULL");

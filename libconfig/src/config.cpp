@@ -473,11 +473,11 @@ bool updateConfigValues(const std::string &path, const std::vector<std::pair<std
 
 // ---------------------------------------------------------------- watcher
 
-FileWatcher::FileWatcher(const std::string &path, int debounceMs) : debounceMs_(debounceMs) {
+FileWatcher::FileWatcher(const std::string &path, int debounceMs)
+    : fd_(::inotify_init1(IN_NONBLOCK | IN_CLOEXEC)), debounceMs_(debounceMs) {
     const auto slash = path.rfind('/');
     const std::string dir = slash == std::string::npos ? "." : (slash == 0 ? "/" : path.substr(0, slash));
     name_ = slash == std::string::npos ? path : path.substr(slash + 1);
-    fd_ = ::inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     if (fd_ < 0) {
         err_ = std::string("inotify: ") + std::strerror(errno);
         return;
@@ -507,7 +507,7 @@ bool FileWatcher::changed() {
         for (char *p = buf; p < buf + n;) {
             // Copy the fixed-size header out (no alignment or aliasing assumptions); the
             // NUL-padded name follows it in the buffer.
-            inotify_event hdr;
+            inotify_event hdr{};
             std::memcpy(&hdr, p, sizeof hdr);
             const inotify_event *const ev = &hdr;
             const char *const evName = p + sizeof(inotify_event);

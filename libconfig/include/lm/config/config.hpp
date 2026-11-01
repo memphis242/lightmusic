@@ -325,7 +325,7 @@ template <class T> Field<T> pathField(std::string key, std::string T::*p, bool h
 }
 
 template <class T, class E>
-Field<T> enumField(std::string key, E T::*p, std::vector<std::pair<std::string, E>> names, bool hot = false) {
+Field<T> enumField(std::string key, E T::*p, const std::vector<std::pair<std::string, E>> &names, bool hot = false) {
     static_assert(std::is_enum_v<E>);
     LM_ASSERT(!names.empty(), "enumField: no accepted names");
     auto f = detail::base(std::move(key), p, hot);

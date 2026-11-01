@@ -177,7 +177,7 @@ bool parseContentRange(const std::string &v, std::uint64_t &a, std::uint64_t &b,
 // lower case.
 std::string urlHost(const std::string &url) {
     std::string a = url.substr(url.find("://") + 3);
-    a = a.substr(0, a.find_first_of("/?#"));
+    a.resize(std::min(a.size(), a.find_first_of("/?#")));
     if (auto at = a.rfind('@'); at != std::string::npos) a = a.substr(at + 1);
     std::string h;
     if (!a.empty() && a[0] == '[') {
@@ -749,7 +749,10 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             std::lock_guard lk(cm);
             auto row = db.entry(e->id);
             EntryRow r{e->id, etag, static_cast<std::int64_t>(size), false, "", 0, row && row->pinned, wallNow(), "", ""};
-            if (row) r.name = row->name, r.prevName = row->prevName;
+            if (row) {
+                r.name = row->name;
+                r.prevName = row->prevName;
+            }
             db.putEntry(r);
             db.setTrackValidator(e->id, etag, static_cast<std::int64_t>(size));
         }

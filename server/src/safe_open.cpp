@@ -32,6 +32,7 @@ bool valid_rel(const std::string &rel) {
     while (b <= rel.size()) {
         std::size_t e = rel.find('/', b);
         if (e == std::string::npos) e = rel.size();
+        // cppcheck-suppress stlcstrConstructor ; (pointer, length) view into the middle of a string, not a c_str() copy
         std::string_view c(rel.data() + b, e - b);
         if (c.empty() || c == "." || c == "..") return false;
         b = e + 1;

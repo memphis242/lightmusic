@@ -214,6 +214,7 @@ bool AuthLimiter::make_room(Clock::time_point now) {
     std::nth_element(idle.begin(), idle.begin() + std::ptrdiff_t(n - 1), idle.end(),
                      [](auto &a, auto &b) { return a.first < b.first; });
     std::vector<std::string> victims;
+    victims.reserve(n);
     for (std::size_t i = 0; i < n; ++i) victims.push_back(*idle[i].second);
     for (auto &v : victims) ips_.erase(v);
     return true;

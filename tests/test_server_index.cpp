@@ -146,7 +146,7 @@ int main() {
         return lmtest::kSkip;
     }
     char tmpl[] = "/tmp/lm_index_XXXXXX";
-    std::string tmp = mkdtemp(tmpl);
+    std::string tmp = lmtest::makeTempDir(tmpl);
     g_src = tmp + "/src";
     std::string lib = tmp + "/lib";
     fs::create_directories(g_src);

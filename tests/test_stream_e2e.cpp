@@ -151,7 +151,7 @@ int main() {
         return lmtest::kSkip;
     }
     char tmpl[] = "/tmp/lm_stream_e2e_XXXXXX";
-    const std::string tmp = mkdtemp(tmpl);
+    const std::string tmp = lmtest::makeTempDir(tmpl);
     const std::string music = tmp + "/music", db = tmp + "/server.db", cache = tmp + "/cache";
     fs::create_directories(music + "/Album");
     const std::string a = music + "/Album/01 One.flac", b = music + "/Album/02 Two.mp3",

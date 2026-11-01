@@ -213,7 +213,7 @@ int main() {
     // Storage: only hashes, add / duplicate / verify / revoke.
     {
         char tmpl[] = "/tmp/lm_auth_XXXXXX";
-        std::string dir = mkdtemp(tmpl);
+        std::string dir = lmtest::makeTempDir(tmpl);
         {
             Db db(dir + "/s.db");
             std::string k1 = generate_api_key(), k2 = generate_api_key();
@@ -242,7 +242,7 @@ int main() {
     // Database modes, permissions and the bounded reader pool.
     {
         char tmpl[] = "/tmp/lm_dbm_XXXXXX";
-        std::string dir = mkdtemp(tmpl);
+        std::string dir = lmtest::makeTempDir(tmpl);
         std::string dbp = dir + "/new/sub/s.db";
         mode_t old = umask(022);
         {

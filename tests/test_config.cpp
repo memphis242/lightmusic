@@ -750,7 +750,7 @@ void testMalformed() {
 
 // ---- UI write-back: comment-preserving in-place edits ----------------------------
 
-std::string edit(const std::string &text, std::vector<std::pair<std::string, std::string>> v, bool expectOk = true,
+std::string edit(const std::string &text, const std::vector<std::pair<std::string, std::string>> &v, bool expectOk = true,
                  std::string *errOut = nullptr) {
     std::string out = "<untouched>", err;
     const bool ok = editYamlValues(text, v, out, err);

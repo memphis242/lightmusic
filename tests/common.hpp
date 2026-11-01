@@ -8,6 +8,18 @@
 
 namespace lmtest {
 
+// mkdtemp() that aborts the test on failure instead of handing back nullptr
+// (std::string(nullptr) is undefined behaviour).
+inline std::string makeTempDir(char *tmpl) {
+    const char *d = ::mkdtemp(tmpl);
+    if (!d) {
+        std::perror("mkdtemp");
+        std::abort();
+    }
+    return d;
+}
+
+
 inline int g_failures = 0;
 
 #define CHECK(cond)                                                                                                    \

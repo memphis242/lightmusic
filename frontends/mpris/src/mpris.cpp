@@ -137,7 +137,7 @@ struct Server::Impl {
     Published pub;
     bool quit = false;
 
-    explicit Impl(Player &p) : player(p) { pub = publish(p.state()); }
+    explicit Impl(Player &p) : player(p), pub(publish(p.state())) {}
     ~Impl() {
         sd_bus_slot_unref(playerSlot);
         sd_bus_slot_unref(rootSlot);

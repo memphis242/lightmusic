@@ -31,7 +31,7 @@ public:
     // Raw, already-serialised JSON value.
     Json &raw(std::string_view v) { pre(); out_ += v; return *this; }
 
-    template <class T> Json &kv(std::string_view k, T v) { key(k); return value(v); }
+    template <class T> Json &kv(std::string_view k, const T &v) { key(k); return value(v); }
 
     const std::string &str() const { return out_; }
     std::string take() { return std::move(out_); }

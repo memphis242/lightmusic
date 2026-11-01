@@ -212,7 +212,7 @@ void Watcher::run() {
         for (char *p = buf; p < buf + len;) {
             // Copy the fixed-size header out (no alignment or aliasing assumptions); the
             // NUL-padded name follows it in the buffer.
-            inotify_event hdr;
+            inotify_event hdr{};
             std::memcpy(&hdr, p, sizeof hdr);
             const inotify_event *const ev = &hdr;
             const char *const evName = p + sizeof(inotify_event);
