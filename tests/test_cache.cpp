@@ -211,8 +211,18 @@ void ifRangeRestart() {
     srv.setTrack(1, v2, "\"v2\"");
     {
         std::string err;
+        // Opening a reader starts a read-ahead fetch for the hole at once. Hold the
+        // server's answer until this reader has taken bytes from the cached v1 prefix:
+        // otherwise (e.g. under CPU load) the 200 for v2 can restart the entry before the
+        // first read, and the reader then correctly serves v2 whole instead.
+        srv.hold = true;
         auto s = c->openTrack(1, &err);
-        const std::string got = readAll(*s);
+        std::string got(1000, '\0');
+        const std::size_t first = s->read(got.data(), got.size());
+        srv.hold = false;
+        CHECK_EQ(first, got.size());
+        got.resize(first);
+        got += readAll(*s);
         // Cached v1 bytes were delivered before the server answered 200 for the hole:
         // this reader must fail rather than splice v2 onto v1.
         CHECK(got.size() < v1.size());
