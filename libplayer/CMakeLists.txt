@@ -5,6 +5,11 @@ add_library(lm_third_party STATIC
 )
 target_include_directories(lm_third_party SYSTEM PUBLIC ${PROJECT_SOURCE_DIR}/third_party)
 target_compile_options(lm_third_party PRIVATE -w)
+# dr_flac/dr_mp3/miniaudio truncate integers on purpose (CRC tables, bit readers):
+# keep clang's implicit-integer-truncation check to our own code.
+if(LM_ASAN AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+  target_compile_options(lm_third_party PRIVATE -fno-sanitize=implicit-integer-truncation)
+endif()
 target_link_libraries(lm_third_party PUBLIC Threads::Threads ${CMAKE_DL_LIBS} m)
 
 add_library(player STATIC
