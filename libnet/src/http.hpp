@@ -68,7 +68,7 @@ public:
     void cancel(std::uint64_t id);
     // Runs fn on the network thread (in order). Thread-safe.
     void post(std::function<void()> fn);
-    bool onNetThread() const;
+    [[nodiscard]] bool onNetThread() const;
     // Stops the loop: remaining posts are dropped, transfers cancelled. Idempotent;
     // the destructor calls it.
     void shutdown();

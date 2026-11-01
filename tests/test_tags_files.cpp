@@ -24,7 +24,7 @@ static void checkTags(const char *what, const Tags &t, const std::string &title,
     const bool ok = t.title == title && t.artist == artist && t.album == album && t.track == track &&
                     t.disc == disc && t.year == year;
     if (!ok) {
-        std::fprintf(stderr, "%s: got title='%s' artist='%s' album='%s' track=%d disc=%d year=%d\n", what,
+        (void)std::fprintf(stderr, "%s: got title='%s' artist='%s' album='%s' track=%d disc=%d year=%d\n", what,
                      t.title.c_str(), t.artist.c_str(), t.album.c_str(), t.track, t.disc, t.year);
         ++lmtest::g_failures;
     }
@@ -52,7 +52,7 @@ static void fuzzFile(const std::string &src, const std::string &out, std::size_t
         if (rng() % 4 == 0) b.resize(std::min(b.size(), static_cast<std::size_t>(rng() % (lim + 64))));
         writeFile(out, b);
         Tags t;
-        lm::readTags(out, t);
+        (void)lm::readTags(out, t);
         if (auto d = lm::openDecoderForFile(out)) {
             std::vector<float> buf(1024 * d->channels());
             d->read(buf.data(), 1024);

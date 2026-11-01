@@ -22,21 +22,27 @@ Stmt::Stmt(sqlite3 *db, const char *sql) : db_(db) {
         throw std::runtime_error(std::string("sqlite prepare: ") + sqlite3_errmsg(db) +
                                  " in: " + sql);
 }
-Stmt::~Stmt() { sqlite3_finalize(st_); }
+Stmt::~Stmt() { (void)sqlite3_finalize(st_); } // returns the last step's error, already reported
+namespace {
+// A failed bind would otherwise run the statement with NULL in that slot.
+void check_bind(int rc) {
+    if (rc != SQLITE_OK) throw std::runtime_error(std::string("sqlite bind: ") + sqlite3_errstr(rc));
+}
+} // namespace
 Stmt &Stmt::bind(int i, std::int64_t v) {
-    sqlite3_bind_int64(st_, i, v);
+    check_bind(sqlite3_bind_int64(st_, i, v));
     return *this;
 }
 Stmt &Stmt::bind(int i, const std::string &v) {
-    sqlite3_bind_text(st_, i, v.data(), int(v.size()), SQLITE_TRANSIENT);
+    check_bind(sqlite3_bind_text(st_, i, v.data(), int(v.size()), SQLITE_TRANSIENT));
     return *this;
 }
 Stmt &Stmt::bind_blob(int i, const void *p, int n) {
-    sqlite3_bind_blob(st_, i, p, n, SQLITE_TRANSIENT);
+    check_bind(sqlite3_bind_blob(st_, i, p, n, SQLITE_TRANSIENT));
     return *this;
 }
 Stmt &Stmt::bind_null(int i) {
-    sqlite3_bind_null(st_, i);
+    check_bind(sqlite3_bind_null(st_, i));
     return *this;
 }
 bool Stmt::step() {
@@ -46,8 +52,8 @@ bool Stmt::step() {
     throw std::runtime_error(std::string("sqlite step: ") + sqlite3_errmsg(db_));
 }
 void Stmt::reset() {
-    sqlite3_reset(st_);
-    sqlite3_clear_bindings(st_);
+    (void)sqlite3_reset(st_); // repeats the error step() already threw for
+    (void)sqlite3_clear_bindings(st_);
 }
 std::int64_t Stmt::i64(int c) const { return sqlite3_column_int64(st_, c); }
 std::string Stmt::text(int c) const {
@@ -63,7 +69,8 @@ const void *Stmt::blob(int c, int &n) const {
 
 // ---------------------------------------------------------------- schema
 
-static const char *kSchema = R"SQL(
+namespace {
+const char *kSchema = R"SQL(
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 INSERT OR IGNORE INTO meta(key, value) VALUES('schema', 1), ('revision', 0);
 CREATE TABLE IF NOT EXISTS artist(
@@ -101,6 +108,7 @@ CREATE TABLE IF NOT EXISTS api_key(
   hash BLOB NOT NULL,
   created INTEGER NOT NULL);
 )SQL";
+} // namespace
 
 namespace {
 // mkdir -p, creating missing components with mode 0700 (the database holds key hashes).
@@ -130,18 +138,19 @@ Db::Db(const std::string &path, Mode mode) {
         sqlite3_busy_timeout(db_, 5000);
         if (writer) {
             // SQLite creates -wal/-shm with the database file's permissions.
-            ::chmod(path.c_str(), 0600);
+            if (::chmod(path.c_str(), 0600) != 0) // holds API key hashes: must be private
+                throw std::runtime_error("cannot chmod 0600 " + path + ": " + std::strerror(errno));
             exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;");
             exec(kSchema);
         }
     } catch (...) {
-        sqlite3_close(db_);
+        (void)sqlite3_close(db_); // cleanup; nothing to report
         db_ = nullptr;
         throw;
     }
 }
 
-Db::~Db() { sqlite3_close(db_); }
+Db::~Db() { (void)sqlite3_close(db_); }
 
 void Db::exec(const char *sql) {
     char *err = nullptr;
@@ -154,7 +163,7 @@ void Db::exec(const char *sql) {
 
 std::string make_etag(std::int64_t size, std::int64_t mtime_ns) {
     char b[64];
-    std::snprintf(b, sizeof b, "\"%llx-%llx\"", static_cast<unsigned long long>(size),
+    (void)std::snprintf(b, sizeof b, "\"%llx-%llx\"", static_cast<unsigned long long>(size),
                   static_cast<unsigned long long>(mtime_ns));
     return b;
 }
@@ -244,7 +253,7 @@ void Db::commit() {
 }
 
 void Db::rollback() {
-    sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+    (void)sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
     dirty_ = false;
 }
 
@@ -480,7 +489,7 @@ std::string Db::json_changes(std::int64_t since) {
         exec("COMMIT");
         return j.take();
     } catch (...) {
-        sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+        (void)sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
         throw;
     }
 }

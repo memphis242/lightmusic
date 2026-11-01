@@ -107,19 +107,20 @@ void writeAll(int fd, const char *p, std::size_t n) {
 // Async-signal-safe: only tcsetattr() and write().
 void restoreTerminal() {
     if (g_ttyRaw.exchange(0) == 0) return;
-    tcsetattr(STDIN_FILENO, TCSANOW, &g_saved);
+    (void)tcsetattr(STDIN_FILENO, TCSANOW, &g_saved); // signal context: nothing better to do
     writeAll(STDOUT_FILENO, kLeaveScreen, sizeof kLeaveScreen - 1);
 }
 
-void enterRaw() {
+[[nodiscard]] bool enterRaw() {
     termios t = g_saved;
     t.c_lflag &= ~static_cast<tcflag_t>(ICANON | ECHO | ISIG | IEXTEN);
     t.c_iflag &= ~static_cast<tcflag_t>(IXON | ICRNL);
     t.c_cc[VMIN] = 1;
     t.c_cc[VTIME] = 0;
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &t);
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &t) != 0) return false;
     writeAll(STDOUT_FILENO, kEnterScreen, sizeof kEnterScreen - 1);
     g_ttyRaw = 1;
+    return true;
 }
 
 void wake() {
@@ -146,8 +147,8 @@ void setHandler(int sig, void (*fn)(int), int flags = SA_RESTART) {
     struct sigaction sa{};
     sa.sa_handler = fn;
     sa.sa_flags = flags;
-    sigemptyset(&sa.sa_mask);
-    sigaction(sig, &sa, nullptr);
+    (void)sigemptyset(&sa.sa_mask);
+    (void)sigaction(sig, &sa, nullptr); // fails only for an invalid signal (EINVAL)
 }
 
 // SIGTSTP (Ctrl-Z via raise(), or sent by someone else): give the terminal back, stop
@@ -158,11 +159,11 @@ extern "C" void onStop(int) {
     restoreTerminal();
     setHandler(SIGTSTP, SIG_DFL);
     sigset_t s;
-    sigemptyset(&s);
-    sigaddset(&s, SIGTSTP);
-    raise(SIGTSTP); // pending until unblocked below
-    pthread_sigmask(SIG_UNBLOCK, &s, nullptr); // stops here (unless orphaned pgrp)
-    pthread_sigmask(SIG_BLOCK, &s, nullptr);   // handler mask is restored on return anyway
+    (void)sigemptyset(&s);
+    (void)sigaddset(&s, SIGTSTP);
+    (void)raise(SIGTSTP); // pending until unblocked below
+    (void)pthread_sigmask(SIG_UNBLOCK, &s, nullptr); // stops here (unless orphaned pgrp)
+    (void)pthread_sigmask(SIG_BLOCK, &s, nullptr);   // handler mask is restored on return anyway
     setHandler(SIGTSTP, onStop);
     if (wasRaw) g_continued = 1;
     wake();
@@ -172,7 +173,7 @@ extern "C" void onStop(int) {
 extern "C" void onFatal(int sig) {
     restoreTerminal();
     setHandler(sig, SIG_DFL, 0);
-    raise(sig); // delivered on return (sig is blocked while in its handler)
+    (void)raise(sig); // delivered on return (sig is blocked while in its handler)
 }
 
 void onTerminate() {
@@ -241,8 +242,7 @@ public:
     // terminal is then left untouched.
     Tty() {
         if (tcgetattr(STDIN_FILENO, &g_saved) != 0) return;
-        ok_ = true;
-        enterRaw();
+        ok_ = enterRaw(); // errno from tcsetattr on failure
     }
     ~Tty() {
         if (ok_) restoreTerminal();
@@ -339,11 +339,11 @@ Element renderUpNext(const Ui &ui, int height) {
     const int stop = std::min(total, first + visible);
     Elements rows;
     char head[64];
-    std::snprintf(head, sizeof head, "Up next: %d track%s", total, total == 1 ? "" : "s");
+    (void)std::snprintf(head, sizeof head, "Up next: %d track%s", total, total == 1 ? "" : "s");
     rows.push_back(hbox({text(head) | bold, filler(), text("J/K move  d remove  c clear  esc back") | dim}));
     for (int i = first; i < stop; i++) {
         char num[32];
-        std::snprintf(num, sizeof num, "%3d ", i + 1);
+        (void)std::snprintf(num, sizeof num, "%3d ", i + 1);
         Element row = hbox({text("  "), text(num) | dim, text(nameOf(ui, q[static_cast<std::size_t>(i)]))});
         if (i == ui.qselected) row = row | inverted;
         rows.push_back(std::move(row));
@@ -366,7 +366,7 @@ Element render(const Ui &ui, int height) {
         const bool cur = static_cast<int>(i) == st.index;
         const bool sel = static_cast<int>(i) == ui.selected;
         char num[32];
-        std::snprintf(num, sizeof num, "%3zu ", i + 1);
+        (void)std::snprintf(num, sizeof num, "%3zu ", i + 1);
         const int cs = i < ui.cache.size() ? ui.cache[i] : -1;
         Element mark = cs < 0 || !ui.showCacheMarkers ? text("") : text(lmtui::cacheGlyph(cs, i < ui.pinned.size() && ui.pinned[i]) + " ");
         if (cs == 2 && ui.showCacheMarkers) mark = mark | color(Color::Cyan);
@@ -399,9 +399,9 @@ Element render(const Ui &ui, int height) {
     const float frac = dur > 0 ? static_cast<float>(std::clamp(st.position / dur, 0.0, 1.0)) : 0.0f;
     const std::string times = lmtui::formatTime(st.position) + " / " + (dur > 0 ? lmtui::formatTime(dur) : "?:??");
     char vol[16];
-    std::snprintf(vol, sizeof vol, "vol %3d%%", static_cast<int>(std::lround(st.volume * 100.0f)));
+    (void)std::snprintf(vol, sizeof vol, "vol %3d%%", static_cast<int>(std::lround(st.volume * 100.0f)));
     char pos[32];
-    std::snprintf(pos, sizeof pos, "%d/%zu", st.index + 1, st.queueSize);
+    (void)std::snprintf(pos, sizeof pos, "%d/%zu", st.index + 1, st.queueSize);
     std::string mode = lmtui::modeLabel(static_cast<int>(ui.repeatTarget.value_or(st.repeat)),
                                         ui.shuffleTarget.value_or(st.shuffle));
     if (!mode.empty()) mode = "  " + mode;
@@ -425,7 +425,7 @@ Element render(const Ui &ui, int height) {
 }
 
 void usage(FILE *f) {
-    std::fputs("usage: lightmusic [--null] [--rg] [--gap SECONDS] FILE|DIR...\n"
+    (void)std::fputs("usage: lightmusic [--null] [--rg] [--gap SECONDS] FILE|DIR...\n"
                "       lightmusic --server URL --key-file PATH [--album ID]... [--list]\n"
                "                  [--cache-dir DIR] [--cache-max-mb N] [--no-fill] [--pause-on-metered]\n"
                "                  [--null] [--rg] [--gap SECONDS] [FILE|DIR...]\n"
@@ -448,7 +448,7 @@ void refreshCache(Ui &ui, lm::net::Client &client, bool offline) {
     }
     const auto st = client.stats();
     char buf[128];
-    std::snprintf(buf, sizeof buf, "%scache %lld/%llu MB, saved offline %lld MB", offline ? "offline · " : "",
+    (void)std::snprintf(buf, sizeof buf, "%scache %lld/%llu MB, saved offline %lld MB", offline ? "offline · " : "",
                   static_cast<long long>(st.unpinned >> 20), static_cast<unsigned long long>(st.cap >> 20),
                   static_cast<long long>(st.pinned >> 20));
     ui.net = buf;
@@ -509,7 +509,7 @@ int run(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         auto value = [&](const char *flag) -> const char * {
             if (i + 1 >= argc) {
-                std::fprintf(stderr, "lightmusic: %s needs a value\n", flag);
+                (void)std::fprintf(stderr, "lightmusic: %s needs a value\n", flag);
                 std::exit(2);
             }
             return argv[++i];
@@ -528,7 +528,7 @@ int run(int argc, char **argv) {
             char *end = nullptr;
             const long long id = std::strtoll(value("--album"), &end, 10);
             if (!end || *end || id <= 0) {
-                std::fputs("lightmusic: --album needs an album id (see --list)\n", stderr);
+                (void)std::fputs("lightmusic: --album needs an album id (see --list)\n", stderr);
                 return 2;
             }
             albumIds.push_back(id);
@@ -545,8 +545,9 @@ int run(int argc, char **argv) {
     {
         lm::config::Diags diags;
         if (live.path.empty()) live.running = lm::config::clientSchema().resolve({&live.cli}, diags);
-        else lm::config::loadClientSettings(live.path, !configPath.empty(), nullptr, live.cli, live.running, diags);
-        for (const auto &d : diags) std::fprintf(stderr, "lightmusic: %s\n", d.str().c_str());
+        else (void)lm::config::loadClientSettings(live.path, // errors are reported in diags
+                                                  !configPath.empty(), nullptr, live.cli, live.running, diags);
+        for (const auto &d : diags) (void)std::fprintf(stderr, "lightmusic: %s\n", d.str().c_str());
         if (lm::config::hasError(diags)) return 2;
     }
     const lm::config::ClientSettings &set = live.running;
@@ -557,18 +558,18 @@ int run(int argc, char **argv) {
     cfg.repeat = toRepeat(set.repeat);
     cfg.shuffle = set.shuffle;
     if (set.replayGain == lm::config::ReplayGain::Album)
-        std::fputs("lightmusic: playback.replaygain: album gain is not supported yet; using track gain\n", stderr);
+        (void)std::fputs("lightmusic: playback.replaygain: album gain is not supported yet; using track gain\n", stderr);
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;
     if (args.empty() && server.empty()) {
         usage(stderr);
         return 2;
     }
     if (server.empty() != keyFile.empty() && !server.empty()) {
-        std::fputs("lightmusic: --server and --key-file go together (server.url needs server.key_file)\n", stderr);
+        (void)std::fputs("lightmusic: --server and --key-file go together (server.url needs server.key_file)\n", stderr);
         return 2;
     }
     if (server.empty() && live.cli.find("server.key_file")) {
-        std::fputs("lightmusic: --server and --key-file go together\n", stderr);
+        (void)std::fputs("lightmusic: --server and --key-file go together\n", stderr);
         return 2;
     }
 #ifndef LM_TUI_NET
@@ -588,8 +589,8 @@ int run(int argc, char **argv) {
     }
     g_wakeWrite = pipeFds[1];
     sigset_t async;
-    sigemptyset(&async);
-    for (int sig : {SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGCONT, SIGTSTP, SIGQUIT}) sigaddset(&async, sig);
+    (void)sigemptyset(&async);
+    for (int sig : {SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGCONT, SIGTSTP, SIGQUIT}) (void)sigaddset(&async, sig);
 
 #ifdef LM_TUI_NET
     // Remote library: the client (and its network thread) lives until after the player.
@@ -605,10 +606,10 @@ int run(int argc, char **argv) {
         // no core dumps, and no ptrace/proc-mem access by other same-uid processes
         // without CAP_SYS_PTRACE. Done before the key is read.
         if (::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0)
-            std::fprintf(stderr, "lightmusic: warning: cannot disable core dumps: %s\n", std::strerror(errno));
+            (void)std::fprintf(stderr, "lightmusic: warning: cannot disable core dumps: %s\n", std::strerror(errno));
         std::string key, err;
         if (!lmtui::readKeyFile(keyFile, key, err)) {
-            std::fprintf(stderr, "lightmusic: %s\n", err.c_str());
+            (void)std::fprintf(stderr, "lightmusic: %s\n", err.c_str());
             return 2;
         }
         lm::net::ClientConfig cc;
@@ -620,7 +621,7 @@ int run(int argc, char **argv) {
         cc.backgroundFill = set.backgroundFill;
         cc.pauseOnMetered = set.pauseOnMetered;
         cc.log = [uiActive](const std::string &m) {
-            if (!*uiActive) std::fprintf(stderr, "lightmusic: %s\n", m.c_str());
+            if (!*uiActive) (void)std::fprintf(stderr, "lightmusic: %s\n", m.c_str());
         };
         cc.onCacheChange = [] {
             g_cacheChanged = 1;
@@ -628,18 +629,18 @@ int run(int argc, char **argv) {
         };
         // The network thread must not take asynchronous signals (see above).
         sigset_t old;
-        pthread_sigmask(SIG_BLOCK, &async, &old);
+        (void)pthread_sigmask(SIG_BLOCK, &async, &old); // fails only for an invalid `how` (EINVAL)
         client = lm::net::Client::open(std::move(cc), &err);
-        pthread_sigmask(SIG_SETMASK, &old, nullptr);
+        (void)pthread_sigmask(SIG_SETMASK, &old, nullptr); // fails only for an invalid `how` (EINVAL)
         if (!client) {
-            std::fprintf(stderr, "lightmusic: %s\n", err.c_str());
+            (void)std::fprintf(stderr, "lightmusic: %s\n", err.c_str());
             return 1;
         }
-        std::fprintf(stderr, "lightmusic: syncing library from %s ...\n", server.c_str());
+        (void)std::fprintf(stderr, "lightmusic: syncing library from %s ...\n", server.c_str());
         if (!client->sync(&err)) {
             offline = true;
             netNote = err;
-            std::fprintf(stderr, "lightmusic: %s; using the offline mirror\n", err.c_str());
+            (void)std::fprintf(stderr, "lightmusic: %s; using the offline mirror\n", err.c_str());
         }
         if (listOnly) {
             for (const auto &al : client->albums()) {
@@ -662,7 +663,7 @@ int run(int argc, char **argv) {
         else
             for (auto id : albumIds) {
                 auto v = client->tracksOfAlbum(id);
-                if (v.empty()) std::fprintf(stderr, "lightmusic: no album %lld in the library\n", static_cast<long long>(id));
+                if (v.empty()) (void)std::fprintf(stderr, "lightmusic: no album %lld in the library\n", static_cast<long long>(id));
                 remoteTracks.insert(remoteTracks.end(), v.begin(), v.end());
             }
         if (offline) {
@@ -670,19 +671,19 @@ int run(int argc, char **argv) {
             std::erase_if(remoteTracks, [&](const lm::net::Track &t) {
                 return client->cacheInfo(t.id).state != lm::net::CacheState::Cached;
             });
-            std::fprintf(stderr, "lightmusic: offline: %zu of %zu tracks are cached\n", remoteTracks.size(), before);
+            (void)std::fprintf(stderr, "lightmusic: offline: %zu of %zu tracks are cached\n", remoteTracks.size(), before);
         }
         cfg.openSource = client->sourceOpener();
     }
 #endif
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
-        std::fputs("lightmusic: needs a terminal\n", stderr);
+        (void)std::fputs("lightmusic: needs a terminal\n", stderr);
         return 2;
     }
     {
         termios probe{};
         if (tcgetattr(STDIN_FILENO, &probe) != 0) {
-            std::fprintf(stderr, "lightmusic: cannot read terminal settings: %s\n", std::strerror(errno));
+            (void)std::fprintf(stderr, "lightmusic: cannot read terminal settings: %s\n", std::strerror(errno));
             return 2;
         }
     }
@@ -690,7 +691,7 @@ int run(int argc, char **argv) {
     Ui ui;
     ui.showCacheMarkers = set.showCacheMarkers;
     if (!args.empty()) ui.paths = lmtui::collectTracks(args, &errors);
-    for (const auto &e : errors) std::fprintf(stderr, "lightmusic: %s\n", e.c_str());
+    for (const auto &e : errors) (void)std::fprintf(stderr, "lightmusic: %s\n", e.c_str());
     for (const auto &p : ui.paths) ui.names.push_back(lmtui::displayName(p));
     ui.remote.assign(ui.paths.size(), 0);
     ui.cache.assign(ui.paths.size(), -1);
@@ -709,14 +710,14 @@ int run(int argc, char **argv) {
     }
 #endif
     if (ui.paths.empty()) {
-        std::fputs(server.empty() ? "lightmusic: no playable files\n" : "lightmusic: no playable tracks\n", stderr);
+        (void)std::fputs(server.empty() ? "lightmusic: no playable files\n" : "lightmusic: no playable tracks\n", stderr);
         return 1;
     }
 
     // Asynchronous signals go to the UI thread only: block them while the player
     // creates its threads (they inherit the mask), then unblock here.
     sigset_t oldMask;
-    pthread_sigmask(SIG_BLOCK, &async, &oldMask);
+    (void)pthread_sigmask(SIG_BLOCK, &async, &oldMask); // fails only for an invalid `how` (EINVAL)
     for (int sig : {SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGCONT}) setHandler(sig, onSignal);
     setHandler(SIGTSTP, onStop);
 
@@ -750,10 +751,10 @@ int run(int argc, char **argv) {
         try {
             playerHolder.emplace(std::move(cfg));
         } catch (...) {
-            pthread_sigmask(SIG_SETMASK, &oldMask, nullptr);
+            (void)pthread_sigmask(SIG_SETMASK, &oldMask, nullptr); // fails only for an invalid `how` (EINVAL)
             throw;
         }
-        pthread_sigmask(SIG_SETMASK, &oldMask, nullptr);
+        (void)pthread_sigmask(SIG_SETMASK, &oldMask, nullptr); // fails only for an invalid `how` (EINVAL)
         lm::Player &player = *playerHolder;
         player.enqueue(ui.paths);
         if (live.running.volume != 100) {
@@ -778,7 +779,7 @@ int run(int argc, char **argv) {
         {
             Tty term;
             if (!term.ok()) {
-                std::fprintf(stderr, "lightmusic: cannot set up terminal: %s\n", std::strerror(errno));
+                (void)std::fprintf(stderr, "lightmusic: cannot set up terminal: %s\n", std::strerror(errno));
                 return 1;
             }
             lmtui::KeyParser parser;
@@ -908,7 +909,7 @@ int run(int argc, char **argv) {
                 if (cmd == lmtui::Command::None) return;
                 dirty = true;
                 if (cmd == lmtui::Command::Suspend) {
-                    raise(SIGTSTP); // handler restores the terminal, stops, flags SIGCONT
+                    (void)raise(SIGTSTP); // handler restores the terminal, stops, flags SIGCONT
                     return;
                 }
                 if (ui.help && cmd != lmtui::Command::Quit) {
@@ -1020,7 +1021,9 @@ int run(int argc, char **argv) {
 
             while (running && !g_quitSignal) {
                 if (g_continued.exchange(0)) { // back from Ctrl-Z / SIGTSTP
-                    enterRaw();
+                    // Best effort: after a stop the terminal may belong to someone else; the
+                    // next SIGCONT retries.
+                    (void)enterRaw();
                     Tty::size(width, height);
                     dirty = true;
                 }
@@ -1107,7 +1110,7 @@ int run(int argc, char **argv) {
             quitSig = g_quitSignal.load();
             save(&quitSaveErr); // a volume changed less than 1 s ago (or not yet saved) is kept
         } // terminal restored here
-        if (!quitSaveErr.empty()) std::fprintf(stderr, "lightmusic: settings %s\n", quitSaveErr.c_str());
+        if (!quitSaveErr.empty()) (void)std::fprintf(stderr, "lightmusic: settings %s\n", quitSaveErr.c_str());
         // A second Ctrl-C / SIGTERM during a slow player shutdown kills us outright.
         for (int sig : {SIGINT, SIGTERM, SIGHUP}) setHandler(sig, SIG_DFL);
         if (quitSig) setHandler(quitSig, SIG_DFL);
@@ -1115,10 +1118,10 @@ int run(int argc, char **argv) {
     if (quitSig) {
         // Report death by that signal to the parent (shell / supervisor).
         sigset_t s;
-        sigemptyset(&s);
-        sigaddset(&s, quitSig);
-        pthread_sigmask(SIG_UNBLOCK, &s, nullptr);
-        raise(quitSig);
+        (void)sigemptyset(&s);
+        (void)sigaddset(&s, quitSig);
+        (void)pthread_sigmask(SIG_UNBLOCK, &s, nullptr); // fails only for an invalid `how` (EINVAL)
+        (void)raise(quitSig);
         return 128 + quitSig;
     }
     return 0;
@@ -1133,10 +1136,10 @@ int main(int argc, char **argv) {
         return run(argc, argv);
     } catch (const std::exception &e) {
         restoreTerminal();
-        std::fprintf(stderr, "lightmusic: %s\n", e.what());
+        (void)std::fprintf(stderr, "lightmusic: %s\n", e.what());
     } catch (...) {
         restoreTerminal();
-        std::fputs("lightmusic: unknown error\n", stderr);
+        (void)std::fputs("lightmusic: unknown error\n", stderr);
     }
     return 1;
 }

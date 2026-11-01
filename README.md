@@ -251,6 +251,15 @@ Warnings: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
 and clang's `-Wshadow-all -Wcomma -Wunreachable-code-aggressive -Wloop-analysis
 -Wmissing-prototypes -Wmissing-variable-declarations -Wextra-semi-stmt -Wnull-dereference ...`.
 
+There are two warning sets: `lm_warnings_app` (libraries, server, frontends, tools; the
+strictest set, e.g. gcc's `-Wnull-dereference` too) and `lm_warnings_test` (unit tests and
+test-only helpers; relaxed where tests produce nuisance hits). The same split applies to
+clang-tidy (root `.clang-tidy` is strict; `tests/.clang-tidy` relaxes it) and cppcheck
+(test-only suppressions are scoped to `tests/`). A check is never disabled for app code
+because of noise in tests. Every function result is checked or explicitly discarded with
+`(void)` (cert-err33-c, a widened bugprone-unused-return-value, `[[nodiscard]]` +
+`-Wunused-result`), in app and test code alike.
+
 ```sh
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug                     # gcc, warnings not fatal
 CC=clang CXX=clang++ cmake -S . -B build-clang -G Ninja -DLM_WERROR=ON     # clang check build

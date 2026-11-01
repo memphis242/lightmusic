@@ -30,8 +30,8 @@ namespace lm::server {
 namespace {
 
 constexpr const char *kVersion = "0.1.0";
-constexpr std::size_t kStreamChunk = 64 * 1024;
-constexpr std::int64_t kMaxCoverBytes = 20 * 1024 * 1024;
+constexpr std::size_t kStreamChunk = std::size_t{64} * 1024;
+constexpr std::int64_t kMaxCoverBytes = std::int64_t{20} * 1024 * 1024;
 
 // cpp-httplib parses the Range header into req.ranges and would apply it to whatever we
 // put in the response. We implement Range ourselves (range.hpp), so every handler first
@@ -69,9 +69,9 @@ std::int64_t param_i64(const httplib::Request &req, const char *name, std::int64
 
 std::string http_date(std::time_t t) {
     std::tm tm{};
-    gmtime_r(&t, &tm);
+    (void)gmtime_r(&t, &tm); // on overflow tm stays zero-initialised
     char b[64];
-    std::strftime(b, sizeof b, "%a, %d %b %Y %H:%M:%S GMT", &tm);
+    if (std::strftime(b, sizeof b, "%a, %d %b %Y %H:%M:%S GMT", &tm) == 0) b[0] = '\0'; // contents unspecified on 0
     return b;
 }
 
@@ -103,7 +103,7 @@ struct Fd {
     int fd;
     explicit Fd(int f) : fd(f) {}
     ~Fd() {
-        if (fd >= 0) ::close(fd);
+        if (fd >= 0) (void)::close(fd); // cleanup; nothing written through it is pending
     }
     Fd(const Fd &) = delete;
     Fd &operator=(const Fd &) = delete;
@@ -239,7 +239,7 @@ struct HttpApi::Impl {
         {
             std::lock_guard lk(conn_mu);
             stopping = true;
-            for (Conn *c : conns) ::shutdown(c->fd, SHUT_RDWR);
+            for (Conn *c : conns) (void)::shutdown(c->fd, SHUT_RDWR);
         }
         conn_cv.notify_all();
     }
@@ -295,7 +295,7 @@ struct HttpApi::Impl {
             for (Conn *c : conns)
                 if (c->armed && now >= c->deadline) {
                     c->armed = false;
-                    ::shutdown(c->fd, SHUT_RDWR);  // the worker's read returns 0
+                    (void)::shutdown(c->fd, SHUT_RDWR);  // the worker's read returns 0
                     self->log("header timeout: closing connection from " + c->peer);
                 }
         }
@@ -610,7 +610,7 @@ HttpApi::HttpApi(const Config &cfg, DbPool &pool) : impl_(std::make_unique<Impl>
     auto &s = impl_->srv;
     int max_threads = cfg.threads;
     s.new_task_queue = [max_threads] { return new WorkerPool(std::size_t(max_threads)); };
-    s.set_payload_max_length(64 * 1024);
+    s.set_payload_max_length(std::size_t{64} * 1024);
     s.set_keep_alive_timeout(10);
     // Per-recv timeout; the header deadline (watchdog) bounds the whole request head.
     s.set_read_timeout(std::min(5, cfg.header_timeout), 0);
@@ -662,7 +662,7 @@ bool LmServer::process_and_close_socket(socket_t sock) {
     } else if (c.fd >= 0 && !impl_.is_stopping()) {
         impl_.self->log("too many connections from " + c.peer + ": refused");
     }
-    if (c.fd >= 0) ::close(c.fd);
+    if (c.fd >= 0) (void)::close(c.fd); // cleanup; nothing written through it is pending
     httplib::detail::shutdown_socket(sock);
     httplib::detail::close_socket(sock);
     return ret;

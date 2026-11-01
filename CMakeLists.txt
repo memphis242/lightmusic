@@ -37,14 +37,15 @@ function(lm_release_link_options target)
   endif()
 endfunction()
 
-# Project assertions (include/lm/assert.hpp); every target gets them through lm_warnings
+# Project assertions (include/lm/assert.hpp); every target gets them through lm_warnings_app/_test
 # or lm::player.
 add_library(lm_assert INTERFACE)
 target_include_directories(lm_assert INTERFACE ${PROJECT_SOURCE_DIR}/include)
 if(LM_ASSERTS)
   target_compile_definitions(lm_assert INTERFACE LM_ENABLE_ASSERTS)
 endif()
-target_link_libraries(lm_warnings INTERFACE lm_assert)
+target_link_libraries(lm_warnings_app INTERFACE lm_assert)
+target_link_libraries(lm_warnings_test INTERFACE lm_assert)
 
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)

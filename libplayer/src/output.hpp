@@ -29,12 +29,12 @@ public:
     // server routes the stream to the default sink and moves it when the default
     // changes). nullBackend selects miniaudio's Null backend (no sound card; real-time
     // paced), used by tests and dry runs.
-    bool open(std::uint32_t sampleRate, bool nullBackend, std::string *err);
+    [[nodiscard]] bool open(std::uint32_t sampleRate, bool nullBackend, std::string *err);
     void close();
-    bool isOpen() const { return open_; }
-    bool start();
+    [[nodiscard]] bool isOpen() const { return open_; }
+    [[nodiscard]] bool start();
     void stop(); // synchronous: the callback is not running when this returns
-    bool running() const { return running_; }
+    [[nodiscard]] bool running() const { return running_; }
 
     std::uint32_t sampleRate() const { return rate_; }
     // Frames (at sampleRate()) the backend buffers between the callback and the speaker:

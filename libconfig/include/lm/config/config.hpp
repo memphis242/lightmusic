@@ -38,7 +38,7 @@ struct Diag {
     std::string str() const;
 };
 using Diags = std::vector<Diag>;
-bool hasError(const Diags &d);
+[[nodiscard]] bool hasError(const Diags &d);
 
 struct Value {
     enum Kind { Null, Scalar, Seq } kind = Null;
@@ -62,14 +62,14 @@ struct Layer {
     void setList(std::string key, std::vector<std::string> items);
     void append(std::string key, std::string item); // builds a list (repeatable flags)
     const Value *find(std::string_view key) const;
-    bool empty() const { return entries.empty(); }
+    [[nodiscard]] bool empty() const { return entries.empty(); }
 };
 
 // Parses a YAML document whose root is a mapping (or empty) into `out`. Nested
 // mappings become dotted keys; leaves must be scalars, null or lists of scalars.
 // Syntax errors, duplicate keys and unsupported shapes go to `diags` (with lines).
 // Returns false on any error. Never throws.
-bool parseYaml(std::string_view text, const std::string &file, Layer &out, Diags &diags);
+[[nodiscard]] bool parseYaml(std::string_view text, const std::string &file, Layer &out, Diags &diags);
 
 // Comment-preserving in-place edit of a YAML settings text: for each (dotted key, value)
 // in order, only the bytes of that key's value are replaced (inline comments, quoting
@@ -82,7 +82,7 @@ bool parseYaml(std::string_view text, const std::string &file, Layer &out, Diags
 // multi-line plain or quoted values, tags, anchors, quoted keys, a value that is a
 // mapping or list, or a file that does not parse. Each edit is re-parsed and must read
 // back as the new value with every other entry unchanged.
-bool editYamlValues(std::string_view text, const std::vector<std::pair<std::string, std::string>> &values,
+[[nodiscard]] bool editYamlValues(std::string_view text, const std::vector<std::pair<std::string, std::string>> &values,
                     std::string &out, std::string &err);
 
 // ---------------------------------------------------------------- files
@@ -99,11 +99,11 @@ struct FilePolicy {
 // for a symlink, the target's) must not be group/world-writable unless it has the
 // sticky bit (e.g. /tmp), since anyone who can write there could swap the file.
 // `missing` is set (and false returned, no diag) if the file does not exist.
-bool readConfigFile(const std::string &path, const FilePolicy &policy, std::string &content, bool &missing,
+[[nodiscard]] bool readConfigFile(const std::string &path, const FilePolicy &policy, std::string &content, bool &missing,
                     Diags &diags);
 
 // Reads + parses. Missing file: returns true with an empty layer (missing = true).
-bool loadLayer(const std::string &path, const FilePolicy &policy, Layer &out, bool &missing, Diags &diags);
+[[nodiscard]] bool loadLayer(const std::string &path, const FilePolicy &policy, Layer &out, bool &missing, Diags &diags);
 
 // Writes `content` to `path` atomically: temp file in the same directory, fsync, rename
 // over the file, fsync the directory (used by updateConfigValues()). A symlink is
@@ -111,7 +111,7 @@ bool loadLayer(const std::string &path, const FilePolicy &policy, Layer &out, bo
 // its mode (`mode` is for a new file) and must pass the reader's checks (regular file,
 // owned by the effective uid, not group/world-writable); the directory must pass the
 // directory check of readConfigFile(). `policy.allowRootOwned` is honoured.
-bool writeFileAtomic(const std::string &path, std::string_view content, unsigned mode, std::string *err,
+[[nodiscard]] bool writeFileAtomic(const std::string &path, std::string_view content, unsigned mode, std::string *err,
                      const FilePolicy &policy = {});
 
 // Writes settings back into a config file with editYamlValues() (comments and layout
@@ -120,7 +120,7 @@ bool writeFileAtomic(const std::string &path, std::string_view content, unsigned
 // (mode 0600, missing parent directories 0700) with `header` (comment lines) followed
 // by the keys. Nothing is written if nothing changes. `written` (optional) receives the
 // file's content afterwards, so a watcher can recognise the change as our own.
-bool updateConfigValues(const std::string &path, const std::vector<std::pair<std::string, std::string>> &values,
+[[nodiscard]] bool updateConfigValues(const std::string &path, const std::vector<std::pair<std::string, std::string>> &values,
                         std::string &err, std::string *written = nullptr, const FilePolicy &policy = {},
                         std::string_view header = "# lightmusic settings; see the README (Configuration).\n"
                                                   "# Created by lightmusic when a setting was changed in the UI;\n"
@@ -128,14 +128,14 @@ bool updateConfigValues(const std::string &path, const std::vector<std::pair<std
 
 // The directory check of readConfigFile() for `dir`: false with `err` if it is
 // group/world-writable without the sticky bit.
-bool checkConfigDir(const std::string &dir, std::string &err);
+[[nodiscard]] bool checkConfigDir(const std::string &dir, std::string &err);
 
 // $XDG_CONFIG_HOME/lightmusic (absolute $XDG_CONFIG_HOME only), else ~/.config/lightmusic.
 std::string configDir();
 // "~" and "~/x" -> $HOME (error if HOME is unset or empty); "~user/x" -> that user's
 // home directory from the password database (error if there is no such user); relative
 // paths from a file are resolved against the file's dir.
-bool expandPath(const std::string &p, const std::string &relativeTo, std::string &out, std::string &err);
+[[nodiscard]] bool expandPath(const std::string &p, const std::string &relativeTo, std::string &out, std::string &err);
 
 // ---------------------------------------------------------------- schema
 
@@ -244,12 +244,12 @@ private:
 
 // ---- field builders ---------------------------------------------------------
 
-bool parseBool(const Value &v, bool &out, std::string &err);
-bool parseInt(const Value &v, long long lo, long long hi, long long &out, std::string &err);
-bool parseString(const Value &v, std::string &out, std::string &err);
+[[nodiscard]] bool parseBool(const Value &v, bool &out, std::string &err);
+[[nodiscard]] bool parseInt(const Value &v, long long lo, long long hi, long long &out, std::string &err);
+[[nodiscard]] bool parseString(const Value &v, std::string &out, std::string &err);
 // A finite decimal number in [lo, hi] (whole numbers accepted; nan/inf refused).
-bool parseFloat(const Value &v, double lo, double hi, double &out, std::string &err);
-bool parseList(const Value &v, std::vector<std::string> &out, std::string &err);
+[[nodiscard]] bool parseFloat(const Value &v, double lo, double hi, double &out, std::string &err);
+[[nodiscard]] bool parseList(const Value &v, std::vector<std::string> &out, std::string &err);
 
 namespace detail {
 template <class T, class M> Field<T> base(std::string key, M T::*p, bool hot) {
@@ -387,16 +387,16 @@ public:
     FileWatcher(const FileWatcher &) = delete;
     FileWatcher &operator=(const FileWatcher &) = delete;
 
-    bool ok() const { return fd_ >= 0; }
+    [[nodiscard]] bool ok() const { return fd_ >= 0; }
     const std::string &error() const { return err_; }
     int fd() const { return fd_; }
     // Drains pending events (non-blocking); true if any concerned the file (this also
     // (re)starts the debounce timer).
-    bool changed();
+    bool changed(); // informational: due() decides when to reload
     // Milliseconds until a reload is due; -1 if none is pending.
     int timeoutMs() const;
     // True once, when the debounce time after the last relevant event has passed.
-    bool due();
+    [[nodiscard]] bool due();
 
 private:
     int fd_ = -1;

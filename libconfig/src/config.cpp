@@ -66,17 +66,20 @@ const Value *Layer::find(std::string_view key) const {
 
 // ---------------------------------------------------------------- scalar parsing
 
-static bool scalarOnly(const Value &v, std::string &err) {
+namespace {
+bool scalarOnly(const Value &v, std::string &err) {
     if (v.kind == Value::Seq) {
         err = "expected a single value, not a list";
         return false;
     }
     return true;
 }
+} // namespace
 
 // Numbers and booleans: plain scalars only. A quoted scalar ("7") is a string in YAML,
 // and another tag (!!float 5, !!str true) says it is not meant as this type.
-static bool plainTyped(const Value &v, const char *tag, const char *what, std::string &err) {
+namespace {
+bool plainTyped(const Value &v, const char *tag, const char *what, std::string &err) {
     if (!scalarOnly(v, err)) return false;
     if (v.quoted) {
         err = std::string("expected ") + what + " (unquoted), got the quoted string '" + v.scalar + "'";
@@ -89,6 +92,7 @@ static bool plainTyped(const Value &v, const char *tag, const char *what, std::s
     }
     return true;
 }
+} // namespace
 
 bool parseBool(const Value &v, bool &out, std::string &err) {
     if (!plainTyped(v, "bool", "true or false", err)) return false;
@@ -165,7 +169,7 @@ bool parseFloat(const Value &v, double lo, double hi, double &out, std::string &
     }
     if (d < lo || d > hi) {
         char buf[96];
-        std::snprintf(buf, sizeof buf, "%g is out of range (%g..%g)", d, lo, hi);
+        (void)std::snprintf(buf, sizeof buf, "%g is out of range (%g..%g)", d, lo, hi);
         err = buf;
         return false;
     }
@@ -239,10 +243,12 @@ bool expandPath(const std::string &p, const std::string &relativeTo, std::string
     return true;
 }
 
-static std::string dirOf(const std::string &path) {
+namespace {
+std::string dirOf(const std::string &path) {
     const auto slash = path.rfind('/');
     return slash == std::string::npos ? "." : (slash == 0 ? "/" : path.substr(0, slash));
 }
+} // namespace
 
 bool checkConfigDir(const std::string &dir, std::string &err) {
     struct stat st{};
@@ -252,7 +258,7 @@ bool checkConfigDir(const std::string &dir, std::string &err) {
     }
     if ((st.st_mode & 022) && !(st.st_mode & S_ISVTX)) {
         char mode[8];
-        std::snprintf(mode, sizeof mode, "%04o", static_cast<unsigned>(st.st_mode & 07777));
+        (void)std::snprintf(mode, sizeof mode, "%04o", static_cast<unsigned>(st.st_mode & 07777));
         err = "is in directory " + dir + ", which is group/world-writable (mode " + mode +
               ") without the sticky bit; refusing to use it (chmod go-w " + dir + ")";
         return false;
@@ -261,7 +267,8 @@ bool checkConfigDir(const std::string &dir, std::string &err) {
 }
 
 // Both the directory named in `path` and, if `path` goes through symlinks, the real one.
-static bool checkDirs(const std::string &path, std::string &err) {
+namespace {
+bool checkDirs(const std::string &path, std::string &err) {
     if (!checkConfigDir(dirOf(path), err)) return false;
     char real[PATH_MAX];
     if (::realpath(path.c_str(), real)) {
@@ -270,6 +277,7 @@ static bool checkDirs(const std::string &path, std::string &err) {
     }
     return true;
 }
+} // namespace
 
 // ---------------------------------------------------------------- files
 
@@ -294,7 +302,7 @@ bool readConfigFile(const std::string &path, const FilePolicy &policy, std::stri
     }
     struct Closer {
         int fd;
-        ~Closer() { ::close(fd); }
+        ~Closer() { (void)::close(fd); }
     } closer{fd};
     struct stat st{};
     if (::fstat(fd, &st) != 0) return err(std::string("cannot stat: ") + std::strerror(errno));
@@ -302,7 +310,7 @@ bool readConfigFile(const std::string &path, const FilePolicy &policy, std::stri
     if (st.st_uid != ::geteuid() && !(policy.allowRootOwned && st.st_uid == 0))
         return err("not owned by the current user; refusing to read it");
     char mode[8];
-    std::snprintf(mode, sizeof mode, "%04o", static_cast<unsigned>(st.st_mode & 07777));
+    (void)std::snprintf(mode, sizeof mode, "%04o", static_cast<unsigned>(st.st_mode & 07777));
     if (st.st_mode & 022)
         return err(std::string("is group/world-writable (mode ") + mode + "); refusing to read it (chmod go-w " + path +
                    ")");
@@ -396,17 +404,17 @@ bool writeFileAtomic(const std::string &path, std::string_view content, unsigned
         left -= static_cast<std::size_t>(w);
     }
     if (ok) ok = ::fsync(fd) == 0;
+    if (::close(fd) != 0) ok = false; // NFS and friends report write errors here
     const int saved = errno;
-    ::close(fd);
     if (!ok || ::rename(tmp.c_str(), target.c_str()) != 0) {
         const int e = ok ? errno : saved;
-        ::unlink(tmp.c_str());
+        (void)::unlink(tmp.c_str()); // best effort: a leftover file is reconciled on the next start
         errno = e;
         return fail("cannot write " + path);
     }
     if (const int dfd = ::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC); dfd >= 0) {
-        ::fsync(dfd);
-        ::close(dfd);
+        (void)::fsync(dfd); // best effort: only the rename's durability, the data is already synced
+        (void)::close(dfd); // cleanup; nothing written through it is pending
     }
     return true;
 }
@@ -485,13 +493,13 @@ FileWatcher::FileWatcher(const std::string &path, int debounceMs)
     if (::inotify_add_watch(fd_, dir.c_str(),
                             IN_CLOSE_WRITE | IN_MOVED_TO) < 0) {
         err_ = "cannot watch " + dir + ": " + std::strerror(errno);
-        ::close(fd_);
+        (void)::close(fd_); // cleanup; nothing written through it is pending
         fd_ = -1;
     }
 }
 
 FileWatcher::~FileWatcher() {
-    if (fd_ >= 0) ::close(fd_);
+    if (fd_ >= 0) (void)::close(fd_); // cleanup; nothing written through it is pending
 }
 
 bool FileWatcher::changed() {

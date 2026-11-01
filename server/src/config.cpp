@@ -16,8 +16,9 @@ std::string default_db_path() {
     return std::string(home && *home ? home : ".") + "/.local/share/lightmusic/server.db";
 }
 
-static void usage(std::FILE *f) {
-    std::fputs(
+namespace {
+void usage(std::FILE *f) {
+    (void)std::fputs(
         "usage: lightmusicd --music DIR [--music DIR ...] [options]\n"
         "       lightmusicd [--db PATH] --add-key NAME | --revoke-key NAME | --list-keys\n"
         "\n"
@@ -44,6 +45,7 @@ static void usage(std::FILE *f) {
         "  --list-keys          list key names\n",
         f);
 }
+} // namespace
 
 const lm::config::Schema<Config> &server_schema() {
     static const lm::config::Schema<Config> s = [] {
@@ -84,7 +86,7 @@ std::optional<Config> parse_args(int argc, char **argv, int &exit_code) {
         std::string_view a = argv[i];
         auto need = [&](const char *name) -> const char * {
             if (i + 1 >= argc) {
-                std::fprintf(stderr, "lightmusicd: %s needs a value\n", name);
+                (void)std::fprintf(stderr, "lightmusicd: %s needs a value\n", name);
                 return nullptr;
             }
             return argv[++i];
@@ -135,7 +137,7 @@ std::optional<Config> parse_args(int argc, char **argv, int &exit_code) {
         } else if (a == "--list-keys") {
             c.list_keys = true;
         } else {
-            std::fprintf(stderr, "lightmusicd: unknown option '%s'\n", argv[i]);
+            (void)std::fprintf(stderr, "lightmusicd: unknown option '%s'\n", argv[i]);
             usage(stderr);
             return std::nullopt;
         }
@@ -144,7 +146,8 @@ std::optional<Config> parse_args(int argc, char **argv, int &exit_code) {
     lm::config::Layer file;
     if (!config_path.empty()) {
         bool missing = false;
-        lm::config::loadLayer(config_path, server_file_policy(), file, missing, diags);
+        // Errors are reported in diags.
+        (void)lm::config::loadLayer(config_path, server_file_policy(), file, missing, diags);
         if (missing) diags.push_back({lm::config::Diag::Error, config_path, 0, 0, "no such file"});
     }
     {
@@ -155,17 +158,17 @@ std::optional<Config> parse_args(int argc, char **argv, int &exit_code) {
         c.revoke_key = admin.revoke_key;
         c.list_keys = admin.list_keys;
     }
-    for (const auto &d : diags) std::fprintf(stderr, "lightmusicd: %s\n", d.str().c_str());
+    for (const auto &d : diags) (void)std::fprintf(stderr, "lightmusicd: %s\n", d.str().c_str());
     if (lm::config::hasError(diags)) return std::nullopt;
     if (c.db_path.empty()) c.db_path = default_db_path();
     bool admin = c.add_key || c.revoke_key || c.list_keys;
     if (!admin && c.music_dirs.empty()) {
-        std::fprintf(stderr, "lightmusicd: at least one --music DIR (or music_dirs in --config) is required\n");
+        (void)std::fprintf(stderr, "lightmusicd: at least one --music DIR (or music_dirs in --config) is required\n");
         usage(stderr);
         return std::nullopt;
     }
     if (!admin && !c.allow_direct && !is_loopback_addr(c.listen_addr)) {
-        std::fprintf(stderr,
+        (void)std::fprintf(stderr,
                      "lightmusicd: refusing to listen on non-loopback address %s: put a TLS\n"
                      "reverse proxy (Caddy) in front and listen on 127.0.0.1, or pass\n"
                      "--allow-direct to expose plain HTTP anyway\n",
@@ -174,7 +177,7 @@ std::optional<Config> parse_args(int argc, char **argv, int &exit_code) {
     }
     for (auto &t : c.trusted_proxies)
         if (normalize_ip(t).empty()) {
-            std::fprintf(stderr, "lightmusicd: --trusted-proxy needs an IP address, not '%s'\n",
+            (void)std::fprintf(stderr, "lightmusicd: --trusted-proxy needs an IP address, not '%s'\n",
                          t.c_str());
             return std::nullopt;
         }

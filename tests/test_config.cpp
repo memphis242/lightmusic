@@ -39,7 +39,7 @@ std::string writeFile(const std::string &name, const std::string &text, mode_t m
         std::ofstream f(p, std::ios::trunc);
         f << text;
     }
-    ::chmod(p.c_str(), mode);
+    (void)::chmod(p.c_str(), mode);
     return p;
 }
 
@@ -51,7 +51,7 @@ const Diag *findDiag(const Diags &d, const std::string &needle) {
 
 ClientSettings load(const std::string &text, Diags &d, const Layer &cli = {}, const Layer *over = nullptr) {
     ClientSettings s;
-    loadClientSettings(writeFile("cfg.yaml", text), true, over, cli, s, d);
+    (void)loadClientSettings(writeFile("cfg.yaml", text), true, over, cli, s, d);
     return s;
 }
 
@@ -79,7 +79,7 @@ void testDefaults() {
     for (const char *t : {"", "# nothing\n", "---\n", "cache:\n", "cache: {}\nplayback: ~\n"}) {
         Diags e;
         const auto x = load(t, e);
-        for (const auto &y : e) std::fprintf(stderr, "  [%s] %s\n", t, y.str().c_str());
+        for (const auto &y : e) (void)std::fprintf(stderr, "  [%s] %s\n", t, y.str().c_str());
         CHECK(!hasError(e));
         CHECK(x == ClientSettings{});
     }
@@ -104,7 +104,7 @@ void testFullFile() {
                         "ui:\n"
                         "  show_cache_markers: false\n",
                         d);
-    for (const auto &x : d) std::fprintf(stderr, "  %s\n", x.str().c_str());
+    for (const auto &x : d) (void)std::fprintf(stderr, "  %s\n", x.str().c_str());
     CHECK(d.empty());
     CHECK(s.serverUrl == "https://music.example.net");
     CHECK(s.keyFile == g_dir + "/keys/lm.key");
@@ -168,7 +168,7 @@ void testUnknownAndTypes() {
                         "  replaygain: loud\n"
                         "frobnicate: 1\n",
                         d);
-    for (const auto &x : d) std::fprintf(stderr, "  %s\n", x.str().c_str());
+    for (const auto &x : d) (void)std::fprintf(stderr, "  %s\n", x.str().c_str());
     const Diag *u = findDiag(d, "unknown key 'server.colour'");
     CHECK(u && u->level == Diag::Warning && u->line == 3);
     const Diag *u2 = findDiag(d, "unknown key 'frobnicate'");
@@ -190,7 +190,7 @@ void testUnknownAndTypes() {
     // Shape errors.
     Diags x;
     load("cache: 5\nplayback:\n  volume:\n    level: 3\nserver:\n  url: [a, b]\n", x);
-    for (const auto &y : x) std::fprintf(stderr, "  %s\n", y.str().c_str());
+    for (const auto &y : x) (void)std::fprintf(stderr, "  %s\n", y.str().c_str());
     CHECK(findDiag(x, "'cache' must be a mapping") && findDiag(x, "'cache' must be a mapping")->line == 1);
     CHECK(findDiag(x, "'playback.volume' must be a single value"));
     CHECK(findDiag(x, "server.url: expected a single value, not a list"));
@@ -280,7 +280,7 @@ void testScalarForms() {
         } else {
             const Diag *x = findDiag(d, c.msg);
             CHECK(x && x->level == Diag::Error && x->line == 2);
-            if (!x) std::fprintf(stderr, "  case: %s\n", c.yaml);
+            if (!x) (void)std::fprintf(stderr, "  case: %s\n", c.yaml);
         }
     }
     // Flags are plain strings: "7" from the command line is a number.
@@ -355,12 +355,12 @@ void testHomeExpansion() {
     CHECK(x && x->level == Diag::Error && x->line == 2);
     // HOME unset: an error, not "/k".
     const std::string home = homeDir();
-    ::unsetenv("HOME");
+    (void)::unsetenv("HOME");
     std::string out, err;
     CHECK(!expandPath("~/k", "", out, err) && err.find("HOME is not set") != std::string::npos);
-    ::setenv("HOME", "", 1);
+    (void)::setenv("HOME", "", 1);
     CHECK(!expandPath("~", "", out, err));
-    ::setenv("HOME", home.c_str(), 1);
+    (void)::setenv("HOME", home.c_str(), 1);
     CHECK(expandPath("rel/k", "/etc/x/cfg.yaml", out, err) && out == "/etc/x/rel/k");
 }
 
@@ -398,10 +398,10 @@ void testPermissions() {
         Diags d; // symlink to a good file: followed, target checked
         const std::string target = writeFile("target.yaml", text, 0600);
         const std::string link = g_dir + "/link.yaml";
-        ::unlink(link.c_str());
+        (void)::unlink(link.c_str());
         CHECK(::symlink(target.c_str(), link.c_str()) == 0);
         CHECK(loadClientSettings(link, true, nullptr, {}, s, d));
-        ::chmod(target.c_str(), 0666);
+        (void)::chmod(target.c_str(), 0666);
         Diags e;
         CHECK(!loadClientSettings(link, true, nullptr, {}, s, e));
     }
@@ -409,27 +409,27 @@ void testPermissions() {
         // Directory writable by others (no sticky bit): refused, for the file's own
         // directory and for a symlink target's.
         const std::string open = g_dir + "/opendir";
-        ::mkdir(open.c_str(), 0700);
-        ::chmod(open.c_str(), 0777);
+        (void)::mkdir(open.c_str(), 0700);
+        (void)::chmod(open.c_str(), 0777);
         {
             std::ofstream(open + "/cfg.yaml") << text;
         }
-        ::chmod((open + "/cfg.yaml").c_str(), 0600);
+        (void)::chmod((open + "/cfg.yaml").c_str(), 0600);
         Diags d;
         CHECK(!loadClientSettings(open + "/cfg.yaml", true, nullptr, {}, s, d));
         CHECK(findDiag(d, "without the sticky bit"));
         const std::string link = g_dir + "/link2.yaml";
-        ::unlink(link.c_str());
+        (void)::unlink(link.c_str());
         CHECK(::symlink((open + "/cfg.yaml").c_str(), link.c_str()) == 0);
         Diags e;
         CHECK(!loadClientSettings(link, true, nullptr, {}, s, e) && findDiag(e, "without the sticky bit"));
-        ::chmod(open.c_str(), 01777); // sticky (like /tmp): fine
+        (void)::chmod(open.c_str(), 01777); // sticky (like /tmp): fine
         Diags f;
         CHECK(loadClientSettings(open + "/cfg.yaml", true, nullptr, {}, s, f) && !hasError(f));
-        ::chmod(open.c_str(), 0770);
+        (void)::chmod(open.c_str(), 0770);
         std::string err;
         CHECK(!writeFileAtomic(open + "/cfg.yaml", "a: 1\n", 0600, &err) && err.find("sticky") != std::string::npos);
-        ::chmod(open.c_str(), 0700);
+        (void)::chmod(open.c_str(), 0700);
     }
     {
         Diags d; // oversize
@@ -449,25 +449,25 @@ void testPermissions() {
     CHECK(readConfigFile(p, clientFilePolicy(), content, missing, d) && content == "a: 2\n");
     CHECK(!writeFileAtomic(g_dir + "/no/such/dir/x.yaml", "", 0600, &err) && !err.empty());
     // An existing file keeps its mode.
-    ::chmod(p.c_str(), 0640);
+    (void)::chmod(p.c_str(), 0640);
     CHECK(writeFileAtomic(p, "a: 3\n", 0600, &err));
     CHECK(::stat(p.c_str(), &st) == 0 && (st.st_mode & 0777) == 0640);
     // Group/world-writable target: refused like the reader does.
-    ::chmod(p.c_str(), 0660);
+    (void)::chmod(p.c_str(), 0660);
     CHECK(!writeFileAtomic(p, "a: 4\n", 0600, &err) && err.find("group/world-writable") != std::string::npos);
-    ::chmod(p.c_str(), 0600);
+    (void)::chmod(p.c_str(), 0600);
     // Through a symlink (dotfile manager): the target is replaced in its own directory,
     // the link stays a link.
     {
         const std::string realDir = g_dir + "/dotfiles";
-        ::mkdir(realDir.c_str(), 0700);
+        (void)::mkdir(realDir.c_str(), 0700);
         const std::string target = realDir + "/cfg.yaml";
         {
             std::ofstream(target) << "a: 1\n";
         }
-        ::chmod(target.c_str(), 0604);
+        (void)::chmod(target.c_str(), 0604);
         const std::string link = g_dir + "/linked.yaml";
-        ::unlink(link.c_str());
+        (void)::unlink(link.c_str());
         CHECK(::symlink(target.c_str(), link.c_str()) == 0);
         CHECK(writeFileAtomic(link, "a: 5\n", 0600, &err));
         struct stat lst{};
@@ -487,7 +487,7 @@ void testPermissions() {
 
 void testReload() {
     const std::string dir = g_dir + "/reload";
-    ::mkdir(dir.c_str(), 0700);
+    (void)::mkdir(dir.c_str(), 0700);
     const std::string path = dir + "/cfg.yaml";
     auto put = [&](const std::string &t) {
         std::string err;
@@ -550,12 +550,12 @@ void testReload() {
     // Made group-writable: refused (a chmod alone is no event; the next save is).
     put("cache:\n  max_size_mb: 60\n");
     CHECK(waitChange(w));
-    ::chmod(path.c_str(), 0660);
+    (void)::chmod(path.c_str(), 0660);
     r = reloadClientSettings(path, nullptr, cli, running);
     CHECK(!r.ok && findDiag(r.diags, "group/world-writable"));
-    ::chmod(path.c_str(), 0600);
+    (void)::chmod(path.c_str(), 0600);
     // Deleted or empty: not reloaded, the running settings stay (never the defaults).
-    ::unlink(path.c_str());
+    (void)::unlink(path.c_str());
     {
         pollfd p{w.fd(), POLLIN, 0};
         CHECK(::poll(&p, 1, 200) == 0); // deletion is no event
@@ -600,13 +600,13 @@ struct LoopSim {
 
 void testEditorSaves() {
     const std::string dir = g_dir + "/editor";
-    ::mkdir(dir.c_str(), 0700);
+    (void)::mkdir(dir.c_str(), 0700);
     const std::string path = dir + "/cfg.yaml";
     auto write = [&](const std::string &p, const std::string &t) {
         const int fd = ::open(p.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
         CHECK(fd >= 0);
         CHECK(::write(fd, t.data(), t.size()) == static_cast<ssize_t>(t.size()));
-        ::close(fd);
+        (void)::close(fd);
     };
     write(path, "cache:\n  max_size_mb: 20000\nplayback:\n  volume: 30\n");
     LoopSim sim{*new FileWatcher(path), path, {}, {}};
@@ -623,8 +623,8 @@ void testEditorSaves() {
         const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
         const std::string t = "cache:\n  max_size_mb: 15000\nplayback:\n  volume: 40\n";
         CHECK(::write(fd, t.data(), t.size()) == static_cast<ssize_t>(t.size()));
-        ::close(fd);
-        ::unlink((path + "~").c_str());
+        (void)::close(fd);
+        (void)::unlink((path + "~").c_str());
         sim.pump(400);
         CHECK_EQ(sim.reloads, 1);
         CHECK_EQ(sim.applied, 1);
@@ -643,7 +643,7 @@ void testEditorSaves() {
         write(path, "cache:\n  max_size_mb: 12000\nplayback:\n  volume: 50\n");
         sim.pump(400);
         CHECK(sim.running.cacheMaxSizeMb == 12000 && sim.running.volume == 50);
-        ::unlink((path + "~").c_str());
+        (void)::unlink((path + "~").c_str());
     }
     // Atomic rename-over (temp file + rename): one reload.
     {
@@ -657,7 +657,7 @@ void testEditorSaves() {
     // Deleted: nothing happens.
     {
         const int before = sim.reloads;
-        ::unlink(path.c_str());
+        (void)::unlink(path.c_str());
         sim.pump(300);
         CHECK_EQ(sim.reloads, before);
         CHECK(sim.running.cacheMaxSizeMb == 11000 && sim.running.volume == 60);
@@ -710,7 +710,7 @@ void testMalformed() {
     for (const char *c : cases) {
         Layer l;
         Diags d;
-        parseYaml(c, "m.yaml", l, d);
+        (void)parseYaml(c, "m.yaml", l, d);
         ClientSettings s = clientSchema().resolve({&l}, d);
         (void)s;
     }
@@ -718,7 +718,7 @@ void testMalformed() {
         Layer l;
         Diags d;
         const std::string nul("a: x\0y\n", 7);
-        parseYaml(nul, "m.yaml", l, d);
+        (void)parseYaml(nul, "m.yaml", l, d);
         clientSchema().resolve({&l}, d);
     }
     // Deep nesting (flow and block).
@@ -726,13 +726,13 @@ void testMalformed() {
         std::string deep(5000, '[');
         Layer l;
         Diags d;
-        parseYaml("a: " + deep, "m.yaml", l, d);
+        (void)parseYaml("a: " + deep, "m.yaml", l, d);
         CHECK(hasError(d));
         std::string block;
         for (int i = 0; i < 40; i++) block += std::string(static_cast<std::size_t>(i) * 2, ' ') + "k:\n";
         Layer l2;
         Diags d2;
-        parseYaml(block + std::string(80, ' ') + "v: 1\n", "m.yaml", l2, d2);
+        (void)parseYaml(block + std::string(80, ' ') + "v: 1\n", "m.yaml", l2, d2);
         CHECK(hasError(d2));
     }
     // Random mutations of a valid file, and random bytes.
@@ -762,7 +762,7 @@ void testMalformed() {
         }
         Layer l;
         Diags d;
-        parseYaml(t, "fuzz.yaml", l, d);
+        (void)parseYaml(t, "fuzz.yaml", l, d);
         clientSchema().resolve({&l}, d);
         for (const auto &x : d) (void)x.str();
     }
@@ -775,7 +775,7 @@ std::string edit(const std::string &text, const std::vector<std::pair<std::strin
                  std::string *errOut = nullptr) {
     std::string out = "<untouched>", err;
     const bool ok = editYamlValues(text, v, out, err);
-    if (ok != expectOk) std::fprintf(stderr, "edit: unexpected %s: %s\n--\n%s--\n", ok ? "success" : "failure", err.c_str(), text.c_str());
+    if (ok != expectOk) (void)std::fprintf(stderr, "edit: unexpected %s: %s\n--\n%s--\n", ok ? "success" : "failure", err.c_str(), text.c_str());
     CHECK(ok == expectOk);
     if (!ok) CHECK(out == "<untouched>" && !err.empty());
     if (errOut) *errOut = err;
@@ -883,7 +883,7 @@ void testEditRefusals() {
     std::string err;
     auto refused = [&](const std::string &text, const std::string &key, const std::string &needle) {
         edit(text, {{key, "1"}}, false, &err);
-        if (err.find(needle) == std::string::npos) std::fprintf(stderr, "refusal message: %s\n", err.c_str());
+        if (err.find(needle) == std::string::npos) (void)std::fprintf(stderr, "refusal message: %s\n", err.c_str());
         CHECK(err.find(needle) != std::string::npos);
     };
     refused("playback: {volume: 80}\n", "playback.volume", "flow mapping");
@@ -914,12 +914,12 @@ void testUpdateFile() {
     CHECK(updateConfigValues(p, {{"playback.volume", "65"}}, err, &written));
     CHECK(slurp(p) == "# keep me\nplayback:\n  volume: 65  # pct\n" && written == slurp(p));
     struct stat st{};
-    ::stat(p.c_str(), &st);
+    (void)::stat(p.c_str(), &st);
     CHECK((st.st_mode & 07777) == 0640);
     // Unchanged: no write (mtime/inode kept).
     const auto ino = st.st_ino;
     CHECK(updateConfigValues(p, {{"playback.volume", "65"}}, err));
-    ::stat(p.c_str(), &st);
+    (void)::stat(p.c_str(), &st);
     CHECK(st.st_ino == ino);
     // Refusal leaves the file alone.
     writeFile("wb.yaml", "playback: {volume: 50}\n");
@@ -932,23 +932,23 @@ void testUpdateFile() {
     const std::string np = g_dir + "/new/sub/cfg.yaml";
     CHECK(updateConfigValues(np, {{"playback.volume", "30"}}, err, &written));
     CHECK(slurp(np).rfind("# lightmusic settings", 0) == 0 && slurp(np).find("playback:\n  volume: 30\n") != std::string::npos);
-    ::stat(np.c_str(), &st);
+    (void)::stat(np.c_str(), &st);
     CHECK((st.st_mode & 07777) == 0600);
-    ::stat((g_dir + "/new/sub").c_str(), &st);
+    (void)::stat((g_dir + "/new/sub").c_str(), &st);
     CHECK((st.st_mode & 0777) == 0700);
     ClientSettings s;
     Diags d;
     CHECK(loadClientSettings(np, true, nullptr, {}, s, d) && s.volume == 30 && s.saveSettings);
     // Symlinked config (dotfile manager): the target is edited, the link stays.
-    ::mkdir((g_dir + "/dots").c_str(), 0700);
+    (void)::mkdir((g_dir + "/dots").c_str(), 0700);
     const std::string target = g_dir + "/dots/cfg.yaml";
     {
         std::ofstream f(target);
         f << "# dotfiles\nplayback:\n  volume: 10 # v\n";
     }
-    ::chmod(target.c_str(), 0600);
+    (void)::chmod(target.c_str(), 0600);
     const std::string link = g_dir + "/link.yaml";
-    ::unlink(link.c_str());
+    (void)::unlink(link.c_str());
     CHECK(::symlink(target.c_str(), link.c_str()) == 0);
     CHECK(updateConfigValues(link, {{"playback.volume", "11"}, {"ui.save_settings", "true"}}, err));
     struct stat lst{};
@@ -1060,7 +1060,7 @@ int main() {
     char tmpl[] = "/tmp/lm_config_XXXXXX";
     if (!::mkdtemp(tmpl)) return 1;
     g_dir = tmpl;
-    ::setenv("HOME", g_dir.c_str(), 1);
+    (void)::setenv("HOME", g_dir.c_str(), 1);
     testDefaults();
     testFullFile();
     testPrecedence();

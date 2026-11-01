@@ -3,4 +3,4 @@
 add_library(mpris STATIC src/mpris.cpp)
 add_library(lm::mpris ALIAS mpris)
 target_include_directories(mpris PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(mpris PUBLIC lm::player PkgConfig::LIBSYSTEMD PRIVATE lm_warnings)
+target_link_libraries(mpris PUBLIC lm::player PkgConfig::LIBSYSTEMD PRIVATE lm_warnings_app)

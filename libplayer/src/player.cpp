@@ -345,7 +345,7 @@ struct Player::Impl {
     ~Impl() {
         if (std::this_thread::get_id() == controlThread.get_id()) {
             // Joining the control thread from itself would deadlock (or throw).
-            std::fputs("lm::Player: destroyed from inside its onEvent handler; destroy it from another thread\n",
+            (void)std::fputs("lm::Player: destroyed from inside its onEvent handler; destroy it from another thread\n",
                        stderr);
             std::abort();
         }

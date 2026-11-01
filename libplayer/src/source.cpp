@@ -12,7 +12,7 @@ namespace {
 class FileSource final : public ByteSource {
 public:
     FileSource(std::FILE *f, std::string path, std::int64_t size) : f_(f), path_(std::move(path)), size_(size) {}
-    ~FileSource() override { std::fclose(f_); }
+    ~FileSource() override { (void)std::fclose(f_); } // read-only: nothing to flush or lose
     FileSource(const FileSource &) = delete; // owns f_: a copy would fclose it twice
     FileSource &operator=(const FileSource &) = delete;
 
@@ -40,21 +40,25 @@ std::unique_ptr<ByteSource> openFileSource(const std::string &path) {
     if (fd < 0) return nullptr;
     struct stat st{};
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        ::close(fd);
+        (void)::close(fd); // cleanup; nothing written through it is pending
         return nullptr;
     }
+    // Reads must block from here on; a non-blocking stream would report EAGAIN as EOF.
     const int fl = fcntl(fd, F_GETFL);
-    if (fl >= 0) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
+    if (fl < 0 || fcntl(fd, F_SETFL, fl & ~O_NONBLOCK) != 0) {
+        (void)::close(fd); // read-only
+        return nullptr;
+    }
     std::FILE *f = fdopen(fd, "rb");
     if (!f) {
         // cppcheck-suppress doubleFree ; fdopen failed, so fd is still ours (fclose below is on the other path)
-        ::close(fd);
+        (void)::close(fd); // cleanup; nothing written through it is pending
         return nullptr;
     }
     std::int64_t size = -1;
     if (fseeko(f, 0, SEEK_END) == 0) size = static_cast<std::int64_t>(ftello(f));
     if (fseeko(f, 0, SEEK_SET) != 0) {
-        std::fclose(f);
+        (void)std::fclose(f); // read-only, already failing
         return nullptr;
     }
     return std::make_unique<FileSource>(f, path, size);

@@ -46,7 +46,7 @@ FilePolicy clientFilePolicy();
 // Resolves defaults < file < overrides < cli. A missing file is fine unless `required`.
 // The parsed file layer is returned in `fileLayer` (for diagnostics/reload).
 // Returns false if any error was reported (settings are then not to be used).
-bool loadClientSettings(const std::string &path, bool required, const Layer *overrides, const Layer &cli,
+[[nodiscard]] bool loadClientSettings(const std::string &path, bool required, const Layer *overrides, const Layer &cli,
                         ClientSettings &out, Diags &diags);
 
 // Re-reads the file for a hot reload. `running` is what the process uses now. On

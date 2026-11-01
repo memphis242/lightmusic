@@ -26,16 +26,16 @@ std::string generate_api_key();
 
 // Compares two equal-length byte strings without data-dependent branches or early exit.
 // Different lengths return false (lengths are not secret: hashes are always 32 bytes).
-bool constant_time_equal(const std::uint8_t *a, std::size_t an, const std::uint8_t *b,
+[[nodiscard]] bool constant_time_equal(const std::uint8_t *a, std::size_t an, const std::uint8_t *b,
                          std::size_t bn);
-inline bool constant_time_equal(const Sha256 &a, const Sha256 &b) {
+[[nodiscard]] inline bool constant_time_equal(const Sha256 &a, const Sha256 &b) {
     return constant_time_equal(a.data(), a.size(), b.data(), b.size());
 }
 
 // Canonical text form of an IPv4 or IPv6 address ("::ffff:1.2.3.4" becomes "1.2.3.4",
 // IPv6 is compressed/lower-cased). Empty if `ip` is not a numeric address.
 std::string normalize_ip(std::string_view ip);
-bool is_loopback_addr(std::string_view addr);  // 127/8, ::1, "localhost"
+[[nodiscard]] bool is_loopback_addr(std::string_view addr);  // 127/8, ::1, "localhost"
 
 // The address the server attributes a request to. `peer` is the socket peer address,
 // `xff` the X-Forwarded-For header values in order (several headers are concatenated).
@@ -69,7 +69,7 @@ public:
     AuthLimiter() : AuthLimiter(Options{}) {}
     explicit AuthLimiter(Options o) : opt_(o) {}
 
-    bool blocked(const std::string &ip, Clock::time_point now = Clock::now());
+    [[nodiscard]] bool blocked(const std::string &ip, Clock::time_point now = Clock::now());
     void record_failure(const std::string &ip, Clock::time_point now = Clock::now());
     std::size_t tracked() const;
     // "1.2.3.4" -> "1.2.3.4", "2001:db8:1:2:3::4" -> "2001:db8:1:2::/64".
@@ -81,7 +81,7 @@ private:
         int failures = 0;
         Clock::time_point blocked_until{};
     };
-    bool make_room(Clock::time_point now);
+    [[nodiscard]] bool make_room(Clock::time_point now);
     Options opt_;
     mutable std::mutex mu_;
     std::unordered_map<std::string, Entry> ips_;

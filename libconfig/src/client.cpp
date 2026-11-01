@@ -52,7 +52,8 @@ std::string uiOverridesPath() { return configDir() + "/ui-overrides.yaml"; }
 
 FilePolicy clientFilePolicy() { return FilePolicy{}; }
 
-static bool loadFileLayer(const std::string &path, bool required, Layer &file, Diags &diags) {
+namespace {
+bool loadFileLayer(const std::string &path, bool required, Layer &file, Diags &diags) {
     bool missing = false;
     const bool ok = loadLayer(path, clientFilePolicy(), file, missing, diags);
     if (missing && required) {
@@ -64,6 +65,7 @@ static bool loadFileLayer(const std::string &path, bool required, Layer &file, D
     }
     return ok;
 }
+} // namespace
 
 bool loadClientSettings(const std::string &path, bool required, const Layer *overrides, const Layer &cli,
                         ClientSettings &out, Diags &diags) {

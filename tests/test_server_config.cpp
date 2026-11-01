@@ -20,7 +20,7 @@ std::string g_dir;
 std::string put(const std::string &name, const std::string &text, mode_t mode = 0644) {
     const std::string p = g_dir + "/" + name;
     std::ofstream(p, std::ios::trunc) << text;
-    ::chmod(p.c_str(), mode);
+    (void)::chmod(p.c_str(), mode);
     return p;
 }
 
@@ -99,14 +99,14 @@ int main() {
     // A directory others can write to (no sticky bit) is refused; with the sticky bit, ok.
     {
         const std::string sub = g_dir + "/shared";
-        ::mkdir(sub.c_str(), 0700);
+        (void)::mkdir(sub.c_str(), 0700);
         std::ofstream(sub + "/s.yaml") << "music_dirs: [/m]\n";
-        ::chmod((sub + "/s.yaml").c_str(), 0644);
-        ::chmod(sub.c_str(), 0775);
+        (void)::chmod((sub + "/s.yaml").c_str(), 0644);
+        (void)::chmod(sub.c_str(), 0775);
         CHECK(!parse({"--config", sub + "/s.yaml"}, rc) && rc == 2);
-        ::chmod(sub.c_str(), 01777);
+        (void)::chmod(sub.c_str(), 01777);
         CHECK(parse({"--config", sub + "/s.yaml"}, rc));
-        ::chmod(sub.c_str(), 0755);
+        (void)::chmod(sub.c_str(), 0755);
         CHECK(parse({"--config", sub + "/s.yaml"}, rc));
     }
     // Numbers: no leading zeros, no quoted/float values.
@@ -118,7 +118,7 @@ int main() {
         lm::config::Layer l;
         lm::config::Diags d;
         bool missing = false;
-        lm::config::loadLayer(put("ln.yaml", "music_dirs: [/m]\n\nheader_timeout: 0\n"),
+        (void)lm::config::loadLayer(put("ln.yaml", "music_dirs: [/m]\n\nheader_timeout: 0\n"),
                               lm::server::server_file_policy(), l, missing, d);
         auto c = lm::server::server_schema().resolve({&l}, d);
         CHECK(d.size() == 1 && d[0].line == 3 && d[0].msg.find("header_timeout: 0 is out of range") == 0);

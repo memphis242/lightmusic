@@ -28,7 +28,7 @@ static void decodeCase(const std::string &dir, const Case &c) {
     // Deliberately misleading extension: detection must use magic bytes.
     const std::string path = dir + "/" + c.name + ".bin";
     if (!lmtest::makeTone(path, c.rate, c.samples, 440, c.args)) {
-        std::fprintf(stderr, "ffmpeg could not make %s (encoder missing?)\n", path.c_str());
+        (void)std::fprintf(stderr, "ffmpeg could not make %s (encoder missing?)\n", path.c_str());
         ++lmtest::g_failures;
         return;
     }
@@ -36,7 +36,7 @@ static void decodeCase(const std::string &dir, const Case &c) {
     auto d = lm::openDecoderForFile(path, &err);
     CHECK(d != nullptr);
     if (!d) {
-        std::fprintf(stderr, "%s: %s\n", c.name, err.c_str());
+        (void)std::fprintf(stderr, "%s: %s\n", c.name, err.c_str());
         return;
     }
     CHECK(d->format() == c.fmt);

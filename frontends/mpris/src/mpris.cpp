@@ -377,7 +377,7 @@ struct Server::Impl {
     // ---- connection lifecycle ----
     void log(const std::string &msg) {
         if (logger) logger(msg);
-        else std::fprintf(stderr, "%s\n", msg.c_str());
+        else (void)std::fprintf(stderr, "%s\n", msg.c_str());
     }
     void logOnce(bool &flag, const char *what, int r) {
         if (flag) return;
@@ -418,7 +418,7 @@ struct Server::Impl {
     }
     static std::uint64_t nowMs() {
         timespec ts{};
-        clock_gettime(CLOCK_MONOTONIC, &ts);
+        (void)clock_gettime(CLOCK_MONOTONIC, &ts); // cannot fail for CLOCK_MONOTONIC
         return static_cast<std::uint64_t>(ts.tv_sec) * 1000u + static_cast<std::uint64_t>(ts.tv_nsec) / 1000000u;
     }
     void lost(int r) {
@@ -538,7 +538,7 @@ int Server::timeoutMs() const {
     std::uint64_t until = 0;
     if (sd_bus_get_timeout(s.bus, &until) < 0 || until == UINT64_MAX) return -1;
     timespec ts{};
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+    (void)clock_gettime(CLOCK_MONOTONIC, &ts); // cannot fail for CLOCK_MONOTONIC
     const std::uint64_t now = static_cast<std::uint64_t>(ts.tv_sec) * 1000000u + static_cast<std::uint64_t>(ts.tv_nsec) / 1000u;
     if (until <= now) return 0;
     const std::uint64_t ms = (until - now + 999) / 1000;

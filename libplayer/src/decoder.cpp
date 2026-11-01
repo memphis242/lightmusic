@@ -63,7 +63,8 @@ Format sniffAt(ByteSource &src, std::int64_t at) {
 
 Format sniffFormat(ByteSource &src) {
     const Format f = sniffAt(src, 0);
-    src.seek(0, ByteSource::Whence::Set);
+    // A decoder must start at byte 0; if the rewind fails nothing can decode this source.
+    if (!src.seek(0, ByteSource::Whence::Set)) return Format::Unknown;
     return f;
 }
 

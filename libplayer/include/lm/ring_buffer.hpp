@@ -143,7 +143,7 @@ private:
         std::atomic<int> &f_;
     };
     static_assert(std::atomic<int>::is_always_lock_free);
-    bool idle() const noexcept {
+    [[nodiscard]] bool idle() const noexcept {
         return producerActive_.load(std::memory_order_acquire) == 0 &&
                consumerActive_.load(std::memory_order_acquire) == 0;
     }

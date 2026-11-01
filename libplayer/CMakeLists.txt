@@ -29,4 +29,4 @@ target_include_directories(player
   PRIVATE src)
 target_link_libraries(player
   PUBLIC Threads::Threads lm_assert
-  PRIVATE lm_warnings lm_third_party PkgConfig::OPUSFILE PkgConfig::VORBISFILE)
+  PRIVATE lm_warnings_app lm_third_party PkgConfig::OPUSFILE PkgConfig::VORBISFILE)

@@ -31,7 +31,7 @@ struct Config {
 
 // Parses argv. On error or --help writes to stderr/stdout and returns nullopt with
 // `exit_code` set (0 for --help).
-std::optional<Config> parse_args(int argc, char **argv, int &exit_code);
+[[nodiscard]] std::optional<Config> parse_args(int argc, char **argv, int &exit_code);
 
 std::string default_db_path();
 
