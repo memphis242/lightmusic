@@ -128,8 +128,8 @@ static bool server_drained(int port, int fd) {
     socklen_t len = sizeof me;
     if (getsockname(fd, reinterpret_cast<sockaddr *>(&me), &len) != 0) return false;
     char want_local[32], want_remote[32];
-    std::snprintf(want_local, sizeof want_local, "0100007F:%04X", unsigned(port));
-    std::snprintf(want_remote, sizeof want_remote, "0100007F:%04X", unsigned(ntohs(me.sin_port)));
+    (void)std::snprintf(want_local, sizeof want_local, "0100007F:%04X", unsigned(port));
+    (void)std::snprintf(want_remote, sizeof want_remote, "0100007F:%04X", unsigned(ntohs(me.sin_port)));
     std::ifstream f("/proc/net/tcp");
     std::string line;
     std::getline(f, line);  // header
