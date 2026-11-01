@@ -11,6 +11,7 @@
 //            lightmusic-play --null a.mp3 b.flac < script.txt)
 // Exits when the queue ends or on q / EOF on stdin.
 #include "lm/player.hpp"
+#include "lm/print.hpp"
 
 #include <poll.h>
 #include <unistd.h>
@@ -20,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -32,11 +34,11 @@ std::atomic<bool> g_done{false};
 
 void printState(const char *tag, const lm::PlayerState &s, const std::string &msg) {
     std::lock_guard lk(g_print);
-    std::printf("[%-8s] %-7s #%d/%zu %6.1f/%-6.1fs vol=%.2f underruns=%llu %s%s%s\n", tag, lm::statusName(s.status),
-                s.index, s.queueSize, s.position, s.track.duration, static_cast<double>(s.volume),
-                static_cast<unsigned long long>(s.underruns), s.track.path.c_str(), msg.empty() ? "" : "  ",
-                msg.c_str());
-    (void)std::fflush(stdout); // progress output only
+    // Progress output only: best effort.
+    lm::diagln(stdout, "[{:<8}] {:<7} #{}/{} {:6.1f}/{:<6.1f}s vol={:.2f} underruns={} {}{}{}", tag,
+               lm::statusName(s.status), s.index, s.queueSize, s.position, s.track.duration, s.volume, s.underruns,
+               s.track.path, msg.empty() ? "" : "  ", msg);
+    (void)std::fflush(stdout);
 }
 
 } // namespace
@@ -53,20 +55,20 @@ int main(int argc, char **argv) {
             char *end = nullptr;
             const double g = i + 1 < argc ? std::strtod(argv[i + 1], &end) : -1;
             if (i + 1 >= argc || end == argv[i + 1] || *end || !(g >= 0 && g <= 30)) {
-                (void)std::fputs("lightmusic-play: --gap needs seconds in 0..30\n", stderr);
+                lm::diagln(stderr, "lightmusic-play: --gap needs seconds in 0..30");
                 return 2;
             }
             cfg.gapSeconds = g;
             i++;
         }
         else if (!std::strcmp(argv[i], "-h") || !std::strcmp(argv[i], "--help")) {
-            std::puts("usage: lightmusic-play [--null] [--rg] [--gap SECONDS] [--quiet] FILE...\n"
-                      "stdin: p=pause n=next b=prev s SEC=seek v VOL=volume i=info x=stop w SEC=wait q=quit");
+            lm::diagln(stdout, "usage: lightmusic-play [--null] [--rg] [--gap SECONDS] [--quiet] FILE...\n"
+                       "stdin: p=pause n=next b=prev s SEC=seek v VOL=volume i=info x=stop w SEC=wait q=quit");
             return 0;
         } else files.emplace_back(argv[i]);
     }
     if (files.empty()) {
-        (void)std::fputs("usage: lightmusic-play [--null] [--rg] [--gap SECONDS] [--quiet] FILE...\n", stderr);
+        lm::diagln(stderr, "usage: lightmusic-play [--null] [--rg] [--gap SECONDS] [--quiet] FILE...");
         return 2;
     }
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;
@@ -77,10 +79,8 @@ int main(int argc, char **argv) {
         std::string msg = e.message;
         if (e.type == lm::EventType::TrackChanged) {
             const auto &t = e.state.track;
-            char buf[160];
-            (void)std::snprintf(buf, sizeof buf, "(%s %u Hz %uch%s)", lm::formatName(t.format), t.sampleRate, t.channels,
-                          t.trackGainDb ? (" rg=" + std::to_string(*t.trackGainDb) + "dB").c_str() : "");
-            msg = buf;
+            msg = std::format("({} {} Hz {}ch{})", lm::formatName(t.format), t.sampleRate, t.channels,
+                              t.trackGainDb ? std::format(" rg={:f}dB", *t.trackGainDb) : std::string());
         }
         printState(lm::eventName(e.type), e.state, msg);
     };
@@ -116,7 +116,7 @@ int main(int argc, char **argv) {
         case 'w': std::this_thread::sleep_for(std::chrono::duration<double>(std::atof(arg))); break; // NOLINT(cert-err34-c): dev harness, junk -> 0
         default: {
             std::lock_guard lk(g_print);
-            std::puts("? commands: p n b s<sec> v<vol> i x w<sec> q");
+            lm::diagln(stdout, "? commands: p n b s<sec> v<vol> i x w<sec> q");
         }
         }
     }

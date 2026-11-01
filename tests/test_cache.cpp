@@ -58,14 +58,14 @@ lm::net::ClientConfig baseCfg(const std::string &url, const std::string &dir) {
         *total = 1ull << 41;
         return true;
     };
-    if (std::getenv("LM_TEST_VERBOSE")) c.log = [](const std::string &s) { (void)std::fprintf(stderr, "  [client] %s\n", s.c_str()); };
+    if (std::getenv("LM_TEST_VERBOSE")) c.log = [](const std::string &s) { std::println(stderr, "  [client] {}", s); };
     return c;
 }
 
 std::unique_ptr<Client> open(lm::net::ClientConfig c) {
     std::string err;
     auto cl = Client::open(std::move(c), &err);
-    if (!cl) (void)std::fprintf(stderr, "Client::open: %s\n", err.c_str());
+    if (!cl) std::println(stderr, "Client::open: {}", err);
     return cl;
 }
 
@@ -99,7 +99,7 @@ bool waitUntil(const std::function<bool()> &pred, std::chrono::milliseconds limi
 bool syncOk(Client &c) {
     std::string err;
     const bool ok = c.sync(&err);
-    if (!ok) (void)std::fprintf(stderr, "sync: %s\n", err.c_str());
+    if (!ok) std::println(stderr, "sync: {}", err);
     return ok;
 }
 
@@ -152,10 +152,8 @@ void crashConsistency() {
                     bad++;
                     firstBad = std::min<std::uint64_t>(firstBad, i);
                 }
-        if (bad) std::printf("  first bad byte at %llu (file %d, ranges %s)\n", static_cast<unsigned long long>(firstBad),
-                             int(file[firstBad]), e->ranges.c_str());
-        std::printf("  crash round %d: durable %llu of %zu bytes, %llu bad\n", round,
-                    static_cast<unsigned long long>(ranges->covered()), data.size(), static_cast<unsigned long long>(bad));
+        if (bad) std::println("  first bad byte at {} (file {}, ranges {})", firstBad, int(file[firstBad]), e->ranges);
+        std::println("  crash round {}: durable {} of {} bytes, {} bad", round, ranges->covered(), data.size(), bad);
         CHECK_EQ(bad, 0u); // no recorded range holds unwritten zeros (or wrong bytes)
         CHECK(ranges->covered() >= prevCovered); // resumed, not restarted
         prevCovered = ranges->covered();
@@ -172,8 +170,7 @@ void crashConsistency() {
             CHECK(s != nullptr);
             if (s) CHECK(readAll(*s) == data);
             const auto dl = c->stats().downloaded;
-            std::printf("  resume fetched %llu bytes (had %llu)\n", static_cast<unsigned long long>(dl),
-                        static_cast<unsigned long long>(prevCovered));
+            std::println("  resume fetched {} bytes (had {})", dl, prevCovered);
             CHECK(dl <= data.size() - prevCovered + (1 << 20)); // the uncommitted tail may be refetched
             s.reset();
             CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Cached; }, 5s));
@@ -605,8 +602,7 @@ void concurrentSeekCancel() {
         std::string buf(16, '\0');
         CHECK_EQ(s1->read(buf.data(), buf.size()), 0u); // interrupt is sticky
     }
-    std::printf("  concurrency: %llu reads, %llu interrupted, %llu wrong\n", static_cast<unsigned long long>(reads.load()),
-                static_cast<unsigned long long>(shortReads.load()), static_cast<unsigned long long>(wrong.load()));
+    std::println("  concurrency: {} reads, {} interrupted, {} wrong", reads.load(), shortReads.load(), wrong.load());
     CHECK(reads > 20);
     CHECK_EQ(wrong.load(), 0u);
     // Shutting the client down under a blocked reader: the read returns.
@@ -928,7 +924,7 @@ void diskFloor() {
 #define CHECK_STR(a, b)                                                                                                \
     do {                                                                                                               \
         const std::string sa_ = (a), sb_ = (b);                                                                        \
-        if (sa_ != sb_) (void)std::fprintf(stderr, "  got \"%s\", want \"%s\"\n", sa_.c_str(), sb_.c_str());                 \
+        if (sa_ != sb_) std::println(stderr, "  got \"{}\", want \"{}\"", sa_, sb_);                 \
         CHECK(sa_ == sb_);                                                                                             \
     } while (0)
 
@@ -1194,7 +1190,7 @@ void renameCrash() {
 bool noTempNames(const std::string &dir) {
     for (const auto &f : listTracks(dir))
         if (f.rfind("renaming--", 0) == 0) {
-            (void)std::fprintf(stderr, "  leftover %s\n", f.c_str());
+            std::println(stderr, "  leftover {}", f);
             return false;
         }
     return true;
@@ -1294,7 +1290,7 @@ void restartOtherUrl() {
             const std::int64_t id = ids[i];
             std::string err;
             auto s = c->openTrack(id, &err);
-            if (!s) (void)std::fprintf(stderr, "  run %d track %lld: %s\n", run, static_cast<long long>(id), err.c_str());
+            if (!s) std::println(stderr, "  run {} track {}: {}", run, id, err);
             CHECK(s && readAll(*s) == *datas[i]);
             s.reset();
             CHECK(waitUntil([&] { return c->cacheInfo(id).state == CacheState::Cached; }, 5s));
@@ -1469,7 +1465,7 @@ int main(int argc, char **argv) {
     };
     for (auto &[name, fn] : tests) {
         if (!only.empty() && only != name) continue;
-        std::printf("- %s\n", name);
+        std::println("- {}", name);
         (void)std::fflush(stdout);
         fn();
     }

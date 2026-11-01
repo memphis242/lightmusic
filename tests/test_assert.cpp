@@ -5,6 +5,7 @@
 
 #include <csignal>
 #include <cstdio>
+#include <print>
 #include <cstring>
 #include <functional>
 #include <string>
@@ -41,7 +42,7 @@ int runChild(const std::function<void()> &fn, std::string &err) {
 }
 
 void check(bool ok, const char *what) {
-    std::printf("%s: %s\n", ok ? "ok  " : "FAIL", what);
+    std::println("{}: {}", ok ? "ok  " : "FAIL", what);
     if (!ok) failures++;
 }
 } // namespace
@@ -103,6 +104,6 @@ int main() {
     check(sig == SIGILL || sig == SIGTRAP, "concurrent producers trip the SPSC guard");
 #endif
 
-    std::printf("%d failure(s)\n", failures);
+    std::println("{} failure(s)", failures);
     return failures ? 1 : 0;
 }

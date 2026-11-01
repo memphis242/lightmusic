@@ -34,6 +34,7 @@ Checks: >
   modernize-redundant-void-arg,
   modernize-make-unique,
   modernize-make-shared,
+  modernize-use-std-print,
   readability-container-size-empty,
   readability-redundant-string-cstr,
   readability-inconsistent-declaration-parameter-name,
@@ -65,6 +66,9 @@ Checks: >
 #  misc-no-recursion: recursion is bounded (YAML depth limit, directory walk).
 #  misc-include-cleaner / use-internal-linkage / const-correctness: style churn
 #    without bug-finding value here (400+ / 200+ hits in app code).
+# Formatted output (CLAUDE.md "Output", include/lm/print.hpp): modernize-use-std-print
+# flags printf/fprintf; bugprone-unsafe-functions.CustomFunctions (below) flags the rest
+# of the printf family and puts/fputs/perror, so new code uses std::format/std::print.
 # Re-enabled for app code (their nuisance hits were in tests): cert-err33-c,
 # bugprone-implicit-widening-of-multiplication-result, bugprone-switch-missing-default-case,
 # cert-err58-cpp, misc-use-anonymous-namespace.
@@ -77,6 +81,8 @@ Checks: >
 # so entries are anchored (^...$): otherwise ::close also matches ::closedir,
 # ::bind matches Stmt::bind, ::std::filesystem::remove matches remove_all. -Wunused-result enforces [[nodiscard]].
 CheckOptions:
+  bugprone-unsafe-functions.CustomFunctions: >-
+    ^::(std::)?v?snprintf$,std::format/std::format_to_n;^::(std::)?v?sprintf$,std::format/std::format_to_n;^::(std::)?(f)?puts$,std::print/lm::diag (lm/print.hpp);^::(std::)?perror$,lm::diagln(stderr ... strerror(errno));^::(std::)?v?fprintf$,std::print/lm::diag (lm/print.hpp);^::(std::)?v?printf$,std::print/lm::diag (lm/print.hpp)
   bugprone-unused-return-value.AllowCastToVoid: true
   bugprone-unused-return-value.CheckedFunctions: >-
     ^::std::async$;^::std::launder$;^::std::remove$;^::std::remove_if$;^::std::unique$;^::std::unique_ptr::release$;^::std::basic_string::empty$;^::std::vector::empty$;^::std::back_inserter$;^::std::distance$;^::std::find$;^::std::find_if$;^::std::inserter$;^::std::lower_bound$;^::std::make_pair$;^::std::map::count$;^::std::map::find$;^::std::map::lower_bound$;^::std::multimap::equal_range$;^::std::multimap::upper_bound$;^::std::set::count$;^::std::set::find$;^::std::setfill$;^::std::setprecision$;^::std::setw$;^::std::upper_bound$;^::std::vector::at$;^::bsearch$;^::ferror$;^::feof$;^::isalnum$;^::isalpha$;^::isblank$;^::iscntrl$;^::isdigit$;^::isgraph$;^::islower$;^::isprint$;^::ispunct$;^::isspace$;^::isupper$;^::iswalnum$;^::iswprint$;^::iswspace$;^::isxdigit$;^::memchr$;^::memcmp$;^::strcmp$;^::strcoll$;^::strncmp$;^::strpbrk$;^::strrchr$;^::strspn$;^::strstr$;^::wcscmp$;^::access$;^::bind$;^::connect$;^::difftime$;^::dlsym$;^::fnmatch$;^::getaddrinfo$;^::getopt$;^::htonl$;^::htons$;^::iconv_open$;^::inet_addr$;^::isascii$;^::isatty$;^::mmap$;^::newlocale$;^::openat$;^::pathconf$;^::pthread_equal$;^::pthread_getspecific$;^::pthread_mutex_trylock$;^::readdir$;^::readlink$;^::recvmsg$;^::regexec$;^::scandir$;^::semget$;^::setjmp$;^::shm_open$;^::shmget$;^::sigismember$;^::strcasecmp$;^::strsignal$;^::ttyname$;

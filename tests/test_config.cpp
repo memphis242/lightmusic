@@ -79,7 +79,7 @@ void testDefaults() {
     for (const char *t : {"", "# nothing\n", "---\n", "cache:\n", "cache: {}\nplayback: ~\n"}) {
         Diags e;
         const auto x = load(t, e);
-        for (const auto &y : e) (void)std::fprintf(stderr, "  [%s] %s\n", t, y.str().c_str());
+        for (const auto &y : e) std::println(stderr, "  [{}] {}", t, y.str());
         CHECK(!hasError(e));
         CHECK(x == ClientSettings{});
     }
@@ -104,7 +104,7 @@ void testFullFile() {
                         "ui:\n"
                         "  show_cache_markers: false\n",
                         d);
-    for (const auto &x : d) (void)std::fprintf(stderr, "  %s\n", x.str().c_str());
+    for (const auto &x : d) std::println(stderr, "  {}", x.str());
     CHECK(d.empty());
     CHECK(s.serverUrl == "https://music.example.net");
     CHECK(s.keyFile == g_dir + "/keys/lm.key");
@@ -168,7 +168,7 @@ void testUnknownAndTypes() {
                         "  replaygain: loud\n"
                         "frobnicate: 1\n",
                         d);
-    for (const auto &x : d) (void)std::fprintf(stderr, "  %s\n", x.str().c_str());
+    for (const auto &x : d) std::println(stderr, "  {}", x.str());
     const Diag *u = findDiag(d, "unknown key 'server.colour'");
     CHECK(u && u->level == Diag::Warning && u->line == 3);
     const Diag *u2 = findDiag(d, "unknown key 'frobnicate'");
@@ -190,7 +190,7 @@ void testUnknownAndTypes() {
     // Shape errors.
     Diags x;
     load("cache: 5\nplayback:\n  volume:\n    level: 3\nserver:\n  url: [a, b]\n", x);
-    for (const auto &y : x) (void)std::fprintf(stderr, "  %s\n", y.str().c_str());
+    for (const auto &y : x) std::println(stderr, "  {}", y.str());
     CHECK(findDiag(x, "'cache' must be a mapping") && findDiag(x, "'cache' must be a mapping")->line == 1);
     CHECK(findDiag(x, "'playback.volume' must be a single value"));
     CHECK(findDiag(x, "server.url: expected a single value, not a list"));
@@ -280,7 +280,7 @@ void testScalarForms() {
         } else {
             const Diag *x = findDiag(d, c.msg);
             CHECK(x && x->level == Diag::Error && x->line == 2);
-            if (!x) (void)std::fprintf(stderr, "  case: %s\n", c.yaml);
+            if (!x) std::println(stderr, "  case: {}", c.yaml);
         }
     }
     // Flags are plain strings: "7" from the command line is a number.
@@ -781,7 +781,7 @@ std::string edit(const std::string &text, const std::vector<std::pair<std::strin
                  std::string *errOut = nullptr) {
     std::string out = "<untouched>", err;
     const bool ok = editYamlValues(text, v, out, err);
-    if (ok != expectOk) (void)std::fprintf(stderr, "edit: unexpected %s: %s\n--\n%s--\n", ok ? "success" : "failure", err.c_str(), text.c_str());
+    if (ok != expectOk) std::println(stderr, "edit: unexpected {}: {}\n--\n{}--", ok ? "success" : "failure", err, text);
     CHECK(ok == expectOk);
     if (!ok) CHECK(out == "<untouched>" && !err.empty());
     if (errOut) *errOut = err;
@@ -889,7 +889,7 @@ void testEditRefusals() {
     std::string err;
     auto refused = [&](const std::string &text, const std::string &key, const std::string &needle) {
         edit(text, {{key, "1"}}, false, &err);
-        if (err.find(needle) == std::string::npos) (void)std::fprintf(stderr, "refusal message: %s\n", err.c_str());
+        if (err.find(needle) == std::string::npos) std::println(stderr, "refusal message: {}", err);
         CHECK(err.find(needle) != std::string::npos);
     };
     refused("playback: {volume: 80}\n", "playback.volume", "flow mapping");

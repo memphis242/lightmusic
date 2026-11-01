@@ -50,6 +50,7 @@
 // and add a device restart. PipeWire resamples to the graph rate anyway.
 #include "lm/player.hpp"
 
+#include "lm/print.hpp"
 #include "lm/ring_buffer.hpp"
 #include "lm_miniaudio.h"
 #include "output.hpp"
@@ -345,8 +346,7 @@ struct Player::Impl {
     ~Impl() {
         if (std::this_thread::get_id() == controlThread.get_id()) {
             // Joining the control thread from itself would deadlock (or throw).
-            (void)std::fputs("lm::Player: destroyed from inside its onEvent handler; destroy it from another thread\n",
-                       stderr);
+            lm::diagln(stderr, "lm::Player: destroyed from inside its onEvent handler; destroy it from another thread");
             std::abort();
         }
         {

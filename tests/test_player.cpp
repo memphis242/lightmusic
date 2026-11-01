@@ -163,12 +163,11 @@ void gapless(const std::string &dir) {
         const double after = std::chrono::duration<double, std::milli>(
                                  rec.timeOf(lm::EventType::EndOfQueue) - Clock::time_point(Clock::duration(tap.last.load())))
                                  .count();
-        std::printf("  gapless: device latency %.1f ms, EndOfQueue %.1f ms after the last block\n", lat, after);
+        std::println("  gapless: device latency {:.1f} ms, EndOfQueue {:.1f} ms after the last block", lat, after);
         CHECK(lat > 0);
         CHECK(after >= lat * 0.9);
         CHECK(st.status == lm::Status::Stopped);
-        std::printf("  gapless: underruns=%llu tapped=%zu frames\n", static_cast<unsigned long long>(st.underruns),
-                    tap.frames.load());
+        std::println("  gapless: underruns={} tapped={} frames", st.underruns, tap.frames.load());
         CHECK_EQ(st.underruns, 0u);
     }
     const std::size_t got = tap.frames.load();
@@ -247,7 +246,7 @@ void gapBetweenTracks(const std::string &dir, bool viaSetter) {
         if (idx == 0 && f > av.size() / 2 && f < start1) inGap++;
         if (f < start1) CHECK(idx <= 0);
     }
-    std::printf("  gap %.2f s: %zu position events during the first gap\n", gap, inGap);
+    std::println("  gap {:.2f} s: {} position events during the first gap", gap, inGap);
 }
 
 // Manual jumps during a gap: next starts the next track at once (no remaining gap), a
@@ -384,7 +383,7 @@ void enqueueAtEnd(const std::string &dir) {
             if (e.type == lm::EventType::TrackChanged && e.state.index == 1 && eoq < 0) played2 = true;
         }
         if (queued >= 0 && queued < eoq && !played2)
-            (void)std::fprintf(stderr, "  enqueueAtEnd: enqueue at +%d ms lost to EndOfQueue\n", 200 + 8 * k);
+            std::println(stderr, "  enqueueAtEnd: enqueue at +{} ms lost to EndOfQueue", 200 + 8 * k);
         CHECK(queued >= 0);
         CHECK(!(queued < eoq && !played2));
     }
@@ -1084,7 +1083,7 @@ void userQueue(const std::string &dir) {
 
 int main() {
     if (!lmtest::haveFfmpeg()) {
-        std::puts("test_player: ffmpeg not found, skipping");
+        std::println("test_player: ffmpeg not found, skipping");
         return lmtest::kSkip;
     }
     const std::string dir = lmtest::fixtureDir("player");

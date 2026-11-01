@@ -15,6 +15,9 @@
 #  bugprone-switch-missing-default-case: a test switch over a raw byte (1 hit).
 #  cert-err58-cpp: file-scope std::string fixture tables (3 hits).
 #  misc-use-anonymous-namespace: `static` helpers in test files (53 hits).
+#  bugprone-exception-escape: test main()s print with std::println, which throws on a
+#    failed write; an escaping exception aborts the test, which is the wanted failure
+#    (16 hits). App code prints through lm::diag/lm::out, which catch.
 # Still ON for tests: cert-err33-c and bugprone-unused-return-value (results are checked
 # or discarded with (void), as in app code).
 InheritParentConfig: true
@@ -31,4 +34,5 @@ Checks: >
   -bugprone-implicit-widening-of-multiplication-result,
   -bugprone-switch-missing-default-case,
   -cert-err58-cpp,
-  -misc-use-anonymous-namespace
+  -misc-use-anonymous-namespace,
+  -bugprone-exception-escape

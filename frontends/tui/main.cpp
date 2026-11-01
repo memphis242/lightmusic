@@ -43,6 +43,7 @@
 
 #include "lm/config/client.hpp"
 #include "lm/player.hpp"
+#include "lm/print.hpp"
 #include "mpris_hook.hpp"
 #ifdef LM_TUI_NET
 #include "lm/net/client.hpp"
@@ -72,6 +73,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <format>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -474,13 +476,10 @@ Element renderUpNext(const Ui &ui, int height) {
     const int first = std::clamp(ui.qselected - visible / 2, 0, std::max(0, total - visible));
     const int stop = std::min(total, first + visible);
     Elements rows;
-    char head[64];
-    (void)std::snprintf(head, sizeof head, "Up next: %d track%s", total, total == 1 ? "" : "s");
+    const std::string head = std::format("Up next: {} track{}", total, total == 1 ? "" : "s");
     rows.push_back(hbox({text(head) | bold, filler(), text("J/K move  d remove  c clear  esc back") | dim}));
     for (int i = first; i < stop; i++) {
-        char num[32];
-        (void)std::snprintf(num, sizeof num, "%3d ", i + 1);
-        Element row = hbox({text("  "), text(num) | dim, text(nameOf(ui, q[static_cast<std::size_t>(i)]))});
+        Element row = hbox({text("  "), text(std::format("{:3} ", i + 1)) | dim, text(nameOf(ui, q[static_cast<std::size_t>(i)]))});
         if (i == ui.qselected) row = row | inverted;
         rows.push_back(std::move(row));
     }
@@ -538,8 +537,7 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
     for (std::size_t i = static_cast<std::size_t>(first); i < static_cast<std::size_t>(stop); i++) {
         const bool cur = static_cast<int>(i) == st.index;
         const bool sel = static_cast<int>(i) == ui.selected;
-        char num[32];
-        (void)std::snprintf(num, sizeof num, "%3zu ", i + 1);
+        const std::string num = std::format("{:3} ", i + 1);
         const int cs = i < ui.cache.size() ? ui.cache[i] : -1;
         Element mark = cs < 0 || !ui.showCacheMarkers ? text("") : text(lmtui::cacheGlyph(cs, i < ui.pinned.size() && ui.pinned[i]) + " ");
         if (cs == 2 && ui.showCacheMarkers) mark = mark | color(Color::Cyan);
@@ -573,10 +571,8 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
     const double dur = st.track.duration;
     const float frac = dur > 0 ? static_cast<float>(std::clamp(st.position / dur, 0.0, 1.0)) : 0.0f;
     const std::string times = lmtui::formatTime(st.position) + " / " + (dur > 0 ? lmtui::formatTime(dur) : "?:??");
-    char vol[16];
-    (void)std::snprintf(vol, sizeof vol, "vol %3d%%", static_cast<int>(std::lround(st.volume * 100.0f)));
-    char pos[32];
-    (void)std::snprintf(pos, sizeof pos, "%d/%zu", st.index + 1, st.queueSize);
+    const std::string vol = std::format("vol {:3}%", std::lround(st.volume * 100.0f));
+    const std::string pos = std::format("{}/{}", st.index + 1, st.queueSize);
     std::string mode = lmtui::modeLabel(static_cast<int>(ui.repeatTarget.value_or(st.repeat)),
                                         ui.shuffleTarget.value_or(st.shuffle));
     if (!mode.empty()) mode = "  " + mode;
@@ -600,7 +596,7 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
 }
 
 void usage(FILE *f) {
-    (void)std::fputs("usage: lightmusic [--null] [--rg] [--gap SECONDS] [FILE|DIR...]   (none: browse the music folder)\n"
+    lm::diag(f, "usage: lightmusic [--null] [--rg] [--gap SECONDS] [FILE|DIR...]   (none: browse the music folder)\n"
                "       lightmusic --server URL --key-file PATH [--album ID]... [--list]\n"
                "                  [--cache-dir DIR] [--cache-max-mb N] [--no-fill] [--pause-on-metered]\n"
                "                  [--null] [--rg] [--gap SECONDS] [FILE|DIR...]\n"
@@ -608,8 +604,7 @@ void usage(FILE *f) {
                "  --config PATH  settings file (default $XDG_CONFIG_HOME/lightmusic/cfg.yaml);\n"
                "                 command-line flags override it\n"
                "  --no-config    ignore the settings file\n"
-               "  --no-server    do not connect to the server named in the settings file\n",
-               f);
+               "  --no-server    do not connect to the server named in the settings file\n");
 }
 
 #ifdef LM_TUI_NET
@@ -622,11 +617,8 @@ void refreshCache(Ui &ui, lm::net::Client &client, bool offline) {
         ui.pinned[i] = ci.pinned;
     }
     const auto st = client.stats();
-    char buf[128];
-    (void)std::snprintf(buf, sizeof buf, "%scache %lld/%llu MB, saved offline %lld MB", offline ? "offline · " : "",
-                  static_cast<long long>(st.unpinned >> 20), static_cast<unsigned long long>(st.cap >> 20),
-                  static_cast<long long>(st.pinned >> 20));
-    ui.net = buf;
+    ui.net = std::format("{}cache {}/{} MB, saved offline {} MB", offline ? "offline · " : "", st.unpinned >> 20,
+                         st.cap >> 20, st.pinned >> 20);
 }
 
 // The next few remote tracks go to the idle fill queue: the user queue first, then the
@@ -684,7 +676,7 @@ int run(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         auto value = [&](const char *flag) -> const char * {
             if (i + 1 >= argc) {
-                (void)std::fprintf(stderr, "lightmusic: %s needs a value\n", flag);
+                lm::diagln(stderr, "lightmusic: {} needs a value", flag);
                 std::exit(2);
             }
             return argv[++i];
@@ -703,7 +695,7 @@ int run(int argc, char **argv) {
             char *end = nullptr;
             const long long id = std::strtoll(value("--album"), &end, 10);
             if (!end || *end || id <= 0) {
-                (void)std::fputs("lightmusic: --album needs an album id (see --list)\n", stderr);
+                lm::diagln(stderr, "lightmusic: --album needs an album id (see --list)");
                 return 2;
             }
             albumIds.push_back(id);
@@ -712,7 +704,7 @@ int run(int argc, char **argv) {
         else if (!std::strcmp(argv[i], "--list")) listOnly = true;
         else if (!std::strcmp(argv[i], "-h") || !std::strcmp(argv[i], "--help")) {
             usage(stdout);
-            for (const auto &l : lmtui::helpLines()) std::printf("  %s\n", l.c_str());
+            for (const auto &l : lmtui::helpLines()) lm::diagln(stdout, "  {}", l);
             return 0;
         } else args.emplace_back(argv[i]);
     }
@@ -722,7 +714,7 @@ int run(int argc, char **argv) {
         if (live.path.empty()) live.running = lm::config::clientSchema().resolve({&live.cli}, diags);
         else (void)lm::config::loadClientSettings(live.path, // errors are reported in diags
                                                   !configPath.empty(), nullptr, live.cli, live.running, diags);
-        for (const auto &d : diags) (void)std::fprintf(stderr, "lightmusic: %s\n", d.str().c_str());
+        for (const auto &d : diags) lm::diagln(stderr, "lightmusic: {}", d.str());
         if (lm::config::hasError(diags)) return 2;
     }
     const lm::config::ClientSettings &set = live.running;
@@ -733,31 +725,31 @@ int run(int argc, char **argv) {
     cfg.repeat = toRepeat(set.repeat);
     cfg.shuffle = set.shuffle;
     if (set.replayGain == lm::config::ReplayGain::Album)
-        (void)std::fputs("lightmusic: playback.replaygain: album gain is not supported yet; using track gain\n", stderr);
+        lm::diagln(stderr, "lightmusic: playback.replaygain: album gain is not supported yet; using track gain");
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;
     // No files and no server: start with an empty list in the folder browser.
     const bool browseAtStart = args.empty() && server.empty();
     if (server.empty() != keyFile.empty() && !server.empty()) {
-        (void)std::fputs("lightmusic: --server and --key-file go together (server.url needs server.key_file)\n", stderr);
+        lm::diagln(stderr, "lightmusic: --server and --key-file go together (server.url needs server.key_file)");
         return 2;
     }
     if (server.empty() && live.cli.find("server.key_file")) {
-        (void)std::fputs("lightmusic: --server and --key-file go together\n", stderr);
+        lm::diagln(stderr, "lightmusic: --server and --key-file go together");
         return 2;
     }
 #ifndef LM_TUI_NET
     if (!server.empty()) {
-        std::fputs("lightmusic: built without libnet (-DLM_BUILD_NET=OFF); --server unavailable\n", stderr);
+        lm::diagln(stderr, "lightmusic: built without libnet (-DLM_BUILD_NET=OFF); --server unavailable");
         return 2;
     }
     if (listOnly) {
-        std::fputs("lightmusic: built without libnet (-DLM_BUILD_NET=OFF); --list unavailable\n", stderr);
+        lm::diagln(stderr, "lightmusic: built without libnet (-DLM_BUILD_NET=OFF); --list unavailable");
         return 2;
     }
 #endif
     int pipeFds[2];
     if (pipe2(pipeFds, O_CLOEXEC | O_NONBLOCK) != 0) {
-        std::perror("lightmusic: pipe");
+        lm::diagln(stderr, "lightmusic: pipe: {}", std::strerror(errno));
         return 1;
     }
     g_wakeWrite = pipeFds[1];
@@ -779,10 +771,10 @@ int run(int argc, char **argv) {
         // no core dumps, and no ptrace/proc-mem access by other same-uid processes
         // without CAP_SYS_PTRACE. Done before the key is read.
         if (::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0)
-            (void)std::fprintf(stderr, "lightmusic: warning: cannot disable core dumps: %s\n", std::strerror(errno));
+            lm::diagln(stderr, "lightmusic: warning: cannot disable core dumps: {}", std::strerror(errno));
         std::string key, err;
         if (!lmtui::readKeyFile(keyFile, key, err)) {
-            (void)std::fprintf(stderr, "lightmusic: %s\n", err.c_str());
+            lm::diagln(stderr, "lightmusic: {}", err);
             return 2;
         }
         lm::net::ClientConfig cc;
@@ -794,7 +786,7 @@ int run(int argc, char **argv) {
         cc.backgroundFill = set.backgroundFill;
         cc.pauseOnMetered = set.pauseOnMetered;
         cc.log = [uiActive](const std::string &m) {
-            if (!*uiActive) (void)std::fprintf(stderr, "lightmusic: %s\n", m.c_str());
+            if (!*uiActive) lm::diagln(stderr, "lightmusic: {}", m);
         };
         cc.onCacheChange = [] {
             g_cacheChanged = 1;
@@ -806,37 +798,42 @@ int run(int argc, char **argv) {
         client = lm::net::Client::open(std::move(cc), &err);
         (void)pthread_sigmask(SIG_SETMASK, &old, nullptr); // fails only for an invalid `how` (EINVAL)
         if (!client) {
-            (void)std::fprintf(stderr, "lightmusic: %s\n", err.c_str());
+            lm::diagln(stderr, "lightmusic: {}", err);
             return 1;
         }
-        (void)std::fprintf(stderr, "lightmusic: syncing library from %s ...\n", server.c_str());
+        lm::diagln(stderr, "lightmusic: syncing library from {} ...", server);
         if (!client->sync(&err)) {
             offline = true;
             netNote = err;
-            (void)std::fprintf(stderr, "lightmusic: %s; using the offline mirror\n", err.c_str());
+            lm::diagln(stderr, "lightmusic: {}; using the offline mirror", err);
         }
         if (listOnly) {
+            // Output meant for reading or scripts: a truncated listing must not exit 0.
+            bool ok = true;
             for (const auto &al : client->albums()) {
-                std::printf("album %lld  %s — %s%s\n", static_cast<long long>(al.id), al.artist.c_str(), al.title.c_str(),
-                            al.year ? (" (" + std::to_string(al.year) + ")").c_str() : "");
+                ok = lm::outln(stdout, "album {}  {} — {}{}", al.id, al.artist, al.title,
+                               al.year ? std::format(" ({})", al.year) : std::string()) && ok;
                 for (const auto &t : client->tracksOfAlbum(al.id)) {
                     const auto ci = client->cacheInfo(t.id);
-                    std::printf("  %-8s%s %2lld. %s — %s  [%s]\n", lm::net::cacheStateName(ci.state),
-                                ci.pinned ? "*" : " ", static_cast<long long>(t.trackNo), t.artist.c_str(),
-                                t.title.c_str(), lmtui::formatTime(double(t.durationMs) / 1000).c_str());
+                    ok = lm::outln(stdout, "  {:<8}{} {:2}. {} — {}  [{}]", lm::net::cacheStateName(ci.state),
+                                   ci.pinned ? "*" : " ", t.trackNo, t.artist, t.title,
+                                   lmtui::formatTime(double(t.durationMs) / 1000)) && ok;
                 }
             }
             const auto st = client->stats();
-            std::printf("cache: %lld of %llu MB used, %zu entries, %lld MB saved offline (not counted)\n",
-                        static_cast<long long>(st.unpinned >> 20), static_cast<unsigned long long>(st.cap >> 20), st.entries,
-                        static_cast<long long>(st.pinned >> 20));
+            ok = lm::outln(stdout, "cache: {} of {} MB used, {} entries, {} MB saved offline (not counted)",
+                           st.unpinned >> 20, st.cap >> 20, st.entries, st.pinned >> 20) && ok;
+            if (!lm::flushOut(stdout) || !ok) {
+                lm::diagln(stderr, "lightmusic: cannot write the album list to stdout");
+                return 1;
+            }
             return 0;
         }
         if (albumIds.empty()) remoteTracks = client->allTracks();
         else
             for (auto id : albumIds) {
                 auto v = client->tracksOfAlbum(id);
-                if (v.empty()) (void)std::fprintf(stderr, "lightmusic: no album %lld in the library\n", static_cast<long long>(id));
+                if (v.empty()) lm::diagln(stderr, "lightmusic: no album {} in the library", id);
                 remoteTracks.insert(remoteTracks.end(), v.begin(), v.end());
             }
         if (offline) {
@@ -844,19 +841,19 @@ int run(int argc, char **argv) {
             std::erase_if(remoteTracks, [&](const lm::net::Track &t) {
                 return client->cacheInfo(t.id).state != lm::net::CacheState::Cached;
             });
-            (void)std::fprintf(stderr, "lightmusic: offline: %zu of %zu tracks are cached\n", remoteTracks.size(), before);
+            lm::diagln(stderr, "lightmusic: offline: {} of {} tracks are cached", remoteTracks.size(), before);
         }
         cfg.openSource = client->sourceOpener();
     }
 #endif
     if (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO)) {
-        (void)std::fputs("lightmusic: needs a terminal\n", stderr);
+        lm::diagln(stderr, "lightmusic: needs a terminal");
         return 2;
     }
     {
         termios probe{};
         if (tcgetattr(STDIN_FILENO, &probe) != 0) {
-            (void)std::fprintf(stderr, "lightmusic: cannot read terminal settings: %s\n", std::strerror(errno));
+            lm::diagln(stderr, "lightmusic: cannot read terminal settings: {}", std::strerror(errno));
             return 2;
         }
     }
@@ -864,7 +861,7 @@ int run(int argc, char **argv) {
     Ui ui;
     ui.showCacheMarkers = set.showCacheMarkers;
     if (!args.empty()) ui.paths = lmtui::collectTracks(args, &errors);
-    for (const auto &e : errors) (void)std::fprintf(stderr, "lightmusic: %s\n", e.c_str());
+    for (const auto &e : errors) lm::diagln(stderr, "lightmusic: {}", e);
     for (const auto &p : ui.paths) ui.names.push_back(lmtui::displayName(p));
     ui.remote.assign(ui.paths.size(), 0);
     ui.cache.assign(ui.paths.size(), -1);
@@ -884,7 +881,7 @@ int run(int argc, char **argv) {
 #endif
     ui.ctx = ui.paths.size();
     if (ui.paths.empty() && !browseAtStart) {
-        (void)std::fputs(server.empty() ? "lightmusic: no playable files\n" : "lightmusic: no playable tracks\n", stderr);
+        lm::diagln(stderr, "lightmusic: no playable {}", server.empty() ? "files" : "tracks");
         return 1;
     }
 
@@ -960,7 +957,7 @@ int run(int argc, char **argv) {
         {
             Tty term;
             if (!term.ok()) {
-                (void)std::fprintf(stderr, "lightmusic: cannot set up terminal: %s\n", std::strerror(errno));
+                lm::diagln(stderr, "lightmusic: cannot set up terminal: {}", std::strerror(errno));
                 return 1;
             }
             lmtui::KeyParser parser;
@@ -1656,7 +1653,7 @@ int run(int argc, char **argv) {
             quitSig = g_quitSignal.load();
             save(&quitSaveErr); // a volume changed less than 1 s ago (or not yet saved) is kept
         } // terminal restored here
-        if (!quitSaveErr.empty()) (void)std::fprintf(stderr, "lightmusic: settings %s\n", quitSaveErr.c_str());
+        if (!quitSaveErr.empty()) lm::diagln(stderr, "lightmusic: settings {}", quitSaveErr);
         // A second Ctrl-C / SIGTERM during a slow player shutdown kills us outright.
         for (int sig : {SIGINT, SIGTERM, SIGHUP}) setHandler(sig, SIG_DFL);
         if (quitSig) setHandler(quitSig, SIG_DFL);
@@ -1682,10 +1679,10 @@ int main(int argc, char **argv) {
         return run(argc, argv);
     } catch (const std::exception &e) {
         restoreTerminal();
-        (void)std::fprintf(stderr, "lightmusic: %s\n", e.what());
+        lm::diagln(stderr, "lightmusic: {}", e.what());
     } catch (...) {
         restoreTerminal();
-        (void)std::fputs("lightmusic: unknown error\n", stderr);
+        lm::diagln(stderr, "lightmusic: unknown error");
     }
     return 1;
 }

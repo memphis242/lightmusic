@@ -303,7 +303,7 @@ sudo dnf install clang-tools-extra cppcheck
 CC=clang CXX=clang++ cmake -S . -B build-analyze -G Ninja -DCMAKE_BUILD_TYPE=Debug
 run-clang-tidy -p build-analyze -quiet '^(?!.*(/third_party/|/_deps/)).*\.cpp$'
 cppcheck --project=build-analyze/compile_commands.json --enable=warning,performance,portability \
-  --std=c++20 --inline-suppr --suppressions-list=.cppcheck-suppressions -i third_party \
+  --std=c++23 --inline-suppr --suppressions-list=.cppcheck-suppressions -i third_party \
   -i build-analyze/_deps --library=posix --check-level=exhaustive --error-exitcode=1 --quiet
 ```
 
@@ -331,6 +331,26 @@ CI runs each of these in a `fedora:43` container (`.github/ci/build-test.sh`,
   of side effects). A failure aborts the process, so the test fails.
 - Never assert on untrusted input (audio files and tags, HTTP requests and replies, the
   cache database, YAML config): those are errors handled in every build.
+
+### Output (`std::print`, `std::format`)
+
+The project is C++23 (gcc >= 14 / clang >= 19 with libstdc++ >= 14 for `<print>`;
+Fedora 43 has gcc 15 and clang 21). App code formats with `std::format` and prints with
+`std::print`/`std::println`; no printf family, no iostreams (binary size and static
+initialisation). clang-tidy enforces it (`modernize-use-std-print`,
+`bugprone-unsafe-functions` for snprintf/puts/fputs/perror).
+
+`std::print` reports a failed write by throwing, so `include/lm/print.hpp` makes the policy
+explicit:
+
+- `lm::diag`/`lm::diagln(stream, fmt, ...)`: best-effort diagnostics (stderr messages,
+  usage, progress). A write failure is swallowed and counted (`lm::diagFailures()`): stderr
+  is where failures would be reported, and a lost message must not end the program.
+- `lm::out`/`lm::outln` + `lm::flushOut`: checked output that matters, `[[nodiscard]]`. The
+  API key printed by `lightmusicd --add-key`, `--list-keys`, `--scan-only` and
+  `lightmusic --list` exit 1 with a message if stdout cannot be written.
+- `write(2)` or no I/O stays where formatted I/O is unsafe: signal handlers, `LM_ASSERT`
+  / `LM_ASSERT_RT`, the realtime audio callback (formatting allocates, stdio locks).
 
 ## Server (`lightmusicd`)
 
@@ -845,7 +865,7 @@ a `--config` file (rapidyaml: 6.9 MB).
 ## Layout
 
 ```
-CMakeLists.txt          top-level project (C++20)
+CMakeLists.txt          top-level project (C++23)
 third_party/            vendored single headers + VERSIONS.md (licenses, sha256)
 libplayer/              static library `lm::player` (namespace lm), no UI deps
   include/lm/           public API: player.hpp, decoder.hpp, source.hpp, ring_buffer.hpp

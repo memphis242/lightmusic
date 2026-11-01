@@ -20,8 +20,7 @@ static void checkTags(const char *what, const Tags &t, const std::string &title,
     const bool ok = t.title == title && t.artist == artist && t.album == album && t.track == track &&
                     t.disc == disc && t.year == year;
     if (!ok) {
-        (void)std::fprintf(stderr, "%s: got title='%s' artist='%s' album='%s' track=%d disc=%d year=%d\n", what,
-                     t.title.c_str(), t.artist.c_str(), t.album.c_str(), t.track, t.disc, t.year);
+        std::println(stderr, "{}: got title='{}' artist='{}' album='{}' track={} disc={} year={}", what, t.title, t.artist, t.album, t.track, t.disc, t.year);
         ++lmtest::g_failures;
     }
 }

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <format>
 #include <stdexcept>
 
 namespace lm::server {
@@ -168,10 +169,9 @@ void Db::exec(const char *sql) {
 }
 
 std::string make_etag(std::int64_t size, std::int64_t mtime_ns) {
-    char b[64];
-    (void)std::snprintf(b, sizeof b, "\"%llx-%llx\"", static_cast<unsigned long long>(size),
-                  static_cast<unsigned long long>(mtime_ns));
-    return b;
+    // Unsigned: a (corrupt) negative value keeps the historical two's-complement hex.
+    return std::format("\"{:x}-{:x}\"", static_cast<unsigned long long>(size),
+                       static_cast<unsigned long long>(mtime_ns));
 }
 
 // ---------------------------------------------------------------- keys
@@ -456,9 +456,7 @@ std::string like_pattern(const std::string &q) {
 std::string Db::library_id() {
     Stmt s(db_, "SELECT value FROM meta WHERE key='library'");
     if (!s.step()) return {};
-    char b[24];
-    (void)std::snprintf(b, sizeof b, "%016llx", static_cast<unsigned long long>(s.i64(0)));
-    return b;
+    return std::format("{:016x}", static_cast<std::uint64_t>(s.i64(0)));
 }
 
 std::string Db::json_changes(std::int64_t since, const std::string &library) {

@@ -2,7 +2,8 @@
 #pragma once
 
 #include <cstdint>
-#include <cstdio>
+#include <format>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -68,9 +69,7 @@ private:
                 case '\t': out_ += "\\t"; break;
                 default:
                     if (c < 0x20 || c == 0x7f) {
-                        char b[8];
-                        (void)std::snprintf(b, sizeof b, "\\u%04x", c);
-                        out_ += b;
+                        std::format_to(std::back_inserter(out_), "\\u{:04x}", c);
                     } else {
                         out_ += char(c);
                     }
