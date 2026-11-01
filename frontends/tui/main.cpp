@@ -339,11 +339,11 @@ Element renderUpNext(const Ui &ui, int height) {
     const int stop = std::min(total, first + visible);
     Elements rows;
     char head[64];
-    std::snprintf(head, sizeof head, "Up next: %d track%s", total, total == 1 ? "" : "s");
+    (void)std::snprintf(head, sizeof head, "Up next: %d track%s", total, total == 1 ? "" : "s");
     rows.push_back(hbox({text(head) | bold, filler(), text("J/K move  d remove  c clear  esc back") | dim}));
     for (int i = first; i < stop; i++) {
         char num[32];
-        std::snprintf(num, sizeof num, "%3d ", i + 1);
+        (void)std::snprintf(num, sizeof num, "%3d ", i + 1);
         Element row = hbox({text("  "), text(num) | dim, text(nameOf(ui, q[static_cast<std::size_t>(i)]))});
         if (i == ui.qselected) row = row | inverted;
         rows.push_back(std::move(row));

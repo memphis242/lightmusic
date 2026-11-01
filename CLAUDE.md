@@ -42,15 +42,38 @@ platform: Fedora 43 (gcc 15, clang 21). See README.md for the user-facing docs.
    Our own functions whose result matters are `[[nodiscard]]`. Enforced by cert-err33-c,
    bugprone-unused-return-value (CheckedFunctions widened to POSIX/sqlite/curl calls in
    `.clang-tidy`) and `-Wunused-result`, in app and test code.
-8. **Assertions** (`include/lm/assert.hpp`): `static_assert` for anything knowable at
+8. **Error handling.** Two kinds of failure. Untrusted/external input or environment
+   (files, tags, network, server responses, config, user input, failing syscalls) is a
+   recoverable error in every build, never assert/abort/UB; internal invariant violations
+   are assertions (9). Module conventions: libplayer returns `bool`/`nullptr` with a
+   `std::string *err` out-parameter (decoders also expose `lastError()`, surfaced by the
+   player as events); libconfig returns `bool` + `std::string &err` and collects
+   line-numbered errors; server and libnet's sqlite/curl wrappers throw
+   `std::runtime_error`, caught at request/thread/command boundaries; TUI shows errors on
+   the status line, CLI tools and the server on stderr/log.
+   - Nothing fails silently: handle, propagate with context (operation + path/id +
+     `strerror(errno)` or the library message), or report to the user. No empty catch
+     blocks; deliberately ignored best-effort cleanup is `(void)`-discarded (7).
+   - Fail closed when security-relevant (file permissions, key/credential storage, auth,
+     TLS/plain-http warnings): refuse to start/serve rather than continue insecurely.
+   - Degrade gracefully for non-essential features (MPRIS bus lost, metered probe
+     unavailable, cover art missing): playback keeps working, log once.
+   - Resource safety on error paths: RAII for fds/handles/sqlite/curl; a throwing
+     constructor must not leak what it already acquired.
+   - Exceptions never cross thread entry points, C callbacks (curl, sd-bus, miniaudio,
+     decoder callbacks) or the audio callback: catch there and convert to the module's
+     error reporting; the realtime callback reports only via atomics.
+   - Error paths get tests (failure injection, fake servers, permission cases) like
+     happy paths.
+9. **Assertions** (`include/lm/assert.hpp`): `static_assert` for anything knowable at
    compile time; `LM_ASSERT(cond, msg)` for internal invariants (pre/postconditions,
    data-structure consistency); `LM_ASSERT_RT(cond)` inside the realtime audio callback
    (no I/O, traps). Active without `NDEBUG` or with `-DLM_ASSERTS=ON`; keep conditions
    side-effect free. Never assert on untrusted input: audio files/tags, network data and
    config get proper error handling in every build.
-9. **Behaviour stays unchanged when fixing warnings**: run the full test suite after each
+10. **Behaviour stays unchanged when fixing warnings**: run the full test suite after each
    batch of fixes.
-10. Do not modify `third_party/` (vendored; see third_party/VERSIONS.md).
+11. Do not modify `third_party/` (vendored; see third_party/VERSIONS.md).
 
 Decisions recorded:
 - `-Wuseless-cast` (gcc) is off for app and tests: re-evaluated for app code, all 21 hits
