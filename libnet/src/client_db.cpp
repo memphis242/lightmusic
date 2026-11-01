@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS track(id INTEGER PRIMARY KEY, title TEXT NOT NULL, ar
 CREATE INDEX IF NOT EXISTS track_album ON track(album_id);
 CREATE TABLE IF NOT EXISTS cache_entry(track_id INTEGER PRIMARY KEY, etag TEXT NOT NULL, size INTEGER NOT NULL,
   complete INTEGER NOT NULL DEFAULT 0, ranges TEXT NOT NULL DEFAULT '', cached INTEGER NOT NULL DEFAULT 0,
-  pinned INTEGER NOT NULL DEFAULT 0, last_access INTEGER NOT NULL DEFAULT 0);
+  pinned INTEGER NOT NULL DEFAULT 0, last_access INTEGER NOT NULL DEFAULT 0,
+  name TEXT NOT NULL DEFAULT '', prev_name TEXT NOT NULL DEFAULT '');
 )SQL";
 
 struct Stmt {
@@ -84,7 +85,7 @@ Track trackFrom(Stmt &s) {
     return t;
 }
 
-constexpr const char *kEntryCols = "track_id,etag,size,complete,ranges,cached,pinned,last_access";
+constexpr const char *kEntryCols = "track_id,etag,size,complete,ranges,cached,pinned,last_access,name,prev_name";
 
 EntryRow entryFrom(Stmt &s) {
     EntryRow e;
@@ -96,6 +97,8 @@ EntryRow entryFrom(Stmt &s) {
     e.cached = s.i64(5);
     e.pinned = s.i64(6) != 0;
     e.lastAccess = s.i64(7);
+    e.name = s.str(8);
+    e.prevName = s.str(9);
     return e;
 }
 
@@ -135,6 +138,19 @@ bool ClientDb::open(const std::string &path, std::string *err) {
         // before its range is committed).
         exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
         exec(kSchema);
+        // Caches from before readable file names: add the name columns (rows keep
+        // name '' and are migrated by the client on open).
+        bool hasName = false;
+        {
+            Stmt s(db_, "PRAGMA table_info(cache_entry)");
+            while (s.step())
+                if (s.str(1) == "name") hasName = true;
+        }
+        if (!hasName)
+            exec("ALTER TABLE cache_entry ADD COLUMN name TEXT NOT NULL DEFAULT '';"
+                 "ALTER TABLE cache_entry ADD COLUMN prev_name TEXT NOT NULL DEFAULT '';");
+        exec("CREATE INDEX IF NOT EXISTS cache_entry_name ON cache_entry(name);"
+             "CREATE INDEX IF NOT EXISTS cache_entry_prev_name ON cache_entry(prev_name);");
     } catch (const std::exception &e) {
         if (err) *err = e.what();
         return false;
@@ -307,7 +323,7 @@ std::vector<EntryRow> ClientDb::entries() {
 
 void ClientDb::putEntry(const EntryRow &e) {
     std::lock_guard lk(m_);
-    Stmt(db_, (std::string("INSERT OR REPLACE INTO cache_entry(") + kEntryCols + ") VALUES(?,?,?,?,?,?,?,?)").c_str())
+    Stmt(db_, (std::string("INSERT OR REPLACE INTO cache_entry(") + kEntryCols + ") VALUES(?,?,?,?,?,?,?,?,?,?)").c_str())
         .bind(1, e.trackId)
         .bind(2, e.etag)
         .bind(3, e.size)
@@ -316,6 +332,8 @@ void ClientDb::putEntry(const EntryRow &e) {
         .bind(6, e.cached)
         .bind(7, std::int64_t(e.pinned))
         .bind(8, e.lastAccess)
+        .bind(9, e.name)
+        .bind(10, e.prevName)
         .run();
 }
 
@@ -342,6 +360,30 @@ void ClientDb::setPinned(std::int64_t trackId, bool pinned) {
 void ClientDb::deleteEntry(std::int64_t trackId) {
     std::lock_guard lk(m_);
     Stmt(db_, "DELETE FROM cache_entry WHERE track_id=?").bind(1, trackId).run();
+}
+
+void ClientDb::setEntryName(std::int64_t trackId, const std::string &name, const std::string &prevName,
+                            bool durable) {
+    std::lock_guard lk(m_);
+    if (durable) exec("PRAGMA synchronous=FULL");
+    try {
+        Stmt(db_, "UPDATE cache_entry SET name=?, prev_name=? WHERE track_id=?")
+            .bind(1, name)
+            .bind(2, prevName)
+            .bind(3, trackId)
+            .run();
+    } catch (...) {
+        if (durable) exec("PRAGMA synchronous=NORMAL");
+        throw;
+    }
+    if (durable) exec("PRAGMA synchronous=NORMAL");
+}
+
+bool ClientDb::nameTaken(const std::string &name, std::int64_t except) {
+    std::lock_guard lk(m_);
+    Stmt s(db_, "SELECT 1 FROM cache_entry WHERE track_id<>? AND (name=? OR prev_name=?) LIMIT 1");
+    s.bind(1, except).bind(2, name).bind(3, name);
+    return s.step();
 }
 
 std::int64_t ClientDb::usage() {

@@ -13,6 +13,8 @@
 #include "client_db.hpp"
 #include "metered.hpp"
 
+#include <sqlite3.h>
+
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -24,6 +26,7 @@
 #include <fstream>
 #include <functional>
 #include <random>
+#include <set>
 #include <sstream>
 #include <thread>
 
@@ -819,7 +822,7 @@ void adoptFinal() {
         CHECK(db.open(dir + "/client.db", &err));
         db.updateRanges(1, "0-" + std::to_string(data.size()), std::int64_t(data.size()), false);
     }
-    CHECK(fs::exists(dir + "/tracks/1.mp3") && !fs::exists(dir + "/tracks/1.part"));
+    CHECK(fs::exists(dir + "/tracks/band-record-t1.mp3") && !fs::exists(dir + "/tracks/band-record-t1.part"));
     srv.stall = true; // any download would hang
     const int before = srv.streams;
     auto c = open(cfg);
@@ -907,6 +910,274 @@ void diskFloor() {
     fs::remove_all(dir);
 }
 
+// ------------------------------------------------------------------ readable file names
+
+#define CHECK_STR(a, b)                                                                                                \
+    do {                                                                                                               \
+        const std::string sa_ = (a), sb_ = (b);                                                                        \
+        if (sa_ != sb_) std::fprintf(stderr, "  got \"%s\", want \"%s\"\n", sa_.c_str(), sb_.c_str());                 \
+        CHECK(sa_ == sb_);                                                                                             \
+    } while (0)
+
+std::set<std::string> listTracks(const std::string &dir) {
+    std::set<std::string> out;
+    for (auto &p : fs::directory_iterator(dir + "/tracks")) out.insert(p.path().filename().string());
+    return out;
+}
+
+std::string fileOf(Client &c, std::int64_t id) {
+    auto e = c.cacheEntry(id);
+    return e ? fs::path(e->file).filename().string() : std::string();
+}
+
+bool cacheFully(Client &c, std::int64_t id, const std::string &data) {
+    std::string err;
+    auto s = c.openTrack(id, &err);
+    if (!s || readAll(*s) != data) return false;
+    s.reset();
+    return waitUntil([&] { return c.cacheInfo(id).state == CacheState::Cached; }, 5s);
+}
+
+// Names are <artist>-<album>-<song>; equal names: the lowest id keeps it, the others get
+// "--<id>"; stable across restarts.
+void namesAndCollisions() {
+    FakeServer srv;
+    const std::string d1 = FakeServer::randomBytes(50000, 81), d2 = FakeServer::randomBytes(60000, 82),
+                      d3 = FakeServer::randomBytes(70000, 83);
+    srv.setTrack(1, d1, "\"n1\"");
+    srv.setTrack(2, d2, "\"n2\"");
+    srv.setTrack(3, d3, "\"n3\"");
+    srv.setTags(1, "Sigur Rós", "Ágætis byrjun", "Svefn-g-englar");
+    srv.setTags(2, "Band", "Record", "Same Song");
+    srv.setTags(3, "BAND", "Record!", "Same  song");
+    const std::string dir = tempDir("names");
+    auto cfg = baseCfg(srv.url(), dir);
+    cfg.backgroundFill = false;
+    {
+        auto c = open(cfg);
+        CHECK(c && syncOk(*c));
+        if (!c) return;
+        CHECK(cacheFully(*c, 3, d3)); // cached first, still loses the tie to id 2
+        CHECK(cacheFully(*c, 1, d1));
+        CHECK_STR(fileOf(*c, 1), std::string("sigur-ros-agaetis-byrjun-svefn-g-englar.mp3"));
+        CHECK_STR(fileOf(*c, 3), std::string("band-record-same-song--3.mp3"));
+        CHECK(cacheFully(*c, 2, d2));
+        CHECK_STR(fileOf(*c, 2), std::string("band-record-same-song.mp3"));
+    }
+    {
+        auto c = open(cfg);
+        CHECK(c && syncOk(*c));
+        CHECK_STR(fileOf(*c, 3), std::string("band-record-same-song--3.mp3"));
+        CHECK_STR(fileOf(*c, 2), std::string("band-record-same-song.mp3"));
+        // Track 2 is re-tagged: 3 now has the name to itself and drops the suffix.
+        srv.setTags(2, "Band", "Record", "Other");
+        CHECK(syncOk(*c));
+        CHECK_STR(fileOf(*c, 3), std::string("band-record-same-song.mp3"));
+        CHECK_STR(fileOf(*c, 2), std::string("band-record-other.mp3"));
+        CHECK(slurp(dir + "/tracks/band-record-other.mp3") == d2);
+        CHECK(slurp(dir + "/tracks/band-record-same-song.mp3") == d3);
+        CHECK_EQ(listTracks(dir).size(), 3u);
+    }
+    fs::remove_all(dir);
+}
+
+// A sync that changes the tags renames the cached file: complete with a reader open,
+// partial while it downloads, two tracks swapping names; playback goes on, offline
+// playback finds the renamed files, eviction removes them.
+void renameOnSync() {
+    FakeServer srv;
+    const std::string d1 = FakeServer::randomBytes(300000, 84), d2 = FakeServer::randomBytes(3 << 20, 85),
+                      d3 = FakeServer::randomBytes(40000, 86);
+    srv.setTrack(1, d1, "\"r1\"");
+    srv.setTrack(2, d2, "\"r2\"");
+    srv.setTrack(3, d3, "\"r3\"");
+    const std::string dir = tempDir("rename");
+    auto cfg = baseCfg(srv.url(), dir);
+    cfg.backgroundFill = false;
+    auto c = open(cfg);
+    CHECK(c && syncOk(*c));
+    if (!c) return;
+    CHECK(cacheFully(*c, 1, d1));
+    CHECK(cacheFully(*c, 3, d3));
+    std::string err;
+    auto r1 = c->openTrack(1, &err); // complete file, held open across the rename
+    CHECK(r1 != nullptr);
+    std::string got1(1000, '\0');
+    CHECK(r1 && r1->read(got1.data(), got1.size()) == got1.size());
+    srv.bytesPerSec = 1 << 20; // track 2 takes ~3 s
+    auto r2 = c->openTrack(2, &err);
+    CHECK(r2 != nullptr);
+    if (!r1 || !r2) return;
+    std::string got2(200000, '\0');
+    CHECK(r2->read(got2.data(), got2.size()) == got2.size()); // download in progress
+    CHECK_STR(fileOf(*c, 2), std::string("band-record-t2.part"));
+    srv.setTags(1, "New Artist", "Album: 2", "Song/One?");
+    srv.setTags(2, "Band", "Live", "T2 (live)");
+    srv.setTags(3, "Band", "Record", "T1"); // takes track 1's old name
+    CHECK(syncOk(*c));
+    CHECK_STR(fileOf(*c, 1), std::string("new-artist-album-2-song-one.mp3"));
+    CHECK_STR(fileOf(*c, 2), std::string("band-live-t2-live.part"));
+    CHECK_STR(fileOf(*c, 3), std::string("band-record-t1.mp3"));
+    CHECK(slurp(dir + "/tracks/band-record-t1.mp3") == d3);
+    // Readers carry on: the open fds survive the rename.
+    got1.resize(d1.size());
+    CHECK(r1->read(got1.data() + 1000, d1.size() - 1000) == d1.size() - 1000);
+    CHECK(got1 == d1);
+    got2 += readAll(*r2);
+    CHECK(got2 == d2);
+    r1.reset();
+    r2.reset();
+    CHECK(waitUntil([&] { return c->cacheInfo(2).state == CacheState::Cached; }, 10s));
+    CHECK_STR(fileOf(*c, 2), std::string("band-live-t2-live.mp3"));
+    CHECK(slurp(dir + "/tracks/band-live-t2-live.mp3") == d2);
+    // Swap: 1 and 3 exchange tags (a rename cycle).
+    srv.setTags(1, "Band", "Record", "T1");
+    srv.setTags(3, "New Artist", "Album: 2", "Song/One?");
+    CHECK(syncOk(*c));
+    CHECK_STR(fileOf(*c, 1), std::string("band-record-t1.mp3"));
+    CHECK_STR(fileOf(*c, 3), std::string("new-artist-album-2-song-one.mp3"));
+    CHECK(slurp(dir + "/tracks/band-record-t1.mp3") == d1);
+    CHECK(slurp(dir + "/tracks/new-artist-album-2-song-one.mp3") == d3);
+    CHECK_EQ(listTracks(dir).size(), 3u);
+    // Offline: the server is gone; the renamed files still play.
+    c.reset();
+    srv.stop();
+    c = open(cfg);
+    CHECK(c != nullptr);
+    if (!c) return;
+    for (auto [id, data] : {std::pair<std::int64_t, const std::string *>{1, &d1}, {2, &d2}, {3, &d3}}) {
+        auto s = c->openTrack(id, &err);
+        CHECK(s && readAll(*s) == *data);
+    }
+    // Eviction of a renamed entry removes its file.
+    c->setCacheSettings(100000, false, false);
+    CHECK(waitUntil([&] { return listTracks(dir).size() == 1; }, 5s));
+    CHECK(listTracks(dir).count("new-artist-album-2-song-one.mp3"));
+    c.reset();
+    fs::remove_all(dir);
+}
+
+// A cache from before readable names ("<id>.<ext>", no name columns) is renamed on the
+// first start; unknown files are left alone; a second start changes nothing.
+void migrateOldLayout() {
+    FakeServer srv;
+    const std::string d1 = FakeServer::randomBytes(80000, 87), d2 = FakeServer::randomBytes(4 << 20, 88);
+    srv.setTrack(1, d1, "\"m1\"");
+    srv.setTrack(2, d2, "\"m2\"");
+    const std::string dir = tempDir("migrate");
+    auto cfg = baseCfg(srv.url(), dir);
+    cfg.backgroundFill = false;
+    {
+        auto c = open(cfg);
+        CHECK(c && syncOk(*c));
+        if (!c) return;
+        CHECK(cacheFully(*c, 1, d1));
+        srv.bytesPerSec = 256 << 10; // track 2 stays partial
+        std::string err;
+        auto s = c->openTrack(2, &err);
+        char b[1000];
+        CHECK(s && s->read(b, sizeof b) == sizeof b);
+        s.reset();
+        CHECK(waitUntil([&] { return c->cacheEntry(2) && !c->cacheEntry(2)->ranges.empty(); }, 5s));
+    }
+    srv.bytesPerSec = 0;
+    // Turn it into the old layout.
+    fs::rename(dir + "/tracks/band-record-t1.mp3", dir + "/tracks/1.mp3");
+    fs::rename(dir + "/tracks/band-record-t2.part", dir + "/tracks/2.part");
+    {
+        sqlite3 *db = nullptr;
+        CHECK(sqlite3_open((dir + "/client.db").c_str(), &db) == SQLITE_OK);
+        CHECK(sqlite3_exec(db, "DROP INDEX cache_entry_name; DROP INDEX cache_entry_prev_name; "
+                           "ALTER TABLE cache_entry DROP COLUMN name; ALTER TABLE cache_entry DROP COLUMN prev_name;",
+                           nullptr, nullptr, nullptr) == SQLITE_OK);
+        sqlite3_close(db);
+    }
+    std::ofstream(dir + "/tracks/notes.txt") << "mine";
+    std::ofstream(dir + "/tracks/77.mp3") << "no row";
+    const auto entry2 = [&] {
+        lm::net::ClientDb db;
+        std::string err;
+        CHECK(db.open(dir + "/client.db", &err));
+        return db.entry(2);
+    };
+    const std::string ranges2 = entry2()->ranges;
+    srv.stall = true; // nothing may be downloaded again
+    for (int run = 0; run < 2; run++) {
+        auto c = open(cfg);
+        CHECK(c != nullptr);
+        if (!c) return;
+        CHECK((listTracks(dir) == std::set<std::string>{"band-record-t1.mp3", "band-record-t2.part", "notes.txt", "77.mp3"}));
+        CHECK(slurp(dir + "/tracks/band-record-t1.mp3") == d1);
+        CHECK_STR(fileOf(*c, 1), std::string("band-record-t1.mp3"));
+        std::string err;
+        auto s = c->openTrack(1, &err);
+        CHECK(s && readAll(*s) == d1);
+    }
+    CHECK(entry2() && entry2()->ranges == ranges2 && entry2()->name == "band-record-t2");
+    CHECK_EQ(srv.streams.load(), 2);
+    srv.stall = false;
+    fs::remove_all(dir);
+}
+
+// Killed in the middle of a rename (every window of the protocol): the next start
+// finishes it, and the data is intact.
+void renameCrash() {
+    FakeServer srv;
+    const std::string d1 = FakeServer::randomBytes(60000, 89), d2 = FakeServer::randomBytes(70000, 90);
+    srv.setTrack(1, d1, "\"k1\"");
+    srv.setTrack(2, d2, "\"k2\"");
+    const std::string dir = tempDir("renamecrash");
+    auto cfg = baseCfg(srv.url(), dir);
+    cfg.backgroundFill = false;
+    {
+        auto c = open(cfg);
+        CHECK(c && syncOk(*c));
+        if (!c) return;
+        CHECK(cacheFully(*c, 1, d1));
+        CHECK(cacheFully(*c, 2, d2));
+    }
+    const std::string t = dir + "/tracks/";
+    auto setName = [&](std::int64_t id, const std::string &name, const std::string &prev) {
+        lm::net::ClientDb db;
+        std::string err;
+        CHECK(db.open(dir + "/client.db", &err));
+        db.setEntryName(id, name, prev, true);
+    };
+    // Track 1: step 1 committed, no file moved yet (the server's new tags are applied on
+    // top by the reconcile). Track 2: link() done, old name not yet unlinked.
+    setName(1, "x-y-z", "band-record-t1");
+    setName(2, "a-b-c", "band-record-t2");
+    fs::create_hard_link(t + "band-record-t2.mp3", t + "a-b-c.mp3");
+    srv.stall = true;
+    {
+        auto c = open(cfg);
+        CHECK(c != nullptr);
+        if (!c) return;
+        CHECK((listTracks(dir) == std::set<std::string>{"band-record-t1.mp3", "band-record-t2.mp3"}));
+        std::string err;
+        auto s1 = c->openTrack(1, &err);
+        CHECK(s1 && readAll(*s1) == d1);
+        auto s2 = c->openTrack(2, &err);
+        CHECK(s2 && readAll(*s2) == d2);
+        CHECK(c->cacheEntry(1)->file == t + "band-record-t1.mp3");
+    }
+    // Crash after the move, before prev_name was cleared.
+    setName(1, "q-r-s", "band-record-t1");
+    fs::rename(t + "band-record-t1.mp3", t + "q-r-s.mp3");
+    {
+        auto c = open(cfg);
+        CHECK(c != nullptr);
+        if (!c) return;
+        CHECK(fs::exists(t + "band-record-t1.mp3") && !fs::exists(t + "q-r-s.mp3"));
+        std::string err;
+        auto s1 = c->openTrack(1, &err);
+        CHECK(s1 && readAll(*s1) == d1);
+    }
+    CHECK_EQ(srv.streams.load(), 2);
+    srv.stall = false;
+    fs::remove_all(dir);
+}
+
 // Default cap is 1 GB.
 void defaultCap() {
     lm::net::ClientConfig c;
@@ -955,6 +1226,8 @@ int main(int argc, char **argv) {
         {"ignorerange", ignoreRange},    {"truncated", truncatedResponses}, {"wrongtotal", wrongTotal},
         {"orphan", orphanedIdle},        {"novalidator", noValidator},      {"adopt", adoptFinal},
         {"pincap", pinCapOnInvalidation}, {"loopback", loopbackWarning},
+        {"names", namesAndCollisions},   {"rename", renameOnSync},          {"migrate", migrateOldLayout},
+        {"renamecrash", renameCrash},
         {"hot", hotSettings},            {"diskfloor", diskFloor},          {"defaultcap", defaultCap},
     };
     for (auto &[name, fn] : tests) {
