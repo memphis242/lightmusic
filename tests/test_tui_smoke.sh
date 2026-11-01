@@ -146,6 +146,30 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (FIFO run)"; cat "$f"; fail=1
 done
+# Repeat/shuffle keys: r cycles off -> all -> one, s toggles shuffle; the status line
+# shows the mode and both are written back to cfg.yaml (playback.repeat/shuffle).
+printf 'playback:\n  volume: 50\n' > "$CFG"; chmod 600 "$CFG"
+: > "$TMP/log5"
+{ n=200; while [ $n -gt 0 ] && ! grep -q Playing "$TMP/log5"; do sleep 0.05; n=$((n - 1)); done
+  printf r; sleep 0.1; printf r; sleep 0.1; printf s
+  n=200; while [ $n -gt 0 ] && ! grep -q "repeat one · shuffle" "$TMP/log5"; do sleep 0.05; n=$((n - 1)); done
+  n=200; while [ $n -gt 0 ] && ! grep -q "shuffle: true" "$CFG"; do sleep 0.05; n=$((n - 1)); done
+  printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+    timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log5" >/dev/null 2>&1
+rc=$?
+[ $rc -eq 0 ] || { echo "FAIL: repeat/shuffle run exit status $rc"; tail -c 1000 "$TMP/log5" | cat -v; fail=1; }
+grep -q "repeat one · shuffle" "$TMP/log5" || { echo "FAIL: repeat/shuffle indicator never shown"; fail=1; }
+grep -q "repeat: one" "$CFG" && grep -q "shuffle: true" "$CFG" || { echo "FAIL: repeat/shuffle not saved:"; cat "$CFG"; fail=1; }
+# ... and read back on the next start.
+: > "$TMP/log6"
+{ n=200; while [ $n -gt 0 ] && ! grep -q Playing "$TMP/log6"; do sleep 0.05; n=$((n - 1)); done
+  sleep 0.3; printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+    timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log6" >/dev/null 2>&1
+grep -q "repeat one · shuffle" "$TMP/log6" || { echo "FAIL: saved repeat/shuffle not applied at start"; fail=1; }
+for f in "$TMP"/san*; do
+    [ -e "$f" ] || continue
+    echo "FAIL: sanitizer report $f (repeat/shuffle run)"; cat "$f"; fail=1
+done
 # A group-writable cfg.yaml is refused before the terminal is touched.
 chmod 620 "$CFG"
 out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?

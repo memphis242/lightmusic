@@ -259,6 +259,12 @@ void testScalarForms() {
         {"playback:\n  gap_seconds: abc\n", false, "expected a number"},
         {"playback:\n  gap_seconds: \"1\"\n", false, "quoted string '1'"},
         {"playback:\n  gap_seconds: !!str 1\n", false, "tagged !!str"},
+        {"playback:\n  repeat: all\n", true, ""},
+        {"playback:\n  repeat: one\n", true, ""},
+        {"playback:\n  repeat: off\n", true, ""},
+        {"playback:\n  repeat: always\n", false, "repeat"},
+        {"playback:\n  shuffle: true\n", true, ""},
+        {"playback:\n  shuffle: sometimes\n", false, "expected true or false"},
         {"ui:\n  show_cache_markers: no\n", true, ""},
         {"ui:\n  show_cache_markers: !!bool false\n", true, ""},
         {"ui:\n  show_cache_markers: \"false\"\n", false, "quoted string"},
@@ -316,6 +322,21 @@ void testGapReload() {
     writeFile("gap.yaml", "playback:\n  gap_seconds: 3\n", 0600);
     r = reloadClientSettings(path, nullptr, cli, running);
     CHECK(r.ok && r.applied.gapSeconds == 1.0);
+}
+
+// playback.repeat / playback.shuffle: defaults off, both hot.
+void testPlayOrderReload() {
+    CHECK(ClientSettings{}.repeat == RepeatMode::Off && !ClientSettings{}.shuffle);
+    const std::string path = writeFile("order.yaml", "playback:\n  repeat: all\n", 0600);
+    Layer cli;
+    ClientSettings running;
+    Diags d;
+    CHECK(loadClientSettings(path, true, nullptr, cli, running, d));
+    CHECK(running.repeat == RepeatMode::All && !running.shuffle);
+    writeFile("order.yaml", "playback:\n  repeat: one\n  shuffle: true\n", 0600);
+    auto r = reloadClientSettings(path, nullptr, cli, running);
+    CHECK(r.ok && r.applied.repeat == RepeatMode::One && r.applied.shuffle);
+    CHECK((r.diff.hot == std::vector<std::string>{"playback.repeat", "playback.shuffle"}) && r.diff.restart.empty());
 }
 
 void testHomeExpansion() {
@@ -1047,6 +1068,7 @@ int main() {
     testApiKeyRefused();
     testScalarForms();
     testGapReload();
+    testPlayOrderReload();
     testHomeExpansion();
     testPermissions();
     testReload();

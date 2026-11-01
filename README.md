@@ -56,7 +56,21 @@ inserts that much silence between tracks (`playback.gap_seconds`).
 | n / p | next / previous | j k ↑ ↓ | move selection |
 | ← / → | seek −5 s / +5 s | g G Home End PgUp PgDn | jump selection |
 | + / - | volume ±5 % | ? / Esc | help / close help |
-| q | quit (also Ctrl-C) | | |
+| r | repeat: off → all → one | s | shuffle on / off |
+| P | save offline (remote tracks) | q | quit (also Ctrl-C) |
+
+**Repeat and shuffle** (`r`, `s`, `playback.repeat`, `playback.shuffle`, MPRIS
+`LoopStatus`/`Shuffle`; the status line shows `repeat`, `repeat one`, `shuffle`). Repeat
+*all* starts the queue over after its last track; repeat *one* replays a track that ends
+by itself, while `n`/`p` still move on (wrapping around like *all*). Shuffle plays the
+queue in a random order without repeats until every track has played; the order is kept,
+so `p` goes back along it. Turning shuffle on keeps the current track playing and shuffles
+the rest; turning it off continues in queue order from the current track. Choosing a
+track (`enter`) with shuffle on starts a new shuffled round from that track, and with
+repeat *all* each round gets a new order (never the same track twice in a row). Gapless
+joins and `gap_seconds` apply to these transitions as to any other; a change made in the
+last moment of a track (when the next one is already decoded, ≤ 0.5 s) applies from the
+track after it. Both settings are saved back to `cfg.yaml` (see UI write-back).
 
 Queue rows show "artist — title" from the files' tags (read by a background thread at
 startup; the file name until then, or when untagged); the now-playing line shows title,
@@ -463,8 +477,9 @@ busctl --user introspect org.mpris.MediaPlayer2.lightmusic /org/mpris/MediaPlaye
 Supported: `org.mpris.MediaPlayer2` (Identity, Quit — exits the TUI cleanly, Raise is a
 no-op with CanRaise=false, no TrackList) and `org.mpris.MediaPlayer2.Player` (Play, Pause,
 PlayPause, Stop, Next, Previous, Seek, SetPosition, PlaybackStatus, Metadata, Position,
-Volume, Rate fixed at 1.0, Can*). `OpenUri` is not supported. PropertiesChanged is sent for
-status, track and volume changes (not Position, per the spec) and `Seeked` after seeks.
+Volume, LoopStatus (`None`/`Track`/`Playlist` = repeat off/one/all) and Shuffle, both
+writable, Rate fixed at 1.0, Can*; CanGoNext follows repeat/shuffle). `OpenUri` is not
+supported. PropertiesChanged is sent for status, track, volume, loop and shuffle changes (not Position, per the spec) and `Seeked` after seeks.
 `libmpris` (`frontends/mpris/`) uses sd-bus directly with no thread or timer of its own:
 the sd-bus fd joins the TUI's `poll()` loop, so a paused player still makes zero wakeups.
 
@@ -623,9 +638,12 @@ playback:
                                     # gain for now, with a warning)
   gap_seconds: 0                    # silence between tracks, 0..30 (hot, from the
                                     # next track change); 0 = sample-exact gapless
+  repeat: off                       # off | all | one (hot; also the r key)
+  shuffle: false                    # (hot; also the s key)
 ui:
   show_cache_markers: true          # the ● ◐ ○ * column
-  save_settings: true               # write volume changes made in the UI back here
+  save_settings: true               # write volume/repeat/shuffle changes made in the
+                                    # UI (or over MPRIS) back here
 ```
 
 | Key | Flag | Default | Hot |
@@ -640,6 +658,8 @@ ui:
 | `playback.volume` | – | 100 | yes |
 | `playback.replaygain` | `--rg` (= `track`) | off | restart |
 | `playback.gap_seconds` | `--gap SECONDS` | 0 (gapless) | yes (next transition) |
+| `playback.repeat` | – (`r` key) | off | yes |
+| `playback.shuffle` | – (`s` key) | false | yes |
 | `ui.show_cache_markers` | – | true | restart |
 | `ui.save_settings` | – | true | yes |
 
@@ -672,7 +692,7 @@ after the last one). The inotify fd sits in the same `poll()` as the terminal an
 self-pipe, so an idle TUI still has no timers (the poll timeout is only set while a
 reload is pending). On a reload the whole stack is re-resolved (flags still win). Only
 the hot keys above are applied — cache cap, background fill, metered pause
-(`lm::net::Client::setCacheSettings`) and volume; any other changed key is reported in
+(`lm::net::Client::setCacheSettings`), volume, gap, repeat and shuffle; any other changed key is reported in
 the status line as `settings reloaded; restart required for: server.url ...`. A file
 with errors (or now group-writable) is not applied and the error is shown; a missing or
 empty file is never taken as "use the defaults" — the running settings stay and the
@@ -683,7 +703,7 @@ no download runs), so a cap briefly lowered and restored evicts nothing.
 **UI write-back.** Settings changed in the TUI are written back into `cfg.yaml` itself,
 editing it in place: only the bytes of the changed value are replaced, so comments
 (also inline ones after the value), blank lines, key order, indentation, CRLF line
-endings and the quoting style of strings are kept. Today that is the volume (`+`/`-`,
+endings and the quoting style of strings are kept. Today that is the volume, repeat and shuffle (`+`/`-`,
 saved 1 s after the last change and on quit, up to 150% like the keys; a
 volume above 150% set over MPRIS is saved as 150). A UTF-8 byte order mark is kept. A key
 not yet in the file is inserted as `key: value` at the end of its section, at that
@@ -702,7 +722,8 @@ as the new value with every other entry unchanged. The write goes through
 the link stays) and is refused if the file is not yours or is group/world-writable. The
 TUI remembers the content it wrote, so the inotify event of its own save is applied
 silently (no "settings reloaded"); an edit you made in the meantime is merged (only our
-key's text changes) and reloaded as usual. `ui.save_settings: false` turns write-back
+key's text changes) and reloaded as usual. Repeat and shuffle (`r`, `s` or MPRIS
+`LoopStatus`/`Shuffle`) are saved the same way, 1 s after the change and on quit. `ui.save_settings: false` turns write-back
 off; `--no-config` never writes. (The alternative, a generated `ui-overrides.yaml` layered
 on top, was not chosen: two places to look for one setting. Its layer slot stays
 reserved.)

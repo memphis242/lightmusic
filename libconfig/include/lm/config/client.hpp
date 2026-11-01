@@ -10,6 +10,7 @@
 namespace lm::config {
 
 enum class ReplayGain { Off, Track, Album };
+enum class RepeatMode { Off, All, One }; // playback.repeat: off | all | one
 
 struct ClientSettings {
     // server
@@ -21,13 +22,15 @@ struct ClientSettings {
     bool backgroundFill = true;
     bool pauseOnMetered = false;
     std::string cacheDir; // empty: $XDG_CACHE_HOME/lightmusic
-    // playback (hot: volume, gapSeconds)
+    // playback (hot: volume, gapSeconds, repeat, shuffle)
     int volume = 100; // percent, 0..150 (above 100: software gain, as the volume keys)
     ReplayGain replayGain = ReplayGain::Off;
     double gapSeconds = 0; // silence between tracks, 0..30 (0: gapless)
+    RepeatMode repeat = RepeatMode::Off;
+    bool shuffle = false;
     // ui
     bool showCacheMarkers = true;
-    bool saveSettings = true; // write UI changes (volume) back into cfg.yaml
+    bool saveSettings = true; // write UI changes (volume, repeat, shuffle) back into cfg.yaml
     bool operator==(const ClientSettings &) const = default;
 };
 

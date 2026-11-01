@@ -2,6 +2,7 @@
 //
 // Threads (all owned by Player):
 //   control thread  runs commands in order, owns the queue/state, emits events
+//                   (the play order: repeat and shuffle, see setRepeat/setShuffle)
 //   decoder thread  decodes (and resamples if needed) into the PCM ring, gaplessly
 //                   continuing with the next queued track
 //   audio callback  miniaudio's realtime thread: pops the ring, applies volume
@@ -32,6 +33,14 @@ namespace lm {
 enum class Status { Stopped, Playing, Paused };
 const char *statusName(Status s);
 
+// Play order (see Player::setRepeat / setShuffle).
+//   Off  the queue (in play order) plays once.
+//   All  after the last track the queue starts over (a new shuffle order with shuffle on).
+//   One  a track that ends naturally plays again; next/prev and failed opens move on and
+//        wrap around as with All.
+enum class Repeat { Off, All, One };
+const char *repeatName(Repeat r); // "off", "all", "one"
+
 struct TrackInfo {
     std::string path;
     Format format = Format::Unknown;
@@ -51,6 +60,9 @@ struct PlayerState {
     float volume = 1.0f;
     std::uint64_t underruns = 0;
     std::string output; // backend/device description, once opened
+    Repeat repeat = Repeat::Off;
+    bool shuffle = false;
+    bool hasNext = false; // next() would move to another track (repeat/shuffle aware)
 };
 
 enum class EventType {
@@ -64,6 +76,7 @@ enum class EventType {
     Error,         // message set; playback continues if possible (e.g. a track that
                    // fails to open or stops on a decode error is reported, then skipped)
     Log,           // informational (device info, reroutes)
+    ModeChanged,   // repeat or shuffle changed
 };
 const char *eventName(EventType t);
 
@@ -85,6 +98,10 @@ struct PlayerConfig {
     // gapless. Not inserted after the last track or on next/prev/seek/playIndex jumps.
     // Clamped to [0, 30]; Player::setGap() changes it while running.
     double gapSeconds = 0.0;
+    // Initial play order (Player::setRepeat / setShuffle change it while running).
+    Repeat repeat = Repeat::Off;
+    bool shuffle = false;
+    std::uint64_t shuffleSeed = 0; // 0: random; otherwise a fixed seed (tests)
     std::function<void(const Event &)> onEvent;
     // Test hook, called on the audio thread with every block of frames popped from the
     // ring (before volume). Must be realtime-safe. Leave null in production.
@@ -119,6 +136,19 @@ public:
     // Silence between tracks (see PlayerConfig::gapSeconds), clamped to [0, 30]; NaN
     // ignored. Takes effect at the next natural track end.
     void setGap(double seconds);
+    // Play order. Shuffle is a random permutation of the queue that is played through
+    // without repeats; it is stable, so prev() walks back along it. Turning shuffle on
+    // keeps the current track (and any already buffered for a gapless transition) first
+    // and shuffles the rest; turning it off continues in queue order from the current
+    // track. playIndex() with shuffle on starts a new permutation at that track; tracks
+    // enqueued with shuffle on are mixed into the part not yet played. With Repeat::All
+    // a new permutation is drawn at each wrap (its first track differs from the last
+    // one played when the queue has more than one track).
+    // Takes effect for the next track that is not already decoded: the decoder runs up
+    // to PlayerConfig::ringSeconds ahead, so a change in the last moments of a track
+    // can apply from the track after next. Gapless transitions and the gap are unchanged.
+    void setRepeat(Repeat r);
+    void setShuffle(bool on);
 
     PlayerState state() const;
     // Blocks until every command issued before it has been handled. From an onEvent

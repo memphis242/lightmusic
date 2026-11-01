@@ -351,6 +351,33 @@ int main() {
         CHECK_NEAR(c.getT<double>("Volume", 'd', -1), 0.25, 1e-6);
         CHECK(c.waitFor([&] { return std::abs(player.state().volume - 0.25f) < 1e-6f; }));
     }
+    // LoopStatus / Shuffle r/w -> player repeat/shuffle, PropertiesChanged; invalid
+    // LoopStatus refused; player-side changes are announced too.
+    {
+        CHECK(c.getS(kPlayer, "LoopStatus") == "None");
+        CHECK_EQ(c.getT<int>("Shuffle", 'b', -1), 0);
+        c.seen.changed.clear();
+        sd_bus_error e2{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
+        CHECK(sd_bus_set_property(c.bus, kName, kPath, kPlayer, "LoopStatus", &e2, "s", "Playlist") >= 0);
+        sd_bus_error_free(&e2);
+        CHECK(c.getS(kPlayer, "LoopStatus") == "Playlist");
+        CHECK(c.waitFor([&] { return c.sawChanged("LoopStatus") && player.state().repeat == lm::Repeat::All; }));
+        CHECK(sd_bus_set_property(c.bus, kName, kPath, kPlayer, "LoopStatus", &e2, "s", "Sometimes") < 0);
+        sd_bus_error_free(&e2);
+        CHECK(c.getS(kPlayer, "LoopStatus") == "Playlist");
+        CHECK(sd_bus_set_property(c.bus, kName, kPath, kPlayer, "Shuffle", &e2, "b", 1) >= 0);
+        sd_bus_error_free(&e2);
+        CHECK(c.waitFor([&] { return c.sawChanged("Shuffle") && player.state().shuffle; }));
+        CHECK_EQ(c.getT<int>("Shuffle", 'b', -1), 1);
+        c.seen.changed.clear();
+        player.setShuffle(false);
+        player.setRepeat(lm::Repeat::One);
+        CHECK(c.waitFor([&] { return c.sawChanged("Shuffle") && c.sawChanged("LoopStatus"); }));
+        CHECK(c.getS(kPlayer, "LoopStatus") == "Track");
+        CHECK_EQ(c.getT<int>("Shuffle", 'b', -1), 0);
+        player.setRepeat(lm::Repeat::Off);
+        CHECK(c.waitFor([&] { return c.getS(kPlayer, "LoopStatus") == "None"; }));
+    }
     // Rate: out-of-range values are ignored; 0.0 pauses (spec).
     {
         sd_bus_error e2{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
