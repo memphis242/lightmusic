@@ -89,7 +89,7 @@ int main(int argc, char **argv) try {
         std::printf("files=%zu added=%zu updated=%zu renamed=%zu removed=%zu unchanged=%zu "
                     "failed=%zu revision=%lld\n",
                     st.files, st.added, st.updated, st.renamed, st.removed, st.unchanged,
-                    st.failed, (long long)writer.revision());
+                    st.failed, static_cast<long long>(writer.revision()));
         return 0;
     }
 

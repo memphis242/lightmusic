@@ -80,7 +80,7 @@ std::string id3Text(int enc, const unsigned char *&p, const unsigned char *end) 
         else if (enc == 1 && end - p >= 2 && p[0] == 0xFE && p[1] == 0xFF) p += 2;
         std::uint32_t hi = 0;
         while (end - p >= 2) {
-            const std::uint32_t u = le ? (p[0] | p[1] << 8) : (p[0] << 8 | p[1]);
+            const std::uint32_t u = le ? (std::uint32_t{p[0]} | std::uint32_t{p[1]} << 8) : (std::uint32_t{p[0]} << 8 | std::uint32_t{p[1]});
             p += 2;
             if (u == 0) break;
             if (s.size() >= kMaxField) continue;
@@ -467,7 +467,7 @@ private:
         unsigned char h[27];
         while (pages_++ < kMaxOggPages && readFully(src_, h, 27) && std::memcmp(h, "OggS", 4) == 0) {
             nseg_ = h[26];
-            if (!readFully(src_, seg_, nseg_)) return false;
+            if (!readFully(src_, seg_, static_cast<std::size_t>(nseg_))) return false;
             body_ = 0;
             for (int i = 0; i < nseg_; i++) body_ += seg_[i];
             ser_ = le32(h + 14);

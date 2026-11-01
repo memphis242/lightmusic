@@ -126,6 +126,11 @@ void wake() {
     [[maybe_unused]] const auto r = write(g_wakeWrite, &b, 1);
 }
 
+// Signal handlers (C linkage for sigaction); declared first for -Wmissing-prototypes.
+extern "C" void onSignal(int sig);
+extern "C" void onStop(int);
+extern "C" void onFatal(int sig);
+
 extern "C" void onSignal(int sig) {
     const int saved = errno;
     if (sig == SIGWINCH) g_resized = 1;
@@ -740,7 +745,7 @@ int run(int argc, char **argv) {
                 else if (quitErr)
                     *quitErr = err;
                 else
-                    ui.message = err, dirty = true;
+                    { ui.message = err; dirty = true; }
             };
             auto saveTimeoutMs = [&]() -> int {
                 if (!saveDue) return -1;
@@ -886,7 +891,7 @@ int run(int argc, char **argv) {
                 const int r = poll(fds, 4, mpris.timeout(timeout)); // min of all; -1 when all idle
                 mpris.process();
                 if (mpris.quitRequested()) running = false;
-                if (mprisNote) mprisNote = false, dirty = true;
+                if (mprisNote) { mprisNote = false; dirty = true; }
                 if (r < 0) {
                     if (errno == EINTR) continue;
                     break;

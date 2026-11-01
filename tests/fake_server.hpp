@@ -185,7 +185,7 @@ private:
                                    if (bps) {
                                        chunk = std::min<std::size_t>(chunk, std::max<std::size_t>(1024, bps / 50));
                                        std::this_thread::sleep_for(std::chrono::microseconds(
-                                           static_cast<long long>(chunk * 1000000.0 / double(bps))));
+                                           static_cast<long long>(static_cast<double>(chunk) * 1000000.0 / static_cast<double>(bps))));
                                    }
                                    sent += chunk;
                                    *cut += chunk;

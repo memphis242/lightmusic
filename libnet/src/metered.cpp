@@ -18,7 +18,7 @@ std::optional<bool> probeNetworkManagerMetered(std::string *err) {
         if (err) *err = std::string("no system bus: ") + std::strerror(-r);
         return std::nullopt;
     }
-    sd_bus_error e = SD_BUS_ERROR_NULL;
+    sd_bus_error e{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
     std::uint32_t v = 0;
     r = sd_bus_get_property_trivial(bus, "org.freedesktop.NetworkManager", "/org/freedesktop/NetworkManager",
                                     "org.freedesktop.NetworkManager", "Metered", &e, 'u', &v);

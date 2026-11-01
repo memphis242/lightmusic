@@ -210,7 +210,9 @@ void Watcher::run() {
         if (ops.empty() && !overflow) first = now;
         last = now;
         for (char *p = buf; p < buf + len;) {
-            auto *ev = reinterpret_cast<inotify_event *>(p);
+            // Not a misaligned access: buf is alignas(inotify_event) and the kernel pads every
+            // record to that alignment; the void* hop only tells -Wcast-align so.
+            const auto *ev = static_cast<const inotify_event *>(static_cast<const void *>(p));
             p += sizeof(inotify_event) + ev->len;
             if (ev->mask & IN_Q_OVERFLOW) {
                 overflow = true;

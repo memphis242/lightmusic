@@ -302,7 +302,7 @@ void testPermissions() {
         CHECK(loadClientSettings(writeFile("perm.yaml", text, 0644), true, nullptr, {}, s, d));
         CHECK(findDiag(d, "readable by other users (mode 0644)") && !hasError(d));
     }
-    for (mode_t m : {0620, 0602, 0666}) {
+    for (mode_t m : {mode_t{0620}, mode_t{0602}, mode_t{0666}}) {
         Diags d;
         CHECK(!loadClientSettings(writeFile("perm.yaml", text, m), true, nullptr, {}, s, d));
         CHECK(findDiag(d, "group/world-writable") && findDiag(d, "refusing"));

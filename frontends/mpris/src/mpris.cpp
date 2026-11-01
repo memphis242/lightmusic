@@ -51,13 +51,13 @@ std::string utf8(const std::string &in) {
         unsigned char lo = 0x80, hi = 0xBF; // allowed range of the 2nd byte
         if (c < 0x80) len = 1;
         else if (c >= 0xC2 && c <= 0xDF) len = 2;
-        else if (c == 0xE0) len = 3, lo = 0xA0;
+        else if (c == 0xE0) { len = 3; lo = 0xA0; }
         else if (c >= 0xE1 && c <= 0xEC) len = 3;
-        else if (c == 0xED) len = 3, hi = 0x9F; // no surrogates
+        else if (c == 0xED) { len = 3; hi = 0x9F; } // no surrogates
         else if (c >= 0xEE && c <= 0xEF) len = 3;
-        else if (c == 0xF0) len = 4, lo = 0x90;
+        else if (c == 0xF0) { len = 4; lo = 0x90; }
         else if (c >= 0xF1 && c <= 0xF3) len = 4;
-        else if (c == 0xF4) len = 4, hi = 0x8F; // <= U+10FFFF
+        else if (c == 0xF4) { len = 4; hi = 0x8F; } // <= U+10FFFF
         bool ok = len > 0 && i + len <= n;
         for (std::size_t k = 1; ok && k < len; k++) {
             const unsigned char b = s[i + k];
@@ -112,7 +112,7 @@ Published publish(const PlayerState &st) {
         p.discNo = t.disc;
         p.lengthUs = toUs(st.track.duration);
     }
-    p.volume = st.volume;
+    p.volume = static_cast<double>(st.volume);
     p.canPlay = st.queueSize > 0;
     p.canNext = st.index >= 0 && static_cast<std::size_t>(st.index) + 1 < st.queueSize;
     // Player::prev() restarts the current track when it is the first one (or more than 3 s
@@ -279,7 +279,7 @@ struct Server::Impl {
         // The player applies the command asynchronously: publish the new value now so an
         // immediate Get returns it (the VolumeChanged event later confirms it).
         const Published old = s.pub;
-        s.pub.volume = static_cast<float>(vol); // same rounding as PlayerState::volume
+        s.pub.volume = static_cast<double>(static_cast<float>(vol)); // same rounding as PlayerState::volume
         s.emitChanged(old);
         return 0;
     }

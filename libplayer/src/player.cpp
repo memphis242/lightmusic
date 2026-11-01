@@ -986,7 +986,7 @@ void Player::stop() { impl_->push(Cmd{Cmd::Stop}); }
 void Player::next() { impl_->push(Cmd{Cmd::Next}); }
 void Player::prev() { impl_->push(Cmd{Cmd::Prev}); }
 void Player::seek(double seconds) { impl_->push(Cmd{Cmd::Seek, {}, 0, seconds}); }
-void Player::setVolume(float v) { impl_->push(Cmd{Cmd::Volume, {}, 0, v}); }
+void Player::setVolume(float v) { impl_->push(Cmd{Cmd::Volume, {}, 0, static_cast<double>(v)}); }
 PlayerState Player::state() const { return impl_->stateNow(); }
 void Player::sync() {
     // From an onEvent handler (the control thread) waiting would deadlock: the barrier

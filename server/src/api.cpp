@@ -344,13 +344,13 @@ struct HttpApi::Impl {
 
     // Wraps a handler: clears httplib's range state, authenticates, maps exceptions.
     httplib::Server::Handler guarded(bool auth, bool allow_query, Fn fn) {
-        return [this, auth, allow_query, fn = std::move(fn)](const httplib::Request &req,
+        return [this, auth, allow_query, handler = std::move(fn)](const httplib::Request &req,
                                                             httplib::Response &res) {
             take_ranges(req);
             if (t_conn) disarm(*t_conn);  // headers are in (also on the re-dispatch path)
             try {
                 if (auth && !authorize(req, res, allow_query)) return;
-                fn(req, res);
+                handler(req, res);
             } catch (const std::exception &e) {
                 self->log(std::string("error: ") + req.path + ": " + e.what());
                 error(res, 500, "internal error");

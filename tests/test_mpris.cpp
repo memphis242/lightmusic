@@ -158,13 +158,13 @@ struct Client {
         return pred();
     }
     int call0(const char *iface, const char *member) {
-        sd_bus_error e = SD_BUS_ERROR_NULL;
+        sd_bus_error e{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
         int r = sd_bus_call_method(bus, kName, kPath, iface, member, &e, nullptr, "");
         sd_bus_error_free(&e);
         return r;
     }
     std::string getS(const char *iface, const char *prop) {
-        sd_bus_error e = SD_BUS_ERROR_NULL;
+        sd_bus_error e{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
         char *s = nullptr;
         int r = sd_bus_get_property_string(bus, kName, kPath, iface, prop, &e, &s);
         sd_bus_error_free(&e);
@@ -173,7 +173,7 @@ struct Client {
         return out;
     }
     template <class T> T getT(const char *prop, char type, T dflt) {
-        sd_bus_error e = SD_BUS_ERROR_NULL;
+        sd_bus_error e{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
         T v = dflt;
         int r = sd_bus_get_property_trivial(bus, kName, kPath, kPlayer, prop, &e, type, &v);
         sd_bus_error_free(&e);
@@ -189,7 +189,7 @@ struct Client {
     };
     Meta metadata() {
         Meta md;
-        sd_bus_error e = SD_BUS_ERROR_NULL;
+        sd_bus_error e{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
         sd_bus_message *reply = nullptr;
         if (sd_bus_get_property(bus, kName, kPath, kPlayer, "Metadata", &e, &reply, "a{sv}") < 0) {
             sd_bus_error_free(&e);
@@ -201,9 +201,9 @@ struct Client {
             sd_bus_message_read(reply, "s", &k);
             const std::string key = k;
             const char *s = nullptr;
-            if (key == "mpris:trackid") sd_bus_message_read(reply, "v", "o", &s), md.trackid = s;
-            else if (key == "xesam:title") sd_bus_message_read(reply, "v", "s", &s), md.title = s;
-            else if (key == "xesam:album") sd_bus_message_read(reply, "v", "s", &s), md.album = s;
+            if (key == "mpris:trackid") { sd_bus_message_read(reply, "v", "o", &s); md.trackid = s; }
+            else if (key == "xesam:title") { sd_bus_message_read(reply, "v", "s", &s); md.title = s; }
+            else if (key == "xesam:album") { sd_bus_message_read(reply, "v", "s", &s); md.album = s; }
             else if (key == "mpris:length") sd_bus_message_read(reply, "v", "x", &md.length);
             else if (key == "xesam:trackNumber") sd_bus_message_read(reply, "v", "i", &md.trackNumber);
             else if (key == "xesam:artist") {
@@ -224,7 +224,7 @@ struct Client {
         va_start(ap, sig);
         sd_bus_message_appendv(m, sig, ap);
         va_end(ap);
-        sd_bus_error e = SD_BUS_ERROR_NULL;
+        sd_bus_error e{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
         int r = sd_bus_call(bus, m, 0, &e, nullptr);
         sd_bus_error_free(&e);
         sd_bus_message_unref(m);
@@ -337,7 +337,7 @@ int main() {
 
     // Volume r/w -> player volume, PropertiesChanged.
     c.seen.changed.clear();
-    sd_bus_error e = SD_BUS_ERROR_NULL;
+    sd_bus_error e{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
     CHECK(sd_bus_set_property(c.bus, kName, kPath, kPlayer, "Volume", &e, "d", 0.5) >= 0);
     sd_bus_error_free(&e);
     CHECK(c.waitFor([&] { return c.sawChanged("Volume"); }));
@@ -345,7 +345,7 @@ int main() {
     CHECK_NEAR(c.getT<double>("Volume", 'd', -1), 0.5, 1e-6);
     // Set then an immediate Get returns the new value (no waiting for the player event).
     {
-        sd_bus_error e2 = SD_BUS_ERROR_NULL;
+        sd_bus_error e2{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
         CHECK(sd_bus_set_property(c.bus, kName, kPath, kPlayer, "Volume", &e2, "d", 0.25) >= 0);
         sd_bus_error_free(&e2);
         CHECK_NEAR(c.getT<double>("Volume", 'd', -1), 0.25, 1e-6);
@@ -353,7 +353,7 @@ int main() {
     }
     // Rate: out-of-range values are ignored; 0.0 pauses (spec).
     {
-        sd_bus_error e2 = SD_BUS_ERROR_NULL;
+        sd_bus_error e2{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
         CHECK(sd_bus_set_property(c.bus, kName, kPath, kPlayer, "Rate", &e2, "d", 2.0) >= 0);
         sd_bus_error_free(&e2);
         CHECK_NEAR(c.getT<double>("Rate", 'd', 0), 1.0, 1e-9);

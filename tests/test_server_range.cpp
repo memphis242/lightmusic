@@ -12,8 +12,8 @@ static void expect(const char *h, std::uint64_t size, K kind, std::uint64_t firs
     bool ok = r.kind == kind && (kind != K::Satisfiable || (r.first == first && r.last == last));
     if (!ok) {
         std::fprintf(stderr, "line %d: '%s' size %llu -> kind %d %llu-%llu\n", line, h,
-                     (unsigned long long)size, int(r.kind), (unsigned long long)r.first,
-                     (unsigned long long)r.last);
+                     static_cast<unsigned long long>(size), int(r.kind), static_cast<unsigned long long>(r.first),
+                     static_cast<unsigned long long>(r.last));
         ++lmtest::g_failures;
     }
 }

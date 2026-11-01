@@ -93,9 +93,9 @@ bool parseBool(const Value &v, bool &out, std::string &err) {
     if (!plainTyped(v, "bool", "true or false", err)) return false;
     const auto &s = v.scalar;
     for (const char *t : {"true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON"})
-        if (s == t) return out = true, true;
+        if (s == t) { out = true; return true; }
     for (const char *f : {"false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF"})
-        if (s == f) return out = false, true;
+        if (s == f) { out = false; return true; }
     err = "expected true or false, got '" + s + "'";
     return false;
 }
@@ -457,7 +457,9 @@ bool FileWatcher::changed() {
             break;
         }
         for (char *p = buf; p < buf + n;) {
-            const auto *ev = reinterpret_cast<const inotify_event *>(p);
+            // Not a misaligned access: buf is alignas(inotify_event) and the kernel pads every
+            // record to that alignment; the void* hop only tells -Wcast-align so.
+            const auto *ev = static_cast<const inotify_event *>(static_cast<const void *>(p));
             if (ev->mask & IN_Q_OVERFLOW) hit = true;
             else if (ev->len && name_ == ev->name && (ev->mask & (IN_CLOSE_WRITE | IN_MOVED_TO))) hit = true;
             p += sizeof(inotify_event) + ev->len;

@@ -63,12 +63,12 @@ Sha256 sha256(std::string_view data) {
     tail[rem] = 0x80;
     std::size_t tl = rem < 56 ? 64 : 128;
     std::uint64_t bits = std::uint64_t(n) * 8;
-    for (int i = 0; i < 8; ++i) tail[tl - 1 - i] = std::uint8_t(bits >> (8 * i));
+    for (std::size_t i = 0; i < 8; ++i) tail[tl - 1 - i] = std::uint8_t(bits >> (8 * i));
     block(h, tail);
     if (tl == 128) block(h, tail + 64);
     Sha256 out;
-    for (int i = 0; i < 8; ++i)
-        for (int j = 0; j < 4; ++j) out[4 * i + j] = std::uint8_t(h[i] >> (24 - 8 * j));
+    for (std::size_t i = 0; i < 8; ++i)
+        for (std::size_t j = 0; j < 4; ++j) out[4 * i + j] = std::uint8_t(h[i] >> (24 - 8 * j));
     return out;
 }
 

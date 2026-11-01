@@ -233,7 +233,7 @@ static void newCases() {
     {
         // v2.4 tag-level unsync (header 0x80) without the per-frame 0x02 flag: the frame
         // must still be de-unsynchronised (BOM FF FE stored as FF 00 FE).
-        for (unsigned char fl : {0x00, 0x02}) {
+        for (unsigned char fl : {std::uint8_t{0x00}, std::uint8_t{0x02}}) {
             const bytes t = tag(4, 0x80, frame("TIT2", bytes{1, 0xFF, 0x00, 0xFE, 'A', 0}, 4, fl));
             Tags tg;
             parseId3v2(t.data(), t.size(), &tg, nullptr);
@@ -435,7 +435,7 @@ static bytes structuredTag(std::mt19937 &r) {
     bytes b = {'I', 'D', '3', static_cast<unsigned char>(ver), 0, static_cast<unsigned char>(r() % 2 ? 0 : r() & 0xF0),
                0, 0, 0, 0};
     if (b[5] & 0x40) {
-        const std::uint32_t e = r() % 12;
+        const auto e = static_cast<std::uint32_t>(r() % 12);
         b.insert(b.end(), {0, 0, 0, static_cast<unsigned char>(e)});
         for (std::uint32_t i = 0; i < e; i++) b.push_back(static_cast<unsigned char>(r()));
     }

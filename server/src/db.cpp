@@ -154,8 +154,8 @@ void Db::exec(const char *sql) {
 
 std::string make_etag(std::int64_t size, std::int64_t mtime_ns) {
     char b[64];
-    std::snprintf(b, sizeof b, "\"%llx-%llx\"", (unsigned long long)size,
-                  (unsigned long long)mtime_ns);
+    std::snprintf(b, sizeof b, "\"%llx-%llx\"", static_cast<unsigned long long>(size),
+                  static_cast<unsigned long long>(mtime_ns));
     return b;
 }
 
