@@ -32,6 +32,7 @@ const Schema<ClientSettings> &clientSchema() {
             intField<S>("playback.volume", &S::volume, 0, 150, true),
             enumField<S>("playback.replaygain", &S::replayGain,
                          {{"off", ReplayGain::Off}, {"track", ReplayGain::Track}, {"album", ReplayGain::Album}}),
+            floatField<S>("playback.gap_seconds", &S::gapSeconds, 0.0, 30.0, true),
             boolField<S>("ui.show_cache_markers", &S::showCacheMarkers),
             boolField<S>("ui.save_settings", &S::saveSettings, true),
         };

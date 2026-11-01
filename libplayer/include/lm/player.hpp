@@ -80,6 +80,11 @@ struct PlayerConfig {
     double tickSeconds = 1.0;    // Position event interval while playing
     bool replayGain = false;     // apply track gain (+preamp) when tagged
     float replayGainPreampDb = 0.0f;
+    // Silence between tracks that follow each other naturally (one ends, the queue
+    // continues): exactly round(gapSeconds * device rate) zero frames. 0 = sample-exact
+    // gapless. Not inserted after the last track or on next/prev/seek/playIndex jumps.
+    // Clamped to [0, 30]; Player::setGap() changes it while running.
+    double gapSeconds = 0.0;
     std::function<void(const Event &)> onEvent;
     // Test hook, called on the audio thread with every block of frames popped from the
     // ring (before volume). Must be realtime-safe. Leave null in production.
@@ -111,6 +116,9 @@ public:
     void prev();             // restart the track if > 3 s in, else previous track
     void seek(double seconds);
     void setVolume(float v); // linear, clamped to [0, 2]; NaN/inf ignored (Error event)
+    // Silence between tracks (see PlayerConfig::gapSeconds), clamped to [0, 30]; NaN
+    // ignored. Takes effect at the next natural track end.
+    void setGap(double seconds);
 
     PlayerState state() const;
     // Blocks until every command issued before it has been handled. From an onEvent

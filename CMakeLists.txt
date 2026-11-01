@@ -20,6 +20,7 @@ option(LM_BUILD_SERVER "Build the lightmusicd server (needs TagLib, SQLite)" ON)
 option(LM_BUILD_MPRIS "Build MPRIS (media keys / desktop integration) for the TUI (needs libsystemd)" ON)
 option(LM_FETCH_FTXUI "Fetch FTXUI v6.1.9 with FetchContent if no system package" OFF)
 option(LM_HARDENING "Release hardening: _FORTIFY_SOURCE=3, stack protector, stack-clash protection" ON)
+option(LM_ASSERTS "Force LM_ASSERT checks on in optimised builds (they are always on without NDEBUG)" OFF)
 option(LM_GC_SECTIONS "Link the shipped executables with --gc-sections in optimised builds (drops unused code)" ON)
 
 if(LM_ASAN AND LM_TSAN)
@@ -35,6 +36,15 @@ function(lm_release_link_options target)
     target_link_options(${target} PRIVATE $<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:-Wl,--gc-sections>)
   endif()
 endfunction()
+
+# Project assertions (include/lm/assert.hpp); every target gets them through lm_warnings
+# or lm::player.
+add_library(lm_assert INTERFACE)
+target_include_directories(lm_assert INTERFACE ${PROJECT_SOURCE_DIR}/include)
+if(LM_ASSERTS)
+  target_compile_definitions(lm_assert INTERFACE LM_ENABLE_ASSERTS)
+endif()
+target_link_libraries(lm_warnings INTERFACE lm_assert)
 
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)

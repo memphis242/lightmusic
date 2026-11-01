@@ -8,6 +8,7 @@
 
 #include <cerrno>
 #include <climits>
+#include <cmath>
 #include <charconv>
 #include <cstdio>
 #include <cstdlib>
@@ -122,6 +123,53 @@ bool parseInt(const Value &v, long long lo, long long hi, long long &out, std::s
         return false;
     }
     out = n;
+    return true;
+}
+
+bool parseFloat(const Value &v, double lo, double hi, double &out, std::string &err) {
+    if (!scalarOnly(v, err)) return false;
+    if (v.quoted) {
+        err = "expected a number (unquoted), got the quoted string '" + v.scalar + "'";
+        return false;
+    }
+    const auto &tg = v.tag;
+    if (!tg.empty()) {
+        bool okTag = false;
+        for (const char *t : {"float", "int"})
+            okTag |= tg == std::string("!!") + t || tg == std::string("tag:yaml.org,2002:") + t ||
+                     tg == std::string("<tag:yaml.org,2002:") + t + ">";
+        if (!okTag) {
+            err = "expected a number, got a value tagged " + tg;
+            return false;
+        }
+    }
+    const auto &s = v.scalar;
+    // Plain decimal only: digits, one optional '.', optional sign and exponent.
+    // .nan/.inf, hex and the like are refused.
+    bool digit = false;
+    for (std::size_t i = 0; i < s.size(); i++) {
+        const char c = s[i];
+        if (c >= '0' && c <= '9') digit = true;
+        else if (!(c == '.' || c == '+' || c == '-' || c == 'e' || c == 'E')) {
+            digit = false;
+            break;
+        }
+    }
+    double d = 0;
+    const char *b = s.data(), *e = s.data() + s.size();
+    if (b != e && *b == '+') ++b;
+    const auto r = std::from_chars(b, e, d);
+    if (!digit || r.ec != std::errc() || r.ptr != e || !std::isfinite(d)) {
+        err = "expected a number, got '" + s + "'";
+        return false;
+    }
+    if (d < lo || d > hi) {
+        char buf[96];
+        std::snprintf(buf, sizeof buf, "%g is out of range (%g..%g)", d, lo, hi);
+        err = buf;
+        return false;
+    }
+    out = d;
     return true;
 }
 

@@ -239,6 +239,20 @@ void testScalarForms() {
         {"playback:\n  volume: !!str 7\n", false, "tagged !!str"},
         {"playback:\n  volume: \"7\"\n", false, "quoted string '7'"},
         {"playback:\n  volume: '7'\n", false, "quoted string '7'"},
+        {"playback:\n  gap_seconds: 0.5\n", true, ""},
+        {"playback:\n  gap_seconds: 2\n", true, ""},
+        {"playback:\n  gap_seconds: 0\n", true, ""},
+        {"playback:\n  gap_seconds: 30\n", true, ""},
+        {"playback:\n  gap_seconds: 1e-1\n", true, ""},
+        {"playback:\n  gap_seconds: !!float 1.5\n", true, ""},
+        {"playback:\n  gap_seconds: 30.01\n", false, "out of range (0..30)"},
+        {"playback:\n  gap_seconds: -0.5\n", false, "out of range (0..30)"},
+        {"playback:\n  gap_seconds: .nan\n", false, "expected a number"},
+        {"playback:\n  gap_seconds: .inf\n", false, "expected a number"},
+        {"playback:\n  gap_seconds: 1s\n", false, "expected a number"},
+        {"playback:\n  gap_seconds: abc\n", false, "expected a number"},
+        {"playback:\n  gap_seconds: \"1\"\n", false, "quoted string '1'"},
+        {"playback:\n  gap_seconds: !!str 1\n", false, "tagged !!str"},
         {"ui:\n  show_cache_markers: no\n", true, ""},
         {"ui:\n  show_cache_markers: !!bool false\n", true, ""},
         {"ui:\n  show_cache_markers: \"false\"\n", false, "quoted string"},
@@ -262,6 +276,40 @@ void testScalarForms() {
     cli.set("playback.volume", "7");
     Diags d;
     CHECK(clientSchema().resolve({&cli}, d).volume == 7 && d.empty());
+    // playback.gap_seconds: default 0 (gapless); the --gap flag is a plain string too.
+    CHECK(ClientSettings{}.gapSeconds == 0.0);
+    Layer g;
+    g.set("playback.gap_seconds", "0.75");
+    Diags e;
+    CHECK(clientSchema().resolve({&g}, e).gapSeconds == 0.75 && e.empty());
+    {
+        Diags x;
+        auto s = load("playback:\n  gap_seconds: [1]\n", x);
+        CHECK(hasError(x) && s.gapSeconds == 0.0);
+    }
+}
+
+// playback.gap_seconds is hot: a reload applies it (the player uses it from the next
+// track transition); an out-of-range value is refused and the running value kept.
+void testGapReload() {
+    const std::string path = writeFile("gap.yaml", "playback:\n  gap_seconds: 0.5\n", 0600);
+    Layer cli;
+    ClientSettings running;
+    Diags d;
+    CHECK(loadClientSettings(path, true, nullptr, cli, running, d));
+    CHECK(running.gapSeconds == 0.5);
+    writeFile("gap.yaml", "playback:\n  gap_seconds: 2.5\n", 0600);
+    auto r = reloadClientSettings(path, nullptr, cli, running);
+    CHECK(r.ok && r.applied.gapSeconds == 2.5);
+    CHECK(r.diff.hot == std::vector<std::string>{"playback.gap_seconds"} && r.diff.restart.empty());
+    running = r.applied;
+    writeFile("gap.yaml", "playback:\n  gap_seconds: 31\n", 0600);
+    r = reloadClientSettings(path, nullptr, cli, running);
+    CHECK(!r.ok && r.applied.gapSeconds == 2.5 && findDiag(r.diags, "out of range"));
+    cli.set("playback.gap_seconds", "1"); // the flag wins over the file
+    writeFile("gap.yaml", "playback:\n  gap_seconds: 3\n", 0600);
+    r = reloadClientSettings(path, nullptr, cli, running);
+    CHECK(r.ok && r.applied.gapSeconds == 1.0);
 }
 
 void testHomeExpansion() {
@@ -990,6 +1038,7 @@ int main() {
     testUnknownAndTypes();
     testApiKeyRefused();
     testScalarForms();
+    testGapReload();
     testHomeExpansion();
     testPermissions();
     testReload();

@@ -1,6 +1,8 @@
 // Player on miniaudio's Null backend (no sound card needed; real-time paced):
 //  - gapless: the frames handed to the device equal the concatenation of the decoded
 //    tracks, sample for sample, with a resampled track in the middle of the queue.
+//  - gap (PlayerConfig::gapSeconds / setGap): exact zero frames between natural track
+//    ends only, TrackChanged on the first real sample, none after the last track.
 //  - end of queue waits for the device buffer; an enqueue racing the end is not lost.
 //  - command/state machine: pause/resume/seek/next/prev/stop/volume/end of queue/errors.
 //  - decode errors become Error events; sync() from an event handler does not deadlock.
@@ -19,6 +21,7 @@
 #include <fstream>
 #include <mutex>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -173,6 +176,147 @@ void gapless(const std::string &dir) {
     for (std::size_t i = 0; i < std::min(got, expectFrames) * 2; i++) mismatch += tap.buf[i] != expect[i];
     CHECK_EQ(mismatch, 0u);
     CHECK((rec.trackIndexes() == std::vector<int>{0, 1, 2, 3}));
+}
+
+// Gap between tracks: a | N zeros | d (48 kHz, resampled) | N zeros | b, with N =
+// round(gap * 44100), nothing after b; every real sample exact. TrackChanged fires only
+// once the device has been handed the next track's first real sample, and the previous
+// track's position never runs past its duration during the gap.
+void gapBetweenTracks(const std::string &dir, bool viaSetter) {
+    const std::string a = dir + "/a.flac", b = dir + "/b.flac", d = dir + "/d.opus";
+    const double gap = viaSetter ? 0.25 : 0.5;
+    const std::size_t n = static_cast<std::size_t>(std::llround(gap * 44100));
+    const auto av = decodeAll(a), dv = resampleRef(decodeAll(d), 48000, 44100), bv = decodeAll(b);
+    std::vector<float> expect = av;
+    expect.resize(expect.size() + n * 2, 0.0f);
+    expect.insert(expect.end(), dv.begin(), dv.end());
+    expect.resize(expect.size() + n * 2, 0.0f);
+    expect.insert(expect.end(), bv.begin(), bv.end());
+    const std::size_t start1 = av.size() / 2 + n, start2 = start1 + dv.size() / 2 + n;
+
+    struct Seen {
+        std::mutex m;
+        std::vector<std::pair<int, std::size_t>> changes;               // index, frames tapped
+        std::vector<std::tuple<int, double, double, std::size_t>> pos; // index, position, duration, tapped
+    } seen;
+    Recorder rec;
+    Tap tap(200000);
+    lm::PlayerConfig cfg;
+    cfg.nullBackend = true;
+    cfg.tickSeconds = 0.05;
+    cfg.gapSeconds = viaSetter ? 0.0 : gap;
+    cfg.onEvent = [&](const lm::Event &e) {
+        {
+            std::lock_guard lk(seen.m);
+            const std::size_t f = tap.frames.load();
+            if (e.type == lm::EventType::TrackChanged) seen.changes.emplace_back(e.state.index, f);
+            if (e.type == lm::EventType::Position)
+                seen.pos.emplace_back(e.state.index, e.state.position, e.state.track.duration, f);
+        }
+        rec(e);
+    };
+    cfg.outputTap = &Tap::fn;
+    cfg.outputTapUser = &tap;
+    {
+        lm::Player p(cfg);
+        if (viaSetter) p.setGap(gap); // hot change before the first transition
+        p.enqueue({a, d, b});
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s));
+        CHECK_EQ(p.state().underruns, 0u);
+    }
+    const std::size_t got = tap.frames.load();
+    CHECK_EQ(got, expect.size() / 2); // no gap after the last track
+    std::size_t mismatch = 0;
+    for (std::size_t i = 0; i < std::min(got * 2, expect.size()); i++) mismatch += tap.buf[i] != expect[i];
+    CHECK_EQ(mismatch, 0u);
+    std::lock_guard lk(seen.m);
+    CHECK_EQ(seen.changes.size(), 3u);
+    if (seen.changes.size() == 3) {
+        CHECK_EQ(seen.changes[1].first, 1);
+        CHECK(seen.changes[1].second >= start1); // not before the first real sample
+        CHECK_EQ(seen.changes[2].first, 2);
+        CHECK(seen.changes[2].second >= start2);
+    }
+    std::size_t inGap = 0;
+    for (const auto &[idx, pos, dur, f] : seen.pos) {
+        CHECK(pos <= dur + 1e-9);
+        if (idx == 0 && f > av.size() / 2 && f < start1) inGap++;
+        if (f < start1) CHECK(idx <= 0);
+    }
+    std::printf("  gap %.2f s: %zu position events during the first gap\n", gap, inGap);
+}
+
+// Manual jumps during a gap: next starts the next track at once (no remaining gap), a
+// seek replays the current track; pause/resume inside a gap keeps it exact.
+void gapJumps(const std::string &dir) {
+    const std::string e1 = dir + "/e1.flac", e2 = dir + "/e2.flac";
+    CHECK(lmtest::makeTone(e1, 44100, 11025, 330, "-c:a flac -f flac"));
+    CHECK(lmtest::makeTone(e2, 44100, 11025, 440, "-c:a flac -f flac"));
+    {
+        Recorder rec;
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.gapSeconds = 5.0; // longer than the ring: the decoder waits inside the gap
+        cfg.onEvent = std::ref(rec);
+        lm::Player p(cfg);
+        p.enqueue({e1, e2});
+        p.play();
+        std::this_thread::sleep_for(700ms); // e1 (0.25 s) is over: inside the gap
+        auto st = p.state();
+        CHECK_EQ(st.index, 0);
+        CHECK(st.status == lm::Status::Playing);
+        CHECK(st.position <= st.track.duration + 1e-9);
+        CHECK_NEAR(st.position, 0.25, 1e-6);
+        p.seek(0.1); // replays e1 from 0.1; its natural end starts a new gap
+        p.sync();
+        CHECK_EQ(p.state().index, 0);
+        CHECK(p.state().position < 0.2);
+        std::this_thread::sleep_for(500ms);
+        CHECK_EQ(p.state().index, 0);
+        p.pause();
+        p.sync();
+        CHECK(p.state().status == lm::Status::Paused);
+        p.togglePause();
+        p.sync();
+        const auto t0 = Clock::now();
+        p.next(); // no gap on a manual skip
+        p.sync();
+        CHECK_EQ(p.state().index, 1);
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 3s));
+        CHECK(Clock::now() - t0 < 2s); // e2 is 0.25 s; no trailing 5 s gap
+        CHECK((rec.trackIndexes() == std::vector<int>{0, 1}));
+    }
+    {
+        // Pause inside the gap, resume: the output stays exact.
+        Tap tap(100000);
+        Recorder rec;
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.gapSeconds = 0.4;
+        cfg.onEvent = std::ref(rec);
+        cfg.outputTap = &Tap::fn;
+        cfg.outputTapUser = &tap;
+        {
+            lm::Player p(cfg);
+            p.enqueue({e1, e2});
+            p.play();
+            std::this_thread::sleep_for(450ms);
+            p.pause();
+            std::this_thread::sleep_for(200ms);
+            p.play();
+            CHECK(rec.waitFor(lm::EventType::EndOfQueue, 5s));
+        }
+        std::vector<float> expect = decodeAll(e1);
+        expect.resize(expect.size() + 17640 * 2, 0.0f);
+        const auto v2 = decodeAll(e2);
+        expect.insert(expect.end(), v2.begin(), v2.end());
+        const std::size_t got = tap.frames.load();
+        CHECK_EQ(got, expect.size() / 2);
+        std::size_t mismatch = 0;
+        for (std::size_t i = 0; i < std::min(got * 2, expect.size()); i++) mismatch += tap.buf[i] != expect[i];
+        CHECK_EQ(mismatch, 0u);
+    }
 }
 
 // Upsampling in the middle: a 44.1 kHz track between 48 kHz ones on a 48 kHz device.
@@ -607,6 +751,9 @@ int main() {
     const std::string dir = lmtest::fixtureDir("player");
     gapless(dir);
     gaplessUpsampled(dir);
+    gapBetweenTracks(dir, false);
+    gapBetweenTracks(dir, true);
+    gapJumps(dir);
     enqueueAtEnd(dir);
     errorsAndReentrancy(dir);
     commands(dir);

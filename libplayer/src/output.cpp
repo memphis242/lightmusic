@@ -24,6 +24,7 @@ struct OutputCallbacks {
 // Realtime thread: no locks, no allocation, no logging, no I/O.
 void OutputCallbacks::data(ma_device *device, void *out, const void *, ma_uint32 frames) {
     auto *self = static_cast<AudioOutput *>(device->pUserData);
+    LM_ASSERT_RT(self != nullptr && out != nullptr);
     float *o = static_cast<float *>(out);
     const std::size_t want = static_cast<std::size_t>(frames) * AudioOutput::kChannels;
     const std::size_t got = self->ring_.read(o, want);

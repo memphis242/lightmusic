@@ -253,6 +253,18 @@ streamed tracks are completed in the background during idle periods.
     background_fill: true
     pause_on_metered: false
   ```
+- **Silence between tracks (`playback.gap_seconds`, decided 2026-11-01)**: optional, default
+  0 = sample-exact gapless. When > 0 the decoder thread writes exactly
+  round(gap x device rate) zero frames into the ring between a track's last frame and the
+  next track's first, and records the next track's marker after them, so TrackChanged and
+  position 0 land on the first real sample (the previous track's position is clamped to
+  its duration meanwhile). Applies to **natural track ends only**: not after the last
+  track, not on next/prev/seek/playIndex (a jump during a gap starts the target at once;
+  a seek replays the current track, whose natural end gets a new gap). A failed open
+  between two tracks keeps the pending gap for the next track that opens. Pause during a
+  gap just pauses the device; a gap longer than the ring is fine (the decoder waits for
+  space as with audio). Hot: reload calls `Player::setGap`, read at the next natural
+  track end. Nothing changes in the audio callback (the silence is ordinary ring data).
 - **Frontends**: TUI (FTXUI) first, GUI later, both on the UI-free `libplayer` core.
 - **Opus transcoding**: promising, deferred. Target devices are a laptop and a phone with
   usually good connections, and sources are mostly MP3. Revisit if latency proves excessive.

@@ -19,6 +19,14 @@
 // handed to the device) to know which track is audible and where, so gapless
 // transitions and positions need no extra communication from the audio thread.
 //
+// Gap (PlayerConfig::gapSeconds): when a track ends naturally the decoder notes
+// round(gap * device rate) frames as due; once the next track has opened it writes that
+// many zero frames to the ring and only then records the next track's marker, so
+// TrackChanged and position 0 fall on its first real sample (the previous track's
+// position is clamped to its duration meanwhile). No next track (end of queue): nothing
+// is written. A job change (seek/skip/stop) drops the pending gap. The audio callback
+// is untouched: the silence is ordinary ring data.
+//
 // Seek/skip/stop flush: stop the device (callback no longer runs), retire the decoder
 // job (generation bump + ack), drop the ring contents, start a new job, wait for a short
 // prebuffer, restart the device. One device stays open throughout.
@@ -43,6 +51,7 @@
 #include "output.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -88,6 +97,18 @@ constexpr std::uint32_t kCh = detail::AudioOutput::kChannels;
 constexpr std::uint32_t kMaxChannels = 8;
 constexpr std::uint64_t kChunkFrames = 2048;
 constexpr std::uint64_t kConvFrames = 4096;
+constexpr double kMaxGapSeconds = 30.0;
+
+// Compile-time consistency of the pipeline limits.
+static_assert(kCh >= 1 && kCh <= kMaxChannels, "device channel count within decoder limit");
+static_assert(kChunkFrames > 0 && kConvFrames >= kChunkFrames, "converter output holds a decoded chunk");
+static_assert(kMaxGapSeconds > 0 && kMaxGapSeconds * 768000.0 * kCh < 9.0e15,
+              "longest gap at the highest supported rate is exact in double and fits a 64-bit frame count");
+static_assert(sizeof(std::uint64_t) == 8, "frame counters and ring positions are 64-bit");
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free && std::atomic<double>::is_always_lock_free,
+              "decoder/control-thread atomics must not take a hidden lock");
+
+double clampGap(double s) { return std::isnan(s) ? 0.0 : std::clamp(s, 0.0, kMaxGapSeconds); }
 
 struct Marker {
     std::uint64_t ringFrame = 0; // ring write position (frames) where the track starts
@@ -147,6 +168,7 @@ struct Player::Impl {
     // startAt() gives up when cmdSeq moved past the value recorded with the command it
     // is handling (i.e. a superseding command was queued after it).
     std::atomic<std::uint64_t> cmdSeq{0};
+    std::atomic<double> gapSec{0.0}; // read by the decoder thread at each natural track end
     std::uint64_t seenSeq = 0;                // control thread
     std::atomic<std::uint64_t> openingGen{0}; // generation + 1 of the open in progress, 0 if none
     // A superseded startAt() leaves the player on the track it was opening (index, status =
@@ -252,11 +274,13 @@ struct Player::Impl {
         : cfg(std::move(c)), ring(ringSamples(48000)) {
         out.tap = cfg.outputTap;
         out.tapUser = cfg.outputTapUser;
+        gapSec.store(clampGap(cfg.gapSeconds));
         decoderThread = std::thread([this] { decoderMain(); });
         controlThread = std::thread([this] { controlMain(); });
     }
 
     std::size_t ringSamples(std::uint32_t rate) const {
+        LM_ASSERT(rate > 0, "ring sized for a real device rate");
         return static_cast<std::size_t>(std::max(0.05, cfg.ringSeconds) * rate) * kCh;
     }
 
@@ -400,6 +424,7 @@ struct Player::Impl {
             decoderExhausted = false;
         }
         ring.discardAll(); // safe: callback stopped, decoder idle
+        LM_ASSERT(ring.readable() == 0, "flush leaves the ring empty");
         out.endOfStream.store(false);
         out.drained.store(false);
         draining = false;
@@ -777,6 +802,8 @@ struct Player::Impl {
         // Converter bookkeeping for the current track: frames in, frames written, and
         // leading output frames still to drop (the converter's output latency).
         std::uint64_t trackIn = 0, trackOut = 0, convSkip = 0;
+        // Silence frames due before the next track's first frame (natural track end only).
+        std::uint64_t gapDue = 0;
         std::vector<float> in(kChunkFrames * kMaxChannels), cv(kConvFrames * kCh);
         const auto waitDur = std::chrono::duration_cast<Clock::duration>(
             std::chrono::duration<double>(std::max(0.01, cfg.ringSeconds / 4)));
@@ -805,6 +832,7 @@ struct Player::Impl {
                         startFrame = job.startFrame;
                         devRate = job.devRate;
                         dec = std::move(job.preopened);
+                        gapDue = 0; // a jump (seek/skip/playIndex) never gets a gap
                         needOpen = active;
                         exhausted = false;
                         dcv.notify_all();
@@ -862,13 +890,27 @@ struct Player::Impl {
                         dec.reset();
                     }
                 }
-                std::lock_guard lk(dm);
+                std::unique_lock lk(dm);
                 if (gen != seen) continue;
                 if (!dec) {
                     decoderErrors.push_back(err);
                     idx++;
                     startFrame = 0;
-                    continue;
+                    continue; // a pending gap carries over to the next track that opens
+                }
+                if (gapDue) {
+                    // The next track exists: write the silence, then mark its start.
+                    lk.unlock();
+                    std::fill(in.begin(), in.end(), 0.0f);
+                    std::uint64_t written = 0, noSkip = 0;
+                    bool ok = true;
+                    while (ok && written < gapDue) {
+                        const std::uint64_t n = std::min<std::uint64_t>(kChunkFrames, gapDue - written);
+                        ok = pushFrames(in.data(), n, kCh, nullptr, cv, 1.0f, seen, waitDur, written, noSkip);
+                    }
+                    lk.lock();
+                    if (!ok || gen != seen) continue; // job retired during the gap
+                    gapDue = 0;
                 }
                 const auto info = infoFor(path, *dec);
                 gain = 1.0f;
@@ -876,6 +918,8 @@ struct Player::Impl {
                     gain = std::pow(10.0f, (*info.trackGainDb + cfg.replayGainPreampDb) / 20.0f);
                 pokeControl = true;
                 trackIn = trackOut = 0;
+                LM_ASSERT(markers.empty() || markers.back().ringFrame <= ring.totalWritten() / kCh,
+                          "track markers are ordered by ring position");
                 markers.push_back(Marker{ring.totalWritten() / kCh, idx, startFrame, info});
                 needOpen = false;
             }
@@ -920,6 +964,7 @@ struct Player::Impl {
                 }
                 dec.reset();
                 dropConverter();
+                gapDue = static_cast<std::uint64_t>(std::llround(gapSec.load(std::memory_order_relaxed) * devRate));
                 idx++;
                 startFrame = 0;
                 needOpen = true;
@@ -958,6 +1003,7 @@ struct Player::Impl {
                 float *w = const_cast<float *>(data); // points into `cv` or the caller's buffer
                 for (std::size_t i = 0; i < total; i++) w[i] = std::clamp(w[i] * gain, -1.0f, 1.0f);
             }
+            LM_ASSERT(ring.totalWritten() % kCh == 0, "ring holds whole frames");
             while (off < total) {
                 off += ring.write(data + off, total - off);
                 if (off < total) {
@@ -987,6 +1033,9 @@ void Player::next() { impl_->push(Cmd{Cmd::Next}); }
 void Player::prev() { impl_->push(Cmd{Cmd::Prev}); }
 void Player::seek(double seconds) { impl_->push(Cmd{Cmd::Seek, {}, 0, seconds}); }
 void Player::setVolume(float v) { impl_->push(Cmd{Cmd::Volume, {}, 0, static_cast<double>(v)}); }
+void Player::setGap(double seconds) {
+    if (!std::isnan(seconds)) impl_->gapSec.store(clampGap(seconds), std::memory_order_relaxed);
+}
 PlayerState Player::state() const { return impl_->stateNow(); }
 void Player::sync() {
     // From an onEvent handler (the control thread) waiting would deadlock: the barrier

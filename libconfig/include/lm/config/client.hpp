@@ -21,9 +21,10 @@ struct ClientSettings {
     bool backgroundFill = true;
     bool pauseOnMetered = false;
     std::string cacheDir; // empty: $XDG_CACHE_HOME/lightmusic
-    // playback (hot: volume)
+    // playback (hot: volume, gapSeconds)
     int volume = 100; // percent, 0..150 (above 100: software gain, as the volume keys)
     ReplayGain replayGain = ReplayGain::Off;
+    double gapSeconds = 0; // silence between tracks, 0..30 (0: gapless)
     // ui
     bool showCacheMarkers = true;
     bool saveSettings = true; // write UI changes (volume) back into cfg.yaml

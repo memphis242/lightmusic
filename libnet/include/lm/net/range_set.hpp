@@ -44,6 +44,9 @@ public:
     static std::optional<RangeSet> parse(const std::string &s);
 
 private:
+    // Sorted, non-empty, disjoint and coalesced (no two ranges touch). Checked after
+    // every mutation when assertions are on; O(n), so debug builds only.
+    void checkInvariants() const;
     std::vector<Range> r_;
 };
 

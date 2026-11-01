@@ -14,6 +14,7 @@
 #pragma once
 
 #include <chrono>
+#include <limits>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -22,6 +23,8 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#include "lm/assert.hpp"
 
 namespace lm::config {
 
@@ -244,6 +247,8 @@ private:
 bool parseBool(const Value &v, bool &out, std::string &err);
 bool parseInt(const Value &v, long long lo, long long hi, long long &out, std::string &err);
 bool parseString(const Value &v, std::string &out, std::string &err);
+// A finite decimal number in [lo, hi] (whole numbers accepted; nan/inf refused).
+bool parseFloat(const Value &v, double lo, double hi, double &out, std::string &err);
 bool parseList(const Value &v, std::vector<std::string> &out, std::string &err);
 
 namespace detail {
@@ -265,6 +270,13 @@ template <class T> Field<T> boolField(std::string key, bool T::*p, bool hot = fa
 
 template <class T, class I> Field<T> intField(std::string key, I T::*p, long long lo, long long hi, bool hot = false) {
     static_assert(std::is_integral_v<I>);
+    static_assert(sizeof(I) <= sizeof(long long), "parsed through long long");
+    // Schema invariants (programmer error, not user input): a non-empty range that the
+    // member type can hold, so the static_cast below never truncates.
+    LM_ASSERT(lo <= hi, "intField: empty range");
+    LM_ASSERT(static_cast<long double>(lo) >= static_cast<long double>(std::numeric_limits<I>::min()) &&
+                  static_cast<long double>(hi) <= static_cast<long double>(std::numeric_limits<I>::max()),
+              "intField: range does not fit the member type");
     auto f = detail::base(std::move(key), p, hot);
     f.set = [p, lo, hi](T &t, const Value &v, std::string &err) {
         long long n = 0;
@@ -272,6 +284,13 @@ template <class T, class I> Field<T> intField(std::string key, I T::*p, long lon
         t.*p = static_cast<I>(n);
         return true;
     };
+    return f;
+}
+
+template <class T> Field<T> floatField(std::string key, double T::*p, double lo, double hi, bool hot = false) {
+    LM_ASSERT(lo <= hi, "floatField: empty range");
+    auto f = detail::base(std::move(key), p, hot);
+    f.set = [p, lo, hi](T &t, const Value &v, std::string &err) { return parseFloat(v, lo, hi, t.*p, err); };
     return f;
 }
 
@@ -307,6 +326,8 @@ template <class T> Field<T> pathField(std::string key, std::string T::*p, bool h
 
 template <class T, class E>
 Field<T> enumField(std::string key, E T::*p, std::vector<std::pair<std::string, E>> names, bool hot = false) {
+    static_assert(std::is_enum_v<E>);
+    LM_ASSERT(!names.empty(), "enumField: no accepted names");
     auto f = detail::base(std::move(key), p, hot);
     f.set = [p, names](T &t, const Value &v, std::string &err) {
         std::string s;
