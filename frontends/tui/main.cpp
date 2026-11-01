@@ -930,6 +930,19 @@ int run(int argc, char **argv) {
                     player.seek(std::max(0.0, player.state().position - lmtui::kSeekStep));
                     break;
                 case lmtui::Command::SeekForward: player.seek(player.state().position + lmtui::kSeekStep); break;
+                case lmtui::Command::SeekStart:
+                    if (ui.st.status != lm::Status::Stopped) player.seek(0);
+                    break;
+                case lmtui::Command::SeekEnd:
+                case lmtui::Command::SeekPercent: {
+                    // Absolute targets from the track length (unknown length: ignored).
+                    const lm::PlayerState now = player.state();
+                    const double dur = now.track.duration;
+                    if (now.status == lm::Status::Stopped || dur <= 0) break;
+                    player.seek(cmd == lmtui::Command::SeekEnd ? lmtui::endSeekTarget(dur)
+                                                               : dur * lmtui::percentKey(key) / 100.0);
+                    break;
+                }
                 // Step from the player's volume (or our not-yet-applied target), not
                 // the UI copy, which lags until VolumeChanged arrives; otherwise key
                 // repeat would lose steps.

@@ -191,6 +191,22 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (queue run)"; cat "$f"; fail=1
 done
+# Seek keys (20 s tracks): 5 -> 50 %, End -> last 5 s, Home -> start; g/G still move the
+# selection.
+: > "$TMP/log8"
+w8() { n=200; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log8"; do sleep 0.05; n=$((n - 1)); done; }
+{ w8 Playing; sleep 0.3
+  printf 5; w8 "0:1[01] / 0:20"
+  printf '\033[F'; w8 "0:1[56] / 0:20"
+  printf '\033[H'; sleep 0.5
+  printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+    timeout 30 script -qfec "$BIN --null '$TMP/music/1 First.opus'" "$TMP/log8" >/dev/null 2>&1
+rc=$?
+[ $rc -eq 0 ] || { echo "FAIL: seek run exit status $rc"; tail -c 1000 "$TMP/log8" | cat -v; fail=1; }
+grep -q "0:1[01] / 0:20" "$TMP/log8" || { echo "FAIL: 5 did not seek to 50%"; fail=1; }
+grep -q "0:1[56] / 0:20" "$TMP/log8" || { echo "FAIL: End did not seek to the last 5 s"; fail=1; }
+# After Home the position restarts below 0:05 (it was >= 0:15).
+tail -c 3000 "$TMP/log8" | grep -q "0:0[0-4] / 0:20" || { echo "FAIL: Home did not seek to the start"; fail=1; }
 # A group-writable cfg.yaml is refused before the terminal is touched.
 chmod 620 "$CFG"
 out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?

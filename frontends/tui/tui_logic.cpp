@@ -159,8 +159,11 @@ Command mapKey(std::string_view k) {
     if (k == "enter") return Command::PlaySelected;
     if (k == "k" || k == "up") return Command::SelectUp;
     if (k == "j" || k == "down") return Command::SelectDown;
-    if (k == "g" || k == "home") return Command::SelectFirst;
-    if (k == "G" || k == "end") return Command::SelectLast;
+    if (k == "g") return Command::SelectFirst;
+    if (k == "G") return Command::SelectLast;
+    if (k == "home") return Command::SeekStart;
+    if (k == "end") return Command::SeekEnd;
+    if (percentKey(k) >= 0) return Command::SeekPercent;
     if (k == "pageup") return Command::PageUp;
     if (k == "pagedown") return Command::PageDown;
     if (k == "q" || k == "ctrl-c") return Command::Quit;
@@ -185,6 +188,10 @@ Command mapQueueKey(std::string_view k) {
     if (k == "a" || k == "A") return Command::None; // the queue holds what is queued already
     return mapKey(k);
 }
+
+int percentKey(std::string_view k) { return k.size() == 1 && k[0] >= '0' && k[0] <= '9' ? (k[0] - '0') * 10 : -1; }
+
+double endSeekTarget(double duration) { return duration > 0 ? std::max(0.0, duration - kEndSeek) : -1; }
 
 int nextRepeat(int repeat) { return repeat == 0 ? 1 : repeat == 1 ? 2 : 0; }
 
@@ -350,10 +357,12 @@ const std::vector<std::string> &helpLines() {
         "space      play / pause",
         "n / p      next / previous track",
         "← / →      seek -5 s / +5 s",
+        "Home / End start of the track / its last 5 s",
+        "0 … 9      seek to 0% … 90%",
         "+ / -      volume up / down",
         "enter      play selected track",
         "j k ↑ ↓    move selection",
-        "g G        first / last track",
+        "g G        first / last row",
         "r          repeat: off → all → one",
         "s          shuffle on / off",
         "a / A      add selected to the queue / play it next",
