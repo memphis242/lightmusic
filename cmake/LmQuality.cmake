@@ -46,10 +46,13 @@ target_compile_options(lm_warnings INTERFACE
 # so ctest sees them.
 set(_lm_ubsan_extra float-divide-by-zero,float-cast-overflow)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  # implicit-conversion: implicit-integer-truncation + sign-change (as -Wconversion,
-  # but at runtime). unsigned-integer-overflow is NOT enabled: hashing/PRNG/ring
-  # indices wrap on purpose (well-defined) and it reports those.
-  string(APPEND _lm_ubsan_extra ",implicit-conversion,local-bounds,nullability")
+  # implicit-integer-truncation: a value changed by an implicit narrowing at runtime.
+  # The rest of implicit-conversion (sign-change) is not enabled: it fires inside
+  # libstdc++ headers (char <-> unsigned char in std::string/charconv), which we cannot
+  # change; our own code is covered statically by -Wsign-conversion.
+  # unsigned-integer-overflow is not enabled either: hashing/PRNG/ring indices wrap on
+  # purpose (well-defined) and it reports those.
+  string(APPEND _lm_ubsan_extra ",implicit-integer-truncation,local-bounds,nullability")
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   string(APPEND _lm_ubsan_extra ",bounds-strict")
 endif()

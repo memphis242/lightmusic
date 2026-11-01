@@ -206,7 +206,7 @@ tests, RelWithDebInfo/Release for shipping); clang is an additional checking bui
 | Option | Default | Effect |
 |---|---|---|
 | `LM_WERROR` | ON for Release/RelWithDebInfo/MinSizeRel, OFF for Debug | `-Werror` on our code (CI always sets ON) |
-| `LM_ASAN` | OFF | ASan + UBSan, incl. float-divide-by-zero, float-cast-overflow, `bounds-strict` (gcc) or implicit-conversion/local-bounds/nullability (clang); any finding aborts |
+| `LM_ASAN` | OFF | ASan + UBSan, incl. float-divide-by-zero, float-cast-overflow, `bounds-strict` (gcc) or implicit-integer-truncation/local-bounds/nullability (clang); any finding aborts |
 | `LM_TSAN` | OFF | ThreadSanitizer (exclusive with `LM_ASAN`) |
 | `LM_ASSERTS` | OFF | keep `LM_ASSERT` checks in optimised builds (see Assertions) |
 | `LM_HARDENING` | ON | optimised builds: `_FORTIFY_SOURCE=3`, `-fstack-protector-strong`, `-fstack-clash-protection` |

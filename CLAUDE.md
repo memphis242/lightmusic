@@ -44,6 +44,9 @@ Decisions recorded:
   libstdc++ (`streambuf::gptr`) that cannot be fixed in our code.
 - UBSan `unsigned-integer-overflow` (clang) is off: unsigned wrap is well defined and used
   on purpose (hashes, PRNGs, ring-buffer indices).
+- clang UBSan `implicit-conversion` is limited to `implicit-integer-truncation`: the
+  sign-change part fires inside libstdc++ headers (char <-> unsigned char), and our
+  code is covered for sign changes statically by `-Wsign-conversion`.
 - MSan is not used: it needs every linked library (libstdc++, opusfile, vorbis, curl,
   sqlite, yaml-cpp, TagLib, sd-bus) built with MSan, otherwise it reports false positives
   on every value they return. ASan+UBSan, `-ftrivial-auto-var-init=pattern`,

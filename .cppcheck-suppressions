@@ -11,6 +11,9 @@ unmatchedSuppression
 // Tests use non-fatal CHECK(x) followed by code that assumes x (CHECK(fd >= 0); write(fd..)).
 // On a failed CHECK the test is already failing; cppcheck reads the CHECK as "may be false".
 invalidFunctionArg:*/tests/*
+invalidFunctionArg:tests/*
 containerOutOfBounds:*/tests/*
+containerOutOfBounds:tests/*
 // Single-threaded test setup.
 getpwuidCalled:*/tests/*
+getpwuidCalled:tests/*

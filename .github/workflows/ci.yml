@@ -50,7 +50,7 @@ jobs:
             cc: clang
             build_type: RelWithDebInfo
             cmake_args: -DLM_WERROR=ON
-          # clang-only UBSan checks (implicit-conversion, local-bounds, nullability).
+          # clang-only UBSan checks (implicit-integer-truncation, local-bounds, nullability).
           - name: clang-asan-ubsan
             cc: clang
             build_type: Debug
