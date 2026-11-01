@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <fstream>
 #include <regex>
 #include <sstream>
@@ -107,6 +108,48 @@ static bool closed_within(int fd, int ms) {
     return false;
 }
 
+// Polls `pred` until it holds or `ms` have passed (generous deadlines: the suite runs
+// in parallel, under sanitizers and on loaded CI machines). Returns the last result.
+template <class Pred> static bool wait_until(Pred pred, int ms = 30000) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    for (;;) {
+        if (pred()) return true;
+        if (std::chrono::steady_clock::now() >= end) return pred();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+
+// True once the server has read everything client socket `fd` sent to 127.0.0.1:`port`,
+// i.e. the server-side socket's receive queue in /proc/net/tcp is empty. A connection
+// still waiting in the listen backlog or in the worker queue has unread bytes; only a
+// worker reads them. This is how the tests know a connection occupies a worker.
+static bool server_drained(int port, int fd) {
+    sockaddr_in me{};
+    socklen_t len = sizeof me;
+    if (getsockname(fd, reinterpret_cast<sockaddr *>(&me), &len) != 0) return false;
+    char want_local[32], want_remote[32];
+    std::snprintf(want_local, sizeof want_local, "0100007F:%04X", unsigned(port));
+    std::snprintf(want_remote, sizeof want_remote, "0100007F:%04X", unsigned(ntohs(me.sin_port)));
+    std::ifstream f("/proc/net/tcp");
+    std::string line;
+    std::getline(f, line);  // header
+    while (std::getline(f, line)) {
+        std::istringstream in(line);
+        std::string sl, local, remote, st, queues;
+        in >> sl >> local >> remote >> st >> queues;  // queues = tx_queue:rx_queue (hex)
+        if (local == want_local && remote == want_remote)
+            return queues.size() > 9 && std::strtoul(queues.c_str() + 9, nullptr, 16) == 0;
+    }
+    return false;
+}
+
+// True if the peer has closed `fd` (EOF or reset), without waiting.
+static bool peer_closed(int fd) {
+    char b;
+    const ssize_t n = recv(fd, &b, 1, MSG_PEEK | MSG_DONTWAIT);
+    return n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) return 2;
     std::string bin = argv[1];
@@ -182,14 +225,11 @@ int main(int argc, char **argv) {
 
     // wait for the initial scan
     std::string changes;
-    for (int i = 0; i < 250; ++i) {
+    wait_until([&] {
         r = get("/api/v1/library/changes?since=0");
-        if (r && r->status == 200 && count(r->body, "\"codec\":") == 2) {
-            changes = r->body;
-            break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
+        if (r && r->status == 200 && count(r->body, "\"codec\":") == 2) changes = r->body;
+        return !changes.empty();
+    });
     CHECK(!changes.empty());
     CHECK(changes.find("\"full\":true") != std::string::npos);
     long rev = std::atol(re1(changes, "\"revision\":([0-9]+)").c_str());
@@ -334,24 +374,41 @@ int main(int argc, char **argv) {
     // per-peer connection cap (--max-conns-per-ip 12): the 13th concurrent connection is
     // closed at once; capacity comes back when the others close
     {
+        // Fill the cap with 12 connections that each occupy a worker. A connection of
+        // the tests above releases its per-peer slot only when its worker finishes, so
+        // until then one of the 12 may itself be refused: then start over.
         std::vector<int> held;
-        for (int i = 0; i < 12; ++i) {
-            int fd = tcp(port);
-            (void)send(fd, "GET", 3, MSG_NOSIGNAL);  // occupies a worker (header phase)
-            held.push_back(fd);
+        const auto fill_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        bool filled = false;
+        while (!filled && std::chrono::steady_clock::now() < fill_deadline) {
+            for (int fd : held) (void)close(fd);
+            held.clear();
+            for (int i = 0; i < 12; ++i) {
+                int fd = tcp(port);
+                (void)send(fd, "GET", 3, MSG_NOSIGNAL);  // occupies a worker (header phase)
+                held.push_back(fd);
+            }
+            bool refused = false;
+            wait_until([&] {
+                bool all = true;
+                for (int fd : held) {
+                    if (peer_closed(fd)) refused = true;
+                    else if (!server_drained(port, fd)) all = false;
+                }
+                return refused || all;
+            });
+            filled = !refused;
+            if (!filled) std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        CHECK(filled);
         int extra = tcp(port);
         CHECK(extra >= 0 && closed_within(extra, 1000));
         if (extra >= 0) (void)close(extra);
         for (int fd : held) (void)close(fd);
-        bool back = false;
-        for (int i = 0; i < 50 && !back; ++i) {
+        CHECK(wait_until([&] {
             auto p = cli.Get("/api/v1/ping");
-            back = p && p->status == 200;
-            if (!back) std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        }
-        CHECK(back);
+            return p && p->status == 200;
+        }));
     }
 
     // 10 concurrent range downloads (also exercises the server under TSan)
@@ -380,23 +437,23 @@ int main(int argc, char **argv) {
     }
 
     // modify the file: the stream ETag changes at once, the index follows (inotify)
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));  // distinct mtime
     {
-        std::ofstream f(mp3, std::ios::binary | std::ios::app);
-        f << std::string(100, '\0');
+        const auto before = fs::last_write_time(mp3);
+        {
+            std::ofstream f(mp3, std::ios::binary | std::ios::app);
+            f << std::string(100, '\0');
+        }
+        fs::last_write_time(mp3, before + std::chrono::seconds(1));  // distinct mtime, no sleep
     }
     std::string file2 = slurp(mp3);
     r = get("/api/v1/stream/" + id, {{"Range", "bytes=0-9"}, {"If-Range", etag}});
     CHECK(r && r->status == 200 && r->body == file2);  // stale validator → full new file
     std::string etag2 = r ? r->get_header_value("ETag") : "";
     CHECK(!etag2.empty() && etag2 != etag);
-    bool indexed = false;
-    for (int i = 0; i < 250 && !indexed; ++i) {
-        auto t = get("/api/v1/tracks/" + id);
-        indexed = t && t->body.find(etag2.substr(1, etag2.size() - 2)) != std::string::npos;
-        if (!indexed) std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    CHECK(indexed);
+    CHECK(etag2.size() >= 2 && wait_until([&] {
+              auto t = get("/api/v1/tracks/" + id);
+              return t && t->body.find(etag2.substr(1, etag2.size() - 2)) != std::string::npos;
+          }));
     r = get("/api/v1/library/changes?since=" + std::to_string(rev));
     CHECK(r && r->status == 200 && count(r->body, "\"codec\":") == 1 &&
           r->body.find("\"title\":\"One\"") != std::string::npos);
@@ -474,7 +531,7 @@ int main(int argc, char **argv) {
         CHECK(closed_within(body, 1000));
         int busy = tcp(q.port);
         (void)send(busy, "G", 1, MSG_NOSIGNAL);  // holds the only worker (header phase, 30 s)
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        CHECK(wait_until([&] { return server_drained(q.port, busy); }));  // worker holds it
         std::vector<int> extra;
         for (int i = 0; i < 8; ++i) extra.push_back(tcp(q.port));
         int refused = 0;
