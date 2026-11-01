@@ -219,7 +219,7 @@ static void test_id_stability(const std::string &tmp) {
     (void)::kill(pid, SIGKILL);
     int wst = 0;
     (void)::waitpid(pid, &wst, 0);
-    if (!killed_mid || !WIFSIGNALED(wst)) std::puts("  note: scan finished before it could be killed");
+    if (!killed_mid || !WIFSIGNALED(wst)) std::println("  note: scan finished before it could be killed");
     {
         Db w(dbp);
         Indexer ix(w, {lib});

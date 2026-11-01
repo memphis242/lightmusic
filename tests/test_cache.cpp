@@ -1190,7 +1190,7 @@ void renameCrash() {
 bool noTempNames(const std::string &dir) {
     for (const auto &f : listTracks(dir))
         if (f.rfind("renaming--", 0) == 0) {
-            (void)std::fprintf(stderr, "  leftover %s\n", f.c_str());
+            std::println(stderr, "  leftover {}", f);
             return false;
         }
     return true;
@@ -1290,7 +1290,7 @@ void restartOtherUrl() {
             const std::int64_t id = ids[i];
             std::string err;
             auto s = c->openTrack(id, &err);
-            if (!s) (void)std::fprintf(stderr, "  run %d track %lld: %s\n", run, static_cast<long long>(id), err.c_str());
+            if (!s) std::println(stderr, "  run {} track {}: {}", run, id, err);
             CHECK(s && readAll(*s) == *datas[i]);
             s.reset();
             CHECK(waitUntil([&] { return c->cacheInfo(id).state == CacheState::Cached; }, 5s));

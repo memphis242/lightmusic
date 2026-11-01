@@ -456,9 +456,7 @@ std::string like_pattern(const std::string &q) {
 std::string Db::library_id() {
     Stmt s(db_, "SELECT value FROM meta WHERE key='library'");
     if (!s.step()) return {};
-    char b[24];
-    (void)std::snprintf(b, sizeof b, "%016llx", static_cast<unsigned long long>(s.i64(0)));
-    return b;
+    return std::format("{:016x}", static_cast<std::uint64_t>(s.i64(0)));
 }
 
 std::string Db::json_changes(std::int64_t since, const std::string &library) {

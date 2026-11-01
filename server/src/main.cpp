@@ -96,7 +96,7 @@ int main(int argc, char **argv) try {
     // The writer creates the database, its schema and WAL mode once, before any reader.
     Db writer(cfg->db_path);
     Indexer ix(writer, roots);
-    ix.log = [](const std::string &m) { (void)std::fprintf(stderr, "lightmusicd: %s\n", m.c_str()); };
+    ix.log = [](const std::string &m) { lm::diagln(stderr, "lightmusicd: {}", m); };
     if (cfg->scan_only) {
         auto st = ix.full_scan();
         if (!lm::outln(stdout,
