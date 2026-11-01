@@ -1,6 +1,7 @@
 // Minimal streaming JSON writer (output only). Commas are inserted automatically.
 #pragma once
 
+#include <concepts>
 #include <cstdint>
 #include <format>
 #include <iterator>
@@ -9,6 +10,15 @@
 #include <vector>
 
 namespace lm::server {
+
+class Json;
+// A value Json::value() has an exact overload for: strings, bool, int and int64_t.
+// Other arithmetic types (size_t, double, unsigned) would convert implicitly or be
+// ambiguous, so kv() refuses them at the call site instead of deep inside value().
+template <class T>
+concept JsonScalar = std::convertible_to<const T &, std::string_view> || std::same_as<T, const char *> ||
+                     std::same_as<T, char *> || std::same_as<T, bool> || std::same_as<T, int> ||
+                     std::same_as<T, std::int64_t>;
 
 class Json {
 public:
@@ -32,7 +42,9 @@ public:
     // Raw, already-serialised JSON value.
     Json &raw(std::string_view v) { pre(); out_ += v; return *this; }
 
-    template <class T> Json &kv(std::string_view k, const T &v) { key(k); return value(v); }
+    template <class T>
+        requires JsonScalar<T>
+    Json &kv(std::string_view k, const T &v) { key(k); return value(v); }
 
     const std::string &str() const { return out_; }
     std::string take() { return std::move(out_); }

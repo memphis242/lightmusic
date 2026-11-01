@@ -80,9 +80,25 @@ platform: Fedora 43 (gcc 15, clang 21). See README.md for the user-facing docs.
    string/buffer to avoid extra allocations. Signal handlers, LM_ASSERT/LM_ASSERT_RT and
    the realtime audio callback keep `write(2)` or no I/O (formatting allocates, stdio
    locks). Tests may use `std::println` directly.
-11. **Behaviour stays unchanged when fixing warnings**: run the full test suite after each
+11. **Interfaces and constraints (concepts, strong typing).** C++26 Contracts
+   (`pre`/`post`/`contract_assert`) are not available in gcc 15 / clang 21, so
+   preconditions and postconditions stay `LM_ASSERT` (9). For "interface-like" compile-time
+   requirements use C++20 **concepts**: constrain every template parameter with a standard
+   concept (`std::integral`, `std::floating_point`, `std::invocable`, `std::copyable`,
+   `std::ranges::range`, ...) or a small named project concept when it states a real
+   requirement (e.g. `IntFieldValue`, `JsonScalar`), instead of `static_assert`/`enable_if`
+   in the body, so misuse fails at the call site naming the requirement. Constraints that
+   matter get a compile-fail test (`tests/compile_fail/`, `lm_compile_fail()` in
+   tests/CMakeLists.txt). Runtime polymorphism stays virtual where it is today
+   (ByteSource, Decoder: one call per buffer, and templates would grow the binaries):
+   interfaces have pure virtual functions, a virtual destructor and deleted copy
+   (owned through `unique_ptr`); implementations are `final` and every override says
+   `override`. Strong types (distinct types for frames vs bytes vs seconds, track id vs
+   index) only where a mix-up is plausible and the wrapper is cheap; no big refactors for
+   them.
+12. **Behaviour stays unchanged when fixing warnings**: run the full test suite after each
    batch of fixes.
-12. Do not modify `third_party/` (vendored; see third_party/VERSIONS.md).
+13. Do not modify `third_party/` (vendored; see third_party/VERSIONS.md).
 
 Decisions recorded:
 - `-Wuseless-cast` (gcc) is off for app and tests: re-evaluated for app code, all hits
@@ -127,7 +143,7 @@ CC=clang CXX=clang++ cmake -S . -B build-casan -G Ninja -DCMAKE_BUILD_TYPE=Debug
 
 # Static analysis (same scripts CI runs; inside fedora:43 they also install the tools)
 CC=clang CXX=clang++ cmake -S . -B build-analyze -G Ninja -DCMAKE_BUILD_TYPE=Debug
-run-clang-tidy -p build-analyze -quiet '^(?!.*(/third_party/|/_deps/)).*\.cpp$'
+run-clang-tidy -p build-analyze -quiet '^(?!.*(/third_party/|/_deps/|/compile_fail/)).*\.cpp$'
 cppcheck --project=build-analyze/compile_commands.json --enable=warning,performance,portability \
   --std=c++23 --inline-suppr --suppressions-list=.cppcheck-suppressions -i third_party \
   -i build-analyze/_deps --library=posix --check-level=exhaustive --error-exitcode=1 --quiet

@@ -32,6 +32,10 @@ struct Tags {
 
 class Decoder {
 public:
+    // An interface owned through unique_ptr: never copied or sliced.
+    Decoder() = default;
+    Decoder(const Decoder &) = delete;
+    Decoder &operator=(const Decoder &) = delete;
     virtual ~Decoder() = default;
     virtual Format format() const = 0;
     virtual std::uint32_t sampleRate() const = 0;

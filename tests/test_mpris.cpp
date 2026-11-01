@@ -14,6 +14,7 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include <csignal>
@@ -172,7 +173,9 @@ struct Client {
         free(s);
         return out;
     }
-    template <class T> T getT(const char *prop, char type, T dflt) {
+    template <class T>
+        requires std::is_trivially_copyable_v<T>
+    T getT(const char *prop, char type, T dflt) {
         sd_bus_error e{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
         T v = dflt;
         int r = sd_bus_get_property_trivial(bus, kName, kPath, kPlayer, prop, &e, type, &v);

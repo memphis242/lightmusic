@@ -16,6 +16,10 @@ namespace lm {
 class ByteSource {
 public:
     enum class Whence { Set, Cur, End };
+    // An interface owned through unique_ptr: never copied or sliced.
+    ByteSource() = default;
+    ByteSource(const ByteSource &) = delete;
+    ByteSource &operator=(const ByteSource &) = delete;
     virtual ~ByteSource() = default;
     // Reads up to n bytes. Returns the bytes read; fewer than n only at end of stream or
     // on error. May block (a network source would wait for data).

@@ -307,6 +307,9 @@ static_assert(le32(kOrderProbe) == 0x84030201u, "le32 is little-endian");
 
 // A Vorbis comment block as a byte stream that can be read or skipped forward.
 struct CommentStream {
+    CommentStream() = default;
+    CommentStream(const CommentStream &) = delete; // used by reference only; never sliced
+    CommentStream &operator=(const CommentStream &) = delete;
     virtual ~CommentStream() = default;
     virtual std::size_t read(unsigned char *dst, std::size_t n) = 0;
     virtual bool skip(std::uint64_t n) = 0;
