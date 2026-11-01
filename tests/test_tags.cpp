@@ -29,13 +29,21 @@ static void checkTags(const char *what, const Tags &t, const std::string &title,
 // ID3v2 frame header + body (v2.3 sizes are plain big-endian, v2.4 syncsafe).
 static bytes frame(const char *id, const bytes &body, int ver, unsigned char fmt = 0) {
     const auto n = static_cast<std::uint32_t>(body.size());
-    bytes f(id, id + 4);
-    if (ver == 4) f.insert(f.end(), {static_cast<unsigned char>(n >> 21 & 0x7F), static_cast<unsigned char>(n >> 14 & 0x7F),
-                                     static_cast<unsigned char>(n >> 7 & 0x7F), static_cast<unsigned char>(n & 0x7F)});
-    else f.insert(f.end(), {static_cast<unsigned char>(n >> 24), static_cast<unsigned char>(n >> 16),
-                            static_cast<unsigned char>(n >> 8), static_cast<unsigned char>(n)});
-    f.push_back(0);
-    f.push_back(fmt);
+    // Built as one fixed-size header and a single insert: the original push_back /
+    // initializer-list insert sequence trips a GCC 13 -O3 -Wstringop-overflow false
+    // positive inside std::vector's reallocation path.
+    const bool v4 = ver == 4;
+    const unsigned char hdr[10] = {
+        static_cast<unsigned char>(id[0]), static_cast<unsigned char>(id[1]),
+        static_cast<unsigned char>(id[2]), static_cast<unsigned char>(id[3]),
+        static_cast<unsigned char>(v4 ? (n >> 21 & 0x7F) : (n >> 24)),
+        static_cast<unsigned char>(v4 ? (n >> 14 & 0x7F) : (n >> 16)),
+        static_cast<unsigned char>(v4 ? (n >> 7 & 0x7F) : (n >> 8)),
+        static_cast<unsigned char>(v4 ? (n & 0x7F) : n),
+        0, fmt};
+    bytes f;
+    f.reserve(sizeof hdr + body.size());
+    f.assign(hdr, hdr + sizeof hdr);
     f.insert(f.end(), body.begin(), body.end());
     return f;
 }
