@@ -23,5 +23,5 @@ target_include_directories(player
   PUBLIC include
   PRIVATE src)
 target_link_libraries(player
-  PUBLIC Threads::Threads
+  PUBLIC Threads::Threads lm_assert
   PRIVATE lm_warnings lm_third_party PkgConfig::OPUSFILE PkgConfig::VORBISFILE)

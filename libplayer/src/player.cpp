@@ -99,6 +99,15 @@ constexpr std::uint64_t kChunkFrames = 2048;
 constexpr std::uint64_t kConvFrames = 4096;
 constexpr double kMaxGapSeconds = 30.0;
 
+// Compile-time consistency of the pipeline limits.
+static_assert(kCh >= 1 && kCh <= kMaxChannels, "device channel count within decoder limit");
+static_assert(kChunkFrames > 0 && kConvFrames >= kChunkFrames, "converter output holds a decoded chunk");
+static_assert(kMaxGapSeconds > 0 && kMaxGapSeconds * 768000.0 * kCh < 9.0e15,
+              "longest gap at the highest supported rate is exact in double and fits a 64-bit frame count");
+static_assert(sizeof(std::uint64_t) == 8, "frame counters and ring positions are 64-bit");
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free && std::atomic<double>::is_always_lock_free,
+              "decoder/control-thread atomics must not take a hidden lock");
+
 double clampGap(double s) { return std::isnan(s) ? 0.0 : std::clamp(s, 0.0, kMaxGapSeconds); }
 
 struct Marker {
@@ -271,6 +280,7 @@ struct Player::Impl {
     }
 
     std::size_t ringSamples(std::uint32_t rate) const {
+        LM_ASSERT(rate > 0, "ring sized for a real device rate");
         return static_cast<std::size_t>(std::max(0.05, cfg.ringSeconds) * rate) * kCh;
     }
 
@@ -414,6 +424,7 @@ struct Player::Impl {
             decoderExhausted = false;
         }
         ring.discardAll(); // safe: callback stopped, decoder idle
+        LM_ASSERT(ring.readable() == 0, "flush leaves the ring empty");
         out.endOfStream.store(false);
         out.drained.store(false);
         draining = false;
@@ -907,6 +918,8 @@ struct Player::Impl {
                     gain = std::pow(10.0f, (*info.trackGainDb + cfg.replayGainPreampDb) / 20.0f);
                 pokeControl = true;
                 trackIn = trackOut = 0;
+                LM_ASSERT(markers.empty() || markers.back().ringFrame <= ring.totalWritten() / kCh,
+                          "track markers are ordered by ring position");
                 markers.push_back(Marker{ring.totalWritten() / kCh, idx, startFrame, info});
                 needOpen = false;
             }
@@ -990,6 +1003,7 @@ struct Player::Impl {
                 float *w = const_cast<float *>(data); // points into `cv` or the caller's buffer
                 for (std::size_t i = 0; i < total; i++) w[i] = std::clamp(w[i] * gain, -1.0f, 1.0f);
             }
+            LM_ASSERT(ring.totalWritten() % kCh == 0, "ring holds whole frames");
             while (off < total) {
                 off += ring.write(data + off, total - off);
                 if (off < total) {
