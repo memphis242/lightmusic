@@ -293,6 +293,10 @@ struct Ui {
     bool showCacheMarkers = true;
     int selected = 0;
     bool help = false;
+    // Queue pane ("up next", v): replaces the list while open and takes the keys;
+    // qselected indexes st.upNext.
+    bool queueView = false;
+    int qselected = 0;
     // Last volume we asked for and the player has not yet confirmed. setVolume() is
     // asynchronous, so both ui.st and player.state() can lag during key repeat.
     std::optional<float> volumeTarget;
@@ -321,6 +325,33 @@ const char *statusGlyph(lm::Status s) {
 // now-playing block (3).
 int queueRows(int height) { return std::max(1, height - 6); }
 
+std::string nameOf(const Ui &ui, int entry) {
+    return entry >= 0 && static_cast<std::size_t>(entry) < ui.names.size() ? ui.names[static_cast<std::size_t>(entry)]
+                                                                           : std::string("?");
+}
+
+// The user queue pane: header plus the visible window of st.upNext.
+Element renderUpNext(const Ui &ui, int height) {
+    const auto &q = ui.st.upNext;
+    const int total = static_cast<int>(q.size());
+    const int visible = std::max(1, queueRows(height) - 1);
+    const int first = std::clamp(ui.qselected - visible / 2, 0, std::max(0, total - visible));
+    const int stop = std::min(total, first + visible);
+    Elements rows;
+    char head[64];
+    std::snprintf(head, sizeof head, "Up next: %d track%s", total, total == 1 ? "" : "s");
+    rows.push_back(hbox({text(head) | bold, filler(), text("J/K move  d remove  c clear  esc back") | dim}));
+    for (int i = first; i < stop; i++) {
+        char num[32];
+        std::snprintf(num, sizeof num, "%3d ", i + 1);
+        Element row = hbox({text("  "), text(num) | dim, text(nameOf(ui, q[static_cast<std::size_t>(i)]))});
+        if (i == ui.qselected) row = row | inverted;
+        rows.push_back(std::move(row));
+    }
+    if (q.empty()) rows.push_back(text("  (empty: a adds the selected track, A plays it next)") | dim);
+    return vbox(std::move(rows)) | yframe | flex;
+}
+
 Element render(const Ui &ui, int height) {
     const auto &st = ui.st;
     // Queue: only build the visible window around the selection (a 10k-track queue
@@ -339,14 +370,21 @@ Element render(const Ui &ui, int height) {
         const int cs = i < ui.cache.size() ? ui.cache[i] : -1;
         Element mark = cs < 0 || !ui.showCacheMarkers ? text("") : text(lmtui::cacheGlyph(cs, i < ui.pinned.size() && ui.pinned[i]) + " ");
         if (cs == 2 && ui.showCacheMarkers) mark = mark | color(Color::Cyan);
+        // Queued rows show their place in the user queue ("+1" plays next).
+        std::string inQueue;
+        for (std::size_t k = 0; k < st.upNext.size(); k++)
+            if (st.upNext[k] == static_cast<int>(i)) {
+                inQueue = "+" + std::to_string(k + 1) + " ";
+                break;
+            }
         Element row = hbox({text(cur ? std::string(statusGlyph(st.status)) + " " : "  "), text(num) | dim,
-                            mark, text(ui.names[i])});
+                            mark, text(inQueue) | color(Color::Yellow), text(ui.names[i])});
         if (cur) row = row | bold | color(Color::Green);
         if (sel) row = row | inverted;
         rows.push_back(std::move(row));
     }
     if (rows.empty()) rows.push_back(text("(no tracks)") | dim);
-    Element queue = vbox(std::move(rows)) | yframe | flex;
+    Element queue = ui.queueView ? renderUpNext(ui, height) : vbox(std::move(rows)) | yframe | flex;
 
     // Now playing: title (or file name), then artist and album when tagged.
     std::string title = "—", sub;
@@ -374,6 +412,8 @@ Element render(const Ui &ui, int height) {
               text(pos) | dim}),
         hbox({text(times + " "), gauge(frac) | flex, text(" "), text(vol)}),
         hbox({text(ui.message.empty() ? std::string("? help  q quit") : ui.message) | dim, filler(),
+              text(st.upNext.empty() || ui.queueView ? std::string() : "up next " + std::to_string(st.upNext.size()) + "  ") |
+                  color(Color::Yellow),
               text(ui.net) | dim}),
     });
 
@@ -414,9 +454,14 @@ void refreshCache(Ui &ui, lm::net::Client &client, bool offline) {
     ui.net = buf;
 }
 
-// The next few remote tracks after `index` go to the idle fill queue.
+// The next few remote tracks go to the idle fill queue: the user queue first, then the
+// list after `index`.
 void updateFillQueue(const Ui &ui, lm::net::Client &client, int index) {
     std::vector<std::int64_t> ids;
+    for (int e : ui.st.upNext) {
+        const auto k = static_cast<std::size_t>(e);
+        if (ids.size() < 3 && e >= 0 && k < ui.remote.size() && ui.remote[k]) ids.push_back(ui.remote[k]);
+    }
     for (std::size_t i = static_cast<std::size_t>(std::max(0, index + 1)); i < ui.remote.size() && ids.size() < 3; i++)
         if (ui.remote[i]) ids.push_back(ui.remote[i]);
     client.setFillQueue(std::move(ids));
@@ -441,6 +486,7 @@ void apply(Ui &ui, const lm::Event &ev) {
     case lm::EventType::EndOfQueue: ui.message = "end of queue"; break;
     default: break;
     }
+    ui.qselected = std::clamp(ui.qselected, 0, std::max(0, static_cast<int>(ui.st.upNext.size()) - 1));
 }
 
 // Hot-applies a reloaded configuration (UI thread).
@@ -847,8 +893,18 @@ int run(int argc, char **argv) {
             const int last = static_cast<int>(ui.paths.size()) - 1;
             auto select = [&](int i) { ui.selected = std::clamp(i, 0, last); };
 
+            // Selection in the list, or in the queue pane while it is open.
+            auto selectRel = [&](int to) {
+                if (!ui.queueView) return select(to);
+                ui.qselected = std::clamp(to, 0, std::max(0, static_cast<int>(ui.st.upNext.size()) - 1));
+            };
+            auto curSel = [&] { return ui.queueView ? ui.qselected : ui.selected; };
+            auto qEntry = [&]() -> int {
+                const auto k = static_cast<std::size_t>(ui.qselected);
+                return k < ui.st.upNext.size() ? ui.st.upNext[k] : -1;
+            };
             auto handleKey = [&](const std::string &key) {
-                const lmtui::Command cmd = lmtui::mapKey(key);
+                const lmtui::Command cmd = ui.queueView ? lmtui::mapQueueKey(key) : lmtui::mapKey(key);
                 if (cmd == lmtui::Command::None) return;
                 dirty = true;
                 if (cmd == lmtui::Command::Suspend) {
@@ -884,13 +940,48 @@ int run(int argc, char **argv) {
                     saveDue = std::chrono::steady_clock::now() + std::chrono::seconds(1);
                     break;
                 }
-                case lmtui::Command::PlaySelected: player.playIndex(ui.selected); break;
-                case lmtui::Command::SelectUp: select(ui.selected - 1); break;
-                case lmtui::Command::SelectDown: select(ui.selected + 1); break;
-                case lmtui::Command::SelectFirst: select(0); break;
-                case lmtui::Command::SelectLast: select(last); break;
-                case lmtui::Command::PageUp: select(ui.selected - page); break;
-                case lmtui::Command::PageDown: select(ui.selected + page); break;
+                case lmtui::Command::PlaySelected:
+                    if (!ui.queueView) {
+                        player.playIndex(ui.selected);
+                    } else if (const int e = qEntry(); e >= 0) {
+                        // Play a queued track now: it moves to the front and is skipped to
+                        // (it leaves the queue as it starts, like any queued track).
+                        player.queueMove(ui.qselected, 0, e);
+                        if (ui.st.status == lm::Status::Stopped && ui.st.index < 0) player.play();
+                        else player.next();
+                    }
+                    break;
+                case lmtui::Command::SelectUp: selectRel(curSel() - 1); break;
+                case lmtui::Command::SelectDown: selectRel(curSel() + 1); break;
+                case lmtui::Command::SelectFirst: selectRel(0); break;
+                case lmtui::Command::SelectLast: selectRel(ui.queueView ? static_cast<int>(ui.st.upNext.size()) - 1 : last); break;
+                case lmtui::Command::PageUp: selectRel(curSel() - page); break;
+                case lmtui::Command::PageDown: selectRel(curSel() + page); break;
+                case lmtui::Command::QueueAdd:
+                case lmtui::Command::QueuePlayNext: {
+                    const bool nextUp = cmd == lmtui::Command::QueuePlayNext;
+                    player.queueAddEntries({ui.selected}, nextUp);
+                    ui.message = (nextUp ? "plays next: " : "queued: ") + nameOf(ui, ui.selected);
+                    break;
+                }
+                case lmtui::Command::ToggleQueueView:
+                    ui.queueView = !ui.queueView;
+                    ui.qselected = 0;
+                    break;
+                case lmtui::Command::QueueMoveUp:
+                case lmtui::Command::QueueMoveDown:
+                    if (const int e = qEntry(); e >= 0) {
+                        const int to = ui.qselected + (cmd == lmtui::Command::QueueMoveUp ? -1 : 1);
+                        if (to >= 0 && to < static_cast<int>(ui.st.upNext.size())) {
+                            player.queueMove(ui.qselected, to, e);
+                            ui.qselected = to; // follows the entry
+                        }
+                    }
+                    break;
+                case lmtui::Command::QueueRemove:
+                    if (const int e = qEntry(); e >= 0) player.queueRemove(ui.qselected, e);
+                    break;
+                case lmtui::Command::QueueClear: player.queueClearUser(); break;
                 case lmtui::Command::Quit: running = false; break;
                 case lmtui::Command::TogglePin: {
 #ifdef LM_TUI_NET
@@ -921,7 +1012,9 @@ int run(int argc, char **argv) {
                     saveDue = std::chrono::steady_clock::now() + std::chrono::seconds(1);
                     break;
                 case lmtui::Command::ToggleHelp: ui.help = !ui.help; break;
-                case lmtui::Command::CloseHelp: ui.help = false; break;
+                case lmtui::Command::CloseHelp:
+                    ui.help = false;
+                    break;
                 }
             };
 
@@ -976,7 +1069,7 @@ int run(int argc, char **argv) {
                         if (ev.type == lm::EventType::ModeChanged && !saveDue)
                             saveDue = std::chrono::steady_clock::now() + std::chrono::seconds(1);
 #ifdef LM_TUI_NET
-                        if (client && ev.type == lm::EventType::TrackChanged) {
+                        if (client && (ev.type == lm::EventType::TrackChanged || ev.type == lm::EventType::QueueChanged)) {
                             updateFillQueue(ui, *client, ev.state.index);
                             g_cacheChanged = 1;
                         }

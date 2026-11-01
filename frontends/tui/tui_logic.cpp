@@ -170,7 +170,20 @@ Command mapKey(std::string_view k) {
     if (k == "P") return Command::TogglePin;
     if (k == "r") return Command::CycleRepeat;
     if (k == "s") return Command::ToggleShuffle;
+    if (k == "a") return Command::QueueAdd;
+    if (k == "A") return Command::QueuePlayNext;
+    if (k == "v") return Command::ToggleQueueView;
     return Command::None;
+}
+
+Command mapQueueKey(std::string_view k) {
+    if (k == "K") return Command::QueueMoveUp;
+    if (k == "J") return Command::QueueMoveDown;
+    if (k == "d" || k == "delete") return Command::QueueRemove;
+    if (k == "c") return Command::QueueClear;
+    if (k == "escape") return Command::ToggleQueueView;
+    if (k == "a" || k == "A") return Command::None; // the queue holds what is queued already
+    return mapKey(k);
 }
 
 int nextRepeat(int repeat) { return repeat == 0 ? 1 : repeat == 1 ? 2 : 0; }
@@ -249,6 +262,7 @@ std::vector<std::string> KeyParser::parse(bool final) {
                 else if (params == "4" || params == "8") key = "end";
                 else if (params == "5") key = "pageup";
                 else if (params == "6") key = "pagedown";
+                else if (params == "3") key = "delete";
                 break;
             default: break;
             }
@@ -342,6 +356,11 @@ const std::vector<std::string> &helpLines() {
         "g G        first / last track",
         "r          repeat: off → all → one",
         "s          shuffle on / off",
+        "a / A      add selected to the queue / play it next",
+        "v          show the queue (up next); in it:",
+        "  J / K      move down / up   d del  remove",
+        "  c          clear the queue  enter  play now",
+        "  esc / v    back to the list",
         "P          save offline / unsave (remote; not counted in the cache limit)",
         "?  esc     toggle / close this help",
         "q          quit",
