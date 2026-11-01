@@ -181,7 +181,8 @@ Requirement: anything streamed is kept so it can be replayed offline; partially
 streamed tracks are completed in the background during idle periods.
 
 - **Tee the network stream to disk.** The libcurl write callback appends bytes to both the
-  compressed ring buffer and a cache file `cache/<trackId>.<ext>.part`. Bytes are the server's
+  compressed ring buffer and a cache file `cache/tracks/<name>.part` (see *Readable file
+  names* below). Bytes are the server's
   original file, so offline playback uses the exact same decoder path.
 - **Track which byte ranges exist.** Seeking/skipping produces holes. Keep a small range list
   per track (in the client SQLite DB) and write with `pwrite` at the right offset into a
@@ -211,6 +212,25 @@ streamed tracks are completed in the background during idle periods.
   proactively. Pinned data is bounded by a disk-space floor instead: a pin is refused, and
   pinned tracks are not downloaded, while free space on the cache filesystem would drop
   below max(`cache.min_free_mb`, default 1 GB; 5% of the filesystem) (statvfs).
+- **Readable file names** (implemented). `<name>` = `<artist>-<album>-<song>` slug, e.g.
+  `pink-floyd-the-dark-side-of-the-moon-money.flac`; `<name>.part` while incomplete. The
+  name is stored per `cache_entry` row; lookups stay by track id. Slug: ASCII letters and
+  digits lower-cased, Latin-1/Latin Extended-A letters transliterated (é→e, ß→ss),
+  Greek/Cyrillic capitals lower-cased, other non-ASCII kept; every run of anything else
+  (whitespace, punctuation incl. `/ \ : * ? " < > | .`, controls, invalid UTF-8) → one
+  `-`, trimmed; empty parts → `unknown-artist` / `unknown-album` / `track-<id>`; 60 bytes
+  per part, 165 for the base, ≤ 200 bytes per file name. No leading `-` (CLI footgun) or
+  `.` (hidden), never `.`/`..`. Collisions: the lowest id among tracks with the same base
+  keeps it, the others get `--<id>` — a function of the library mirror, not of cache
+  order, and `--` never occurs in a plain base, so it cannot clash with one. Renames (tag
+  change on sync; migration of `<id>.<ext>` caches on first start) are crash-consistent:
+  commit `name=new, prev_name=old` with `synchronous=FULL` → `link()` each `old.*` file to
+  `new.*` (no-replace; an existing same-inode target is a retry) and unlink the old →
+  fsync the directory → commit `prev_name=''`. Open readers keep their fds. Renames of
+  entries in use run on the network thread (the only user of their paths); a cycle (two
+  tracks swapping names) goes through `renaming--<id>`. Rows with `prev_name` set are
+  finished on start; files are unlinked before their row is deleted, so a crash never
+  leaves a named file without a row, and unknown files in `tracks/` are left alone.
 - Cost: one SQLite DB (`sqlite-devel`, already used server-side) plus plain files. No
   extra memory pressure: writes stream from the same buffers already in RAM.
 

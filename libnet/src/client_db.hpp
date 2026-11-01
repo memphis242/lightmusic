@@ -26,6 +26,10 @@ struct EntryRow {
     std::int64_t cached = 0;
     bool pinned = false;
     std::int64_t lastAccess = 0;
+    // File base name in tracks/ (see cache_names.hpp); empty until assigned (legacy rows
+    // used "<trackId>"). prevName is set while the files move from prevName to name.
+    std::string name;
+    std::string prevName;
 };
 
 struct SyncResult {
@@ -68,6 +72,11 @@ public:
     void touch(std::int64_t trackId, std::int64_t when);
     void setPinned(std::int64_t trackId, bool pinned);
     void deleteEntry(std::int64_t trackId);
+    // Records the entry's file base name (and the one its files are moving from, or "").
+    // durable: committed with synchronous=FULL (the step before files are renamed).
+    void setEntryName(std::int64_t trackId, const std::string &name, const std::string &prevName, bool durable);
+    // Does any entry other than `except` use `name` (as name or prevName)?
+    bool nameTaken(const std::string &name, std::int64_t except);
     // Sum of entry sizes (space reserved by the sparse files), and of pinned ones.
     std::int64_t usage();
     std::int64_t pinnedUsage();

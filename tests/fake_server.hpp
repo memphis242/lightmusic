@@ -20,6 +20,7 @@ namespace lmtest {
 struct FakeTrack {
     std::string data;
     std::string etag;
+    std::string artist = "Band", album = "Record", title; // title "" = "T<id>"
 };
 
 class FakeServer {
@@ -49,7 +50,16 @@ public:
     }
     void setTrack(std::int64_t id, std::string data, std::string etag) {
         std::lock_guard lk(m_);
-        tracks_[id] = FakeTrack{std::move(data), std::move(etag)};
+        auto &t = tracks_[id];
+        t.data = std::move(data);
+        t.etag = std::move(etag);
+        rev_++;
+    }
+    // Re-tags a track (the cache renames its file on the next sync).
+    void setTags(std::int64_t id, std::string artist, std::string album, std::string title) {
+        std::lock_guard lk(m_);
+        auto &t = tracks_[id];
+        t.artist = std::move(artist), t.album = std::move(album), t.title = std::move(title);
         rev_++;
     }
     void removeTrack(std::int64_t id) {
@@ -97,13 +107,18 @@ private:
         for (auto &[id, t] : tracks_) {
             if (!first) j += ',';
             first = false;
-            std::string et;
-            for (char c : t.etag) {
-                if (c == '"') et += '\\';
-                et += c;
-            }
-            j += "{\"id\":" + std::to_string(id) + ",\"title\":\"T" + std::to_string(id) +
-                 "\",\"artist\":\"Band\",\"albumId\":1,\"album\":\"Record\",\"albumArtistId\":1,\"albumArtist\":\"Band\","
+            auto esc = [](const std::string &v) {
+                std::string o;
+                for (char c : v) {
+                    if (c == '"' || c == '\\') o += '\\';
+                    o += c;
+                }
+                return o;
+            };
+            const std::string et = esc(t.etag);
+            j += "{\"id\":" + std::to_string(id) + ",\"title\":\"" + (t.title.empty() ? "T" + std::to_string(id) : esc(t.title)) +
+                 "\",\"artist\":\"" + esc(t.artist) + "\",\"albumId\":1,\"album\":\"" + esc(t.album) +
+                 "\",\"albumArtistId\":1,\"albumArtist\":\"Band\","
                  "\"trackNo\":" +
                  std::to_string(id) + ",\"discNo\":1,\"codec\":\"mp3\",\"suffix\":\"mp3\",\"size\":" +
                  std::to_string(t.data.size()) + ",\"etag\":\"" + et + "\",\"rev\":1}";
