@@ -753,6 +753,36 @@ bool isPermutation(std::vector<int> v, int n) {
     return true;
 }
 
+// Regression: tracks shorter than the control thread's servicing interval (here 2 ms
+// each, as happens to longer tracks when that thread runs late on a loaded machine) were
+// passed in one step, with a single TrackChanged for the last of them. Every audible
+// track must be reported, in order, each with its own state.
+void everyTrackReported(const std::string &dir) {
+    std::vector<std::string> tiny;
+    for (int i = 0; i < 9; i++) {
+        tiny.push_back(dir + "/tiny" + std::to_string(i) + (i < 8 ? "_2ms" : "_long") + ".flac");
+        // the last one is long enough to become audible before the end of the queue
+        CHECK(lmtest::makeTone(tiny.back(), 44100, i < 8 ? 88 : 44100, 300 + 100 * i, "-c:a flac -f flac"));
+    }
+    Recorder rec;
+    lm::PlayerConfig cfg;
+    cfg.nullBackend = true;
+    cfg.onEvent = std::ref(rec);
+    lm::Player p(cfg);
+    p.enqueue(tiny);
+    p.play();
+    CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s));
+    p.sync();
+    const auto v = rec.trackIndexes();
+    const std::vector<int> want{0, 1, 2, 3, 4, 5, 6, 7, 8};
+    CHECK(v == want);
+    if (v != want) {
+        std::fprintf(stderr, "  TrackChanged indexes:");
+        for (int x : v) std::fprintf(stderr, " %d", x);
+        std::fprintf(stderr, "\n");
+    }
+}
+
 void playOrder(const std::string &dir) {
     std::vector<std::string> shortTracks;
     for (int i = 0; i < 6; i++) {
@@ -782,6 +812,11 @@ void playOrder(const std::string &dir) {
         auto v = rec.trackIndexes();
         v.resize(7);
         CHECK((v == std::vector<int>{0, 1, 2, 0, 1, 2, 0}));
+        if (v != std::vector<int>{0, 1, 2, 0, 1, 2, 0}) {
+            std::fprintf(stderr, "  TrackChanged indexes:");
+            for (int x : v) std::fprintf(stderr, " %d", x);
+            std::fprintf(stderr, "\n");
+        }
         CHECK_EQ(rec.count(lm::EventType::EndOfQueue), 0u);
     }
     {
@@ -1097,6 +1132,7 @@ int main() {
     commands(dir);
     stalledOpen();
     interruptedOpenProceeds(dir);
+    everyTrackReported(dir);
     playOrder(dir);
     userQueue(dir);
     return lmtest::finish("test_player");

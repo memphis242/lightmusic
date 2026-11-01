@@ -755,18 +755,25 @@ struct Player::Impl {
         }
     }
 
-    // Advances `cur` to the last marker the device has reached. Emits TrackChanged.
+    // Advances `cur` to the last marker the device has reached. Emits TrackChanged for
+    // every track passed, in order: when this thread runs late (a loaded machine) the
+    // device can have played through a short track already, and listeners (TUI, MPRIS,
+    // play history) must still see it, with its own state.
     void serviceMarkers() {
         const std::uint64_t audible = audibleFrame();
-        const std::uint64_t prevStart = cur.ringFrame;
-        bool changed = false;
         std::vector<std::string> errs;
         {
             std::lock_guard lk(dm);
-            while (!markers.empty() && markers.front().ringFrame <= audible) {
+            errs.swap(decoderErrors);
+        }
+        for (auto &e : errs) emit(EventType::Error, e);
+        for (;;) {
+            const std::uint64_t prevStart = cur.ringFrame;
+            {
+                std::lock_guard lk(dm);
+                if (markers.empty() || markers.front().ringFrame > audible) return;
                 cur = std::move(markers.front());
                 markers.pop_front();
-                changed = true;
                 if (cur.consumes) { // a user-queue track picked by the decoder is audible now
                     LM_ASSERT(upNextTaken > 0 && !upNext.empty() && upNext.front() == cur.index,
                               "the decoder takes user-queue entries in order");
@@ -775,16 +782,13 @@ struct Player::Impl {
                     cur.consumes = false;
                 }
             }
-            errs.swap(decoderErrors);
+            // A different ring start is a new play of the track (repeat-one) even with the
+            // same index; the decoder's own marker for a startAt() job repeats cur's start.
+            const bool newTrack = cur.index != index || snap.track.path != cur.info.path || cur.ringFrame != prevStart;
+            index = cur.index;
+            publish();
+            if (newTrack) emit(EventType::TrackChanged);
         }
-        for (auto &e : errs) emit(EventType::Error, e);
-        if (!changed) return;
-        // A different ring start is a new play of the track (repeat-one) even with the
-        // same index; the decoder's own marker for a startAt() job repeats cur's start.
-        const bool newTrack = cur.index != index || snap.track.path != cur.info.path || cur.ringFrame != prevStart;
-        index = cur.index;
-        publish();
-        if (newTrack) emit(EventType::TrackChanged);
     }
 
     // ---------------------------------------------------------------- commands
