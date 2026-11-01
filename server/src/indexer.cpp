@@ -16,9 +16,18 @@ namespace lm::server {
 namespace fs = std::filesystem;
 
 namespace {
-bool lstat_file(const std::string &p, std::int64_t &size, std::int64_t &mtime_ns) {
+// `gone` (optional): set when the path no longer exists or is no longer a regular file,
+// as opposed to an lstat() failure for another reason.
+bool lstat_file(const std::string &p, std::int64_t &size, std::int64_t &mtime_ns, bool *gone = nullptr) {
     struct stat sb{};
-    if (::lstat(p.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode)) return false;
+    if (::lstat(p.c_str(), &sb) != 0) {
+        if (gone) *gone = errno == ENOENT || errno == ENOTDIR;
+        return false;
+    }
+    if (!S_ISREG(sb.st_mode)) {
+        if (gone) *gone = true;
+        return false;
+    }
     size = sb.st_size;
     mtime_ns = std::int64_t(sb.st_mtim.tv_sec) * 1000000000 + sb.st_mtim.tv_nsec;
     return true;
@@ -102,8 +111,9 @@ ScanStats Indexer::scan(const std::vector<std::string> &dirs, const std::string 
     std::unordered_set<std::string> seen;
     for (auto &p : files) {
         std::int64_t size, mtime;
-        if (!lstat_file(p, size, mtime)) {
-            if (errno != ENOENT) complete = false;  // not seen, but maybe not gone either
+        bool gone = false;
+        if (!lstat_file(p, size, mtime, &gone)) {
+            if (!gone) complete = false;  // not seen, but maybe not gone either
             continue;
         }
         seen.insert(p);
