@@ -8,7 +8,6 @@
 #include <fstream>
 #include <vector>
 
-namespace fs = std::filesystem;
 
 static std::uint64_t countFrames(lm::Decoder &d) {
     std::vector<float> buf(4096 * d.channels());

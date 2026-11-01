@@ -29,13 +29,21 @@ static void checkTags(const char *what, const Tags &t, const std::string &title,
 // ID3v2 frame header + body (v2.3 sizes are plain big-endian, v2.4 syncsafe).
 static bytes frame(const char *id, const bytes &body, int ver, unsigned char fmt = 0) {
     const auto n = static_cast<std::uint32_t>(body.size());
-    bytes f(id, id + 4);
-    if (ver == 4) f.insert(f.end(), {static_cast<unsigned char>(n >> 21 & 0x7F), static_cast<unsigned char>(n >> 14 & 0x7F),
-                                     static_cast<unsigned char>(n >> 7 & 0x7F), static_cast<unsigned char>(n & 0x7F)});
-    else f.insert(f.end(), {static_cast<unsigned char>(n >> 24), static_cast<unsigned char>(n >> 16),
-                            static_cast<unsigned char>(n >> 8), static_cast<unsigned char>(n)});
-    f.push_back(0);
-    f.push_back(fmt);
+    // Built as one fixed-size header and a single insert: the original push_back /
+    // initializer-list insert sequence trips a GCC 13 -O3 -Wstringop-overflow false
+    // positive inside std::vector's reallocation path.
+    const bool v4 = ver == 4;
+    const unsigned char hdr[10] = {
+        static_cast<unsigned char>(id[0]), static_cast<unsigned char>(id[1]),
+        static_cast<unsigned char>(id[2]), static_cast<unsigned char>(id[3]),
+        static_cast<unsigned char>(v4 ? (n >> 21 & 0x7F) : (n >> 24)),
+        static_cast<unsigned char>(v4 ? (n >> 14 & 0x7F) : (n >> 16)),
+        static_cast<unsigned char>(v4 ? (n >> 7 & 0x7F) : (n >> 8)),
+        static_cast<unsigned char>(v4 ? (n & 0x7F) : n),
+        0, fmt};
+    bytes f;
+    f.reserve(sizeof hdr + body.size());
+    f.assign(hdr, hdr + sizeof hdr);
     f.insert(f.end(), body.begin(), body.end());
     return f;
 }
@@ -233,7 +241,7 @@ static void newCases() {
     {
         // v2.4 tag-level unsync (header 0x80) without the per-frame 0x02 flag: the frame
         // must still be de-unsynchronised (BOM FF FE stored as FF 00 FE).
-        for (unsigned char fl : {0x00, 0x02}) {
+        for (unsigned char fl : {std::uint8_t{0x00}, std::uint8_t{0x02}}) {
             const bytes t = tag(4, 0x80, frame("TIT2", bytes{1, 0xFF, 0x00, 0xFE, 'A', 0}, 4, fl));
             Tags tg;
             parseId3v2(t.data(), t.size(), &tg, nullptr);
@@ -243,9 +251,9 @@ static void newCases() {
     {
         // v2.3 tag written with syncsafe frame sizes (size >= 128 so the encodings differ).
         const std::string longTitle(200, 'x');
-        bytes f1 = frame("TIT2", latin1(longTitle), 4), f2 = frame("TPE1", latin1("Art"), 4);
-        append(f1, f2);
-        const bytes t = tag(3, 0, f1);
+        bytes fTitle = frame("TIT2", latin1(longTitle), 4), fArtist = frame("TPE1", latin1("Art"), 4);
+        append(fTitle, fArtist);
+        const bytes t = tag(3, 0, fTitle);
         Tags tg;
         parseId3v2(t.data(), t.size(), &tg, nullptr);
         CHECK(tg.title == longTitle);
@@ -315,11 +323,11 @@ static void newCases() {
         CHECK(lm::detail::readTagsFrom(src, tg, nullptr));
         checkTags("mp3 v1 fallback", tg, "V1 Title", "V1 Artist", "", 0, 0, 1987);
         // ...but not merged field-by-field into a partial ID3v2 tag.
-        bytes f2 = tag(3, 0, frame("TPE1", latin1("V2 Artist"), 3));
-        f2.insert(f2.end(), {0xFF, 0xFB, 0x90, 0x00});
-        append(f2, audio);
-        append(f2, v1);
-        MemSource s2(f2);
+        bytes fArtist = tag(3, 0, frame("TPE1", latin1("V2 Artist"), 3));
+        fArtist.insert(fArtist.end(), {0xFF, 0xFB, 0x90, 0x00});
+        append(fArtist, audio);
+        append(fArtist, v1);
+        MemSource s2(fArtist);
         Tags t2;
         CHECK(lm::detail::readTagsFrom(s2, t2, nullptr));
         checkTags("mp3 no v1 merge", t2, "", "V2 Artist", "", 0, 0, 0);
@@ -435,7 +443,7 @@ static bytes structuredTag(std::mt19937 &r) {
     bytes b = {'I', 'D', '3', static_cast<unsigned char>(ver), 0, static_cast<unsigned char>(r() % 2 ? 0 : r() & 0xF0),
                0, 0, 0, 0};
     if (b[5] & 0x40) {
-        const std::uint32_t e = r() % 12;
+        const auto e = static_cast<std::uint32_t>(r() % 12);
         b.insert(b.end(), {0, 0, 0, static_cast<unsigned char>(e)});
         for (std::uint32_t i = 0; i < e; i++) b.push_back(static_cast<unsigned char>(r()));
     }

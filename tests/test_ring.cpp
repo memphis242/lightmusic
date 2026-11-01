@@ -17,12 +17,12 @@ static void basics() {
     CHECK_EQ(r.write(in.data(), 200), 128u); // clamps at capacity
     CHECK_EQ(r.writable(), 0u);
     CHECK_EQ(r.read(out.data(), 50), 50u);
-    for (int i = 0; i < 50; i++) CHECK_EQ(out[i], static_cast<float>(i));
+    for (std::size_t i = 0; i < 50; i++) CHECK_EQ(out[i], static_cast<float>(i));
     // Wrap-around write.
     CHECK_EQ(r.write(in.data() + 128, 50), 50u);
     CHECK_EQ(r.readable(), 128u);
     CHECK_EQ(r.read(out.data(), 200), 128u);
-    for (int i = 0; i < 128; i++) CHECK_EQ(out[i], static_cast<float>(i + 50));
+    for (std::size_t i = 0; i < 128; i++) CHECK_EQ(out[i], static_cast<float>(i + 50));
     CHECK_EQ(r.read(out.data(), 1), 0u);
     CHECK_EQ(r.totalWritten(), 178u);
     CHECK_EQ(r.totalRead(), 178u);

@@ -47,7 +47,7 @@ void setMark(Node &n, const YAML::Mark &m) {
     if (m.is_null()) return;
     n.line = m.line >= 0 ? m.line + 1 : 0;
     n.col = m.column >= 0 ? m.column + 1 : 0;
-    if (m.pos >= 0) n.pos = std::size_t(m.pos), n.hasPos = true;
+    if (m.pos >= 0) { n.pos = std::size_t(m.pos); n.hasPos = true; }
 }
 
 // Builds one document's nodes. Also counts documents (a second one is an error).
@@ -62,7 +62,7 @@ struct Collector : YAML::EventHandler {
         nodes.push_back(std::move(n));
         const std::size_t id = nodes.size() - 1;
         if (!open.empty()) nodes[open.back()].kids.push_back(id);
-        else if (!haveRoot) root = id, haveRoot = true;
+        else if (!haveRoot) { root = id; haveRoot = true; }
         return id;
     }
     void OnDocumentStart(const YAML::Mark &) override { ++docs; }
@@ -243,7 +243,7 @@ bool boundInput(std::string_view text, const std::string &file, Diags &diags) {
     int depth = 0, line = 1, col = 0;
     for (char c : text) {
         ++col;
-        if (c == '\n') line++, col = 0;
+        if (c == '\n') { line++; col = 0; }
         else if (c == '[' || c == '{') {
             if (++depth > kMaxFlowNesting) {
                 addDiag(diags, file, line, col, "nesting too deep");
@@ -377,7 +377,7 @@ std::string doubleQuoted(const std::string &v) {
     std::string r = "\"";
     for (char ch : v) {
         const auto c = static_cast<unsigned char>(ch);
-        if (ch == '"' || ch == '\\') r += '\\', r += ch;
+        if (ch == '"' || ch == '\\') { r += '\\'; r += ch; }
         else if (ch == '\n') r += "\\n";
         else if (ch == '\t') r += "\\t";
         else if (c < 0x20 || c == 0x7f) {
@@ -588,7 +588,7 @@ bool editOne(const std::string &text, const std::vector<std::string> &segs, cons
             err = where + " has an explicit tag (e.g. !!int); it is not rewritten";
             return false;
         }
-        std::size_t ve = vs;
+        std::size_t ve; // value end: set on both branches below
         char quote = 0;
         if (c0 == '"' || c0 == '\'') {
             quote = c0;
@@ -625,6 +625,7 @@ bool editOne(const std::string &text, const std::vector<std::string> &segs, cons
             while (i < ce && !(text[i] == '#' && isSpace(text[i - 1]))) ++i;
             ve = i;
             while (ve > vs && isSpace(text[ve - 1])) --ve;
+            // cppcheck-suppress stlcstrConstructor ; (pointer, length) view into the middle of a string, not a c_str() copy
             const std::string_view span(text.data() + vs, ve - vs);
             const bool match = vn.kind == Node::Scalar ? (vn.value == span && vn.tag == "?")
                                                        : (span == "~" || span == "null" || span == "Null" || span == "NULL");

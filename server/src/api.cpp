@@ -78,7 +78,6 @@ std::string http_date(std::time_t t) {
 // If-None-Match: list of entity tags, or "*". Weak comparison (RFC 9110 §13.1.2).
 bool none_match(const std::string &header, const std::string &etag) {
     if (header.empty()) return false;
-    std::string bare = etag;
     std::istringstream in(header);
     std::string tok;
     while (std::getline(in, tok, ',')) {
@@ -88,7 +87,7 @@ bool none_match(const std::string &header, const std::string &etag) {
         tok = tok.substr(b, e - b + 1);
         if (tok == "*") return true;
         if (tok.rfind("W/", 0) == 0) tok = tok.substr(2);
-        if (tok == bare) return true;
+        if (tok == etag) return true;
     }
     return false;
 }
@@ -344,13 +343,13 @@ struct HttpApi::Impl {
 
     // Wraps a handler: clears httplib's range state, authenticates, maps exceptions.
     httplib::Server::Handler guarded(bool auth, bool allow_query, Fn fn) {
-        return [this, auth, allow_query, fn = std::move(fn)](const httplib::Request &req,
+        return [this, auth, allow_query, handler = std::move(fn)](const httplib::Request &req,
                                                             httplib::Response &res) {
             take_ranges(req);
             if (t_conn) disarm(*t_conn);  // headers are in (also on the re-dispatch path)
             try {
                 if (auth && !authorize(req, res, allow_query)) return;
-                fn(req, res);
+                handler(req, res);
             } catch (const std::exception &e) {
                 self->log(std::string("error: ") + req.path + ": " + e.what());
                 error(res, 500, "internal error");
@@ -366,7 +365,7 @@ struct HttpApi::Impl {
         // Only paths from the index are opened, never a client-supplied path, and only
         // beneath a music root without following any symlink (safe_open.hpp).
         auto fd = std::make_shared<Fd>(roots.open(tf->path));
-        struct stat sb;
+        struct stat sb{};
         if (fd->fd < 0 || ::fstat(fd->fd, &sb) != 0 || !S_ISREG(sb.st_mode))
             return error(res, 404, "file unavailable");
         std::uint64_t size = std::uint64_t(sb.st_size);
@@ -432,7 +431,7 @@ struct HttpApi::Impl {
             int fd = roots.open(paths[i]);
             if (fd < 0) continue;
             Fd guard(fd);
-            struct stat sb;
+            struct stat sb{};
             if (::fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode)) pic = read_embedded_picture(fd, paths[i]);
         }
         if (pic) return pic;
@@ -442,7 +441,7 @@ struct HttpApi::Impl {
             int fd = roots.open(dir + "/" + name);
             if (fd < 0) continue;
             Fd guard(fd);
-            struct stat sb;
+            struct stat sb{};
             if (::fstat(fd, &sb) != 0 || !S_ISREG(sb.st_mode) || sb.st_size > kMaxCoverBytes)
                 continue;
             std::string data(std::size_t(sb.st_size), '\0');

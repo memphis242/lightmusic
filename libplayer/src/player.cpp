@@ -747,7 +747,7 @@ struct Player::Impl {
             const std::uint64_t f = markers.front().ringFrame;
             t = std::min(t, at((f > audible ? static_cast<double>(f - audible) / rate : 0) + 0.002));
         }
-        if (decoderExhausted) t = std::min(t, at(static_cast<double>(ring.readable() / kCh) / rate + 0.02));
+        if (decoderExhausted) t = std::min(t, at(static_cast<double>(ring.readable() / kCh) / rate + 0.02)); // NOLINT(bugprone-integer-division): whole frames on purpose
         return t;
     }
 
@@ -1032,7 +1032,7 @@ void Player::stop() { impl_->push(Cmd{Cmd::Stop}); }
 void Player::next() { impl_->push(Cmd{Cmd::Next}); }
 void Player::prev() { impl_->push(Cmd{Cmd::Prev}); }
 void Player::seek(double seconds) { impl_->push(Cmd{Cmd::Seek, {}, 0, seconds}); }
-void Player::setVolume(float v) { impl_->push(Cmd{Cmd::Volume, {}, 0, v}); }
+void Player::setVolume(float v) { impl_->push(Cmd{Cmd::Volume, {}, 0, static_cast<double>(v)}); }
 void Player::setGap(double seconds) {
     if (!std::isnan(seconds)) impl_->gapSec.store(clampGap(seconds), std::memory_order_relaxed);
 }

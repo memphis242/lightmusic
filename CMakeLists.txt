@@ -19,20 +19,14 @@ option(LM_BUILD_NET "Build libnet: server client, streaming and offline cache (n
 option(LM_BUILD_SERVER "Build the lightmusicd server (needs TagLib, SQLite)" ON)
 option(LM_BUILD_MPRIS "Build MPRIS (media keys / desktop integration) for the TUI (needs libsystemd)" ON)
 option(LM_FETCH_FTXUI "Fetch FTXUI v6.1.9 with FetchContent if no system package" OFF)
+option(LM_HARDENING "Release hardening: _FORTIFY_SOURCE=3, stack protector, stack-clash protection" ON)
 option(LM_ASSERTS "Force LM_ASSERT checks on in optimised builds (they are always on without NDEBUG)" OFF)
 option(LM_GC_SECTIONS "Link the shipped executables with --gc-sections in optimised builds (drops unused code)" ON)
 
 if(LM_ASAN AND LM_TSAN)
   message(FATAL_ERROR "LM_ASAN and LM_TSAN are mutually exclusive")
 endif()
-if(LM_ASAN)
-  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined)
-  add_link_options(-fsanitize=address,undefined)
-endif()
-if(LM_TSAN)
-  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
-  add_link_options(-fsanitize=thread)
-endif()
+include(cmake/LmQuality.cmake)
 
 # Release link flags for the shipped executables (lightmusic, lightmusicd), not for
 # libraries' consumers in general: libconfig compiles with per-function sections, and
@@ -42,10 +36,6 @@ function(lm_release_link_options target)
     target_link_options(${target} PRIVATE $<$<CONFIG:Release,RelWithDebInfo,MinSizeRel>:-Wl,--gc-sections>)
   endif()
 endfunction()
-
-# Warnings for our own code only (third_party gets none of these).
-add_library(lm_warnings INTERFACE)
-target_compile_options(lm_warnings INTERFACE -Wall -Wextra -Werror)
 
 # Project assertions (include/lm/assert.hpp); every target gets them through lm_warnings
 # or lm::player.

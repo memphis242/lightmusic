@@ -44,6 +44,7 @@
 #include "lm/net/client.hpp"
 #endif
 
+#include <cmath>
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
 
@@ -126,6 +127,11 @@ void wake() {
     // Pipe is non-blocking; a full pipe already guarantees a wakeup.
     [[maybe_unused]] const auto r = write(g_wakeWrite, &b, 1);
 }
+
+// Signal handlers (C linkage for sigaction); declared first for -Wmissing-prototypes.
+extern "C" void onSignal(int sig);
+extern "C" void onStop(int);
+extern "C" void onFatal(int sig);
 
 extern "C" void onSignal(int sig) {
     const int saved = errno;
@@ -342,7 +348,7 @@ Element render(const Ui &ui, int height) {
     const float frac = dur > 0 ? static_cast<float>(std::clamp(st.position / dur, 0.0, 1.0)) : 0.0f;
     const std::string times = lmtui::formatTime(st.position) + " / " + (dur > 0 ? lmtui::formatTime(dur) : "?:??");
     char vol[16];
-    std::snprintf(vol, sizeof vol, "vol %3d%%", static_cast<int>(st.volume * 100.0f + 0.5f));
+    std::snprintf(vol, sizeof vol, "vol %3d%%", static_cast<int>(std::lround(st.volume * 100.0f)));
     char pos[32];
     std::snprintf(pos, sizeof pos, "%d/%zu", st.index + 1, st.queueSize);
 
@@ -729,13 +735,13 @@ int run(int argc, char **argv) {
             std::string lastWritten;
             std::optional<std::chrono::steady_clock::time_point> saveDue;
             auto volumePct = [&] {
-                return static_cast<int>(ui.volumeTarget.value_or(player.state().volume) * 100.0f + 0.5f);
+                return static_cast<int>(std::lround(ui.volumeTarget.value_or(player.state().volume) * 100.0f));
             };
             auto save = [&](std::string *quitErr = nullptr) {
                 saveDue.reset();
                 if (live.path.empty() || !live.running.saveSettings) return;
                 // The keys go up to 150% (software gain), as does playback.volume.
-                const int pct = std::clamp(volumePct(), 0, static_cast<int>(lmtui::kVolumeMax * 100.0f + 0.5f));
+                const int pct = std::clamp(volumePct(), 0, static_cast<int>(std::lround(lmtui::kVolumeMax * 100.0f)));
                 if (pct == live.running.volume) return;
                 std::string err;
                 if (lm::config::updateConfigValues(live.path, {{"playback.volume", std::to_string(pct)}}, err,
@@ -744,7 +750,7 @@ int run(int argc, char **argv) {
                 else if (quitErr)
                     *quitErr = err;
                 else
-                    ui.message = err, dirty = true;
+                    { ui.message = err; dirty = true; }
             };
             auto saveTimeoutMs = [&]() -> int {
                 if (!saveDue) return -1;
@@ -892,7 +898,7 @@ int run(int argc, char **argv) {
                 const int r = poll(fds, 4, mpris.timeout(timeout)); // min of all; -1 when all idle
                 mpris.process();
                 if (mpris.quitRequested()) running = false;
-                if (mprisNote) mprisNote = false, dirty = true;
+                if (mprisNote) { mprisNote = false; dirty = true; }
                 if (r < 0) {
                     if (errno == EINTR) continue;
                     break;

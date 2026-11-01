@@ -219,6 +219,7 @@ struct NetThread::Impl {
         }
         // Shutdown: cancel everything still running.
         std::vector<std::uint64_t> ids;
+        ids.reserve(transfers.size());
         for (auto &[id, t] : transfers) ids.push_back(id);
         for (auto id : ids) {
             transfers[id]->cancelled = true;

@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
         return lmtest::kSkip;
     }
     char tmpl[] = "/tmp/lm_e2e_XXXXXX";
-    std::string tmp = mkdtemp(tmpl);
+    std::string tmp = lmtest::makeTempDir(tmpl);
     std::string lib = tmp + "/lib", dbp = tmp + "/s.db";
     fs::create_directories(lib + "/Album");
     const std::string ff = "ffmpeg -hide_banner -loglevel error -y ";

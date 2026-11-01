@@ -13,6 +13,8 @@ class FileSource final : public ByteSource {
 public:
     FileSource(std::FILE *f, std::string path, std::int64_t size) : f_(f), path_(std::move(path)), size_(size) {}
     ~FileSource() override { std::fclose(f_); }
+    FileSource(const FileSource &) = delete; // owns f_: a copy would fclose it twice
+    FileSource &operator=(const FileSource &) = delete;
 
     std::size_t read(void *dst, std::size_t n) override { return std::fread(dst, 1, n, f_); }
     bool seek(std::int64_t offset, Whence whence) override {
@@ -45,6 +47,7 @@ std::unique_ptr<ByteSource> openFileSource(const std::string &path) {
     if (fl >= 0) fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
     std::FILE *f = fdopen(fd, "rb");
     if (!f) {
+        // cppcheck-suppress doubleFree ; fdopen failed, so fd is still ours (fclose below is on the other path)
         ::close(fd);
         return nullptr;
     }

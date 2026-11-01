@@ -63,12 +63,12 @@ Sha256 sha256(std::string_view data) {
     tail[rem] = 0x80;
     std::size_t tl = rem < 56 ? 64 : 128;
     std::uint64_t bits = std::uint64_t(n) * 8;
-    for (int i = 0; i < 8; ++i) tail[tl - 1 - i] = std::uint8_t(bits >> (8 * i));
+    for (std::size_t i = 0; i < 8; ++i) tail[tl - 1 - i] = std::uint8_t(bits >> (8 * i));
     block(h, tail);
     if (tl == 128) block(h, tail + 64);
     Sha256 out;
-    for (int i = 0; i < 8; ++i)
-        for (int j = 0; j < 4; ++j) out[4 * i + j] = std::uint8_t(h[i] >> (24 - 8 * j));
+    for (std::size_t i = 0; i < 8; ++i)
+        for (std::size_t j = 0; j < 4; ++j) out[4 * i + j] = std::uint8_t(h[i] >> (24 - 8 * j));
     return out;
 }
 
@@ -110,10 +110,10 @@ std::string normalize_ip(std::string_view ip) {
     std::string s(ip);
     if (s.size() > 2 && s.front() == '[' && s.back() == ']') s = s.substr(1, s.size() - 2);
     char out[INET6_ADDRSTRLEN];
-    in_addr a4;
+    in_addr a4{};
     if (inet_pton(AF_INET, s.c_str(), &a4) == 1)
         return inet_ntop(AF_INET, &a4, out, sizeof out) ? out : "";
-    in6_addr a6;
+    in6_addr a6{};
     if (s.find('%') != std::string::npos) return "";  // no zone ids
     if (inet_pton(AF_INET6, s.c_str(), &a6) != 1) return "";
     if (IN6_IS_ADDR_V4MAPPED(&a6)) {
@@ -166,7 +166,7 @@ std::string AuthLimiter::key_for(const std::string &ip) {
     std::string n = normalize_ip(ip);
     if (n.empty()) return ip;
     if (n.find(':') == std::string::npos) return n;
-    in6_addr a6;
+    in6_addr a6{};
     if (inet_pton(AF_INET6, n.c_str(), &a6) != 1) return n;
     std::memset(a6.s6_addr + 8, 0, 8);
     char out[INET6_ADDRSTRLEN];
@@ -214,6 +214,7 @@ bool AuthLimiter::make_room(Clock::time_point now) {
     std::nth_element(idle.begin(), idle.begin() + std::ptrdiff_t(n - 1), idle.end(),
                      [](auto &a, auto &b) { return a.first < b.first; });
     std::vector<std::string> victims;
+    victims.reserve(n);
     for (std::size_t i = 0; i < n; ++i) victims.push_back(*idle[i].second);
     for (auto &v : victims) ips_.erase(v);
     return true;

@@ -37,13 +37,14 @@ static std::string s(const TagLib::String &t) { return t.to8Bit(true); }
 static int leading_int(const TagLib::PropertyMap &p, const char *key) {
     auto it = p.find(key);
     if (it == p.end() || it->second.isEmpty()) return 0;
-    return std::atoi(it->second.front().toCString(true));  // "1/2" -> 1
+    // NOLINTNEXTLINE(cert-err34-c): prefix parse on purpose ("1/2" -> 1); junk -> 0 = unknown
+    return std::atoi(it->second.front().toCString(true));
 }
 
 bool read_track_meta(TrackMeta &m) {
     TagLib::FileRef f(m.path.c_str(), true, TagLib::AudioProperties::Average);
-    if (f.isNull() || !f.file() || !f.file()->isValid()) return false;
-    TagLib::File *file = f.file();
+    TagLib::File *file = f.isNull() ? nullptr : f.file();
+    if (!file || !file->isValid()) return false;
     if (dynamic_cast<TagLib::MPEG::File *>(file)) m.codec = "mp3";
     else if (dynamic_cast<TagLib::FLAC::File *>(file)) m.codec = "flac";
     else if (dynamic_cast<TagLib::Ogg::Opus::File *>(file)) m.codec = "opus";

@@ -1,0 +1,22 @@
+# Tests: the root config plus a few checks turned off that only make sense for
+# production code. Reasons:
+#  cert-env33-c: tests run ffmpeg/dbus helpers with system() on purpose.
+#  cert-err34-c: atoi/atof on test environment knobs (LM_FUZZ_ITERS ...).
+#  cert-msc32-c / cert-msc51-cpp: fixed PRNG seeds keep fuzz cases reproducible.
+#  bugprone-unchecked-optional-access: the pattern is CHECK(opt); then *opt (CHECK does
+#    not stop the test), and the analysis cannot see the CHECK.
+#  performance-inefficient-vector-operation, performance-unnecessary-value-param:
+#    test-only code, no hot paths.
+#  clang-analyzer-unix.StdCLibraryFunctions: same CHECK(fd >= 0); use(fd) pattern.
+#  cert-dcl50-cpp: a C-variadic wrapper around sd_bus_call_method (which is variadic).
+InheritParentConfig: true
+Checks: >
+  -cert-env33-c,
+  -cert-err34-c,
+  -cert-msc32-c,
+  -cert-msc51-cpp,
+  -bugprone-unchecked-optional-access,
+  -performance-inefficient-vector-operation,
+  -performance-unnecessary-value-param,
+  -cert-dcl50-cpp,
+  -clang-analyzer-unix.StdCLibraryFunctions

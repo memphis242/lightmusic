@@ -42,7 +42,7 @@ std::string g_self;
 
 std::string tempDir(const char *tag) {
     std::string t = (fs::temp_directory_path() / (std::string("lm_cache_") + tag + "_XXXXXX")).string();
-    return mkdtemp(t.data());
+    return lmtest::makeTempDir(t.data());
 }
 
 lm::net::ClientConfig baseCfg(const std::string &url, const std::string &dir) {
@@ -125,7 +125,7 @@ void crashConsistency() {
     for (int round = 0; round < 3; round++) {
         const pid_t pid = fork();
         if (pid == 0) {
-            execl(g_self.c_str(), g_self.c_str(), "child", srv.url().c_str(), dir.c_str(), "1", (char *)nullptr);
+            execl(g_self.c_str(), g_self.c_str(), "child", srv.url().c_str(), dir.c_str(), "1", static_cast<char *>(nullptr));
             _exit(127);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(500 + rng() % 600));
@@ -151,10 +151,10 @@ void crashConsistency() {
                     bad++;
                     firstBad = std::min<std::uint64_t>(firstBad, i);
                 }
-        if (bad) std::printf("  first bad byte at %llu (file %d, ranges %s)\n", (unsigned long long)firstBad,
+        if (bad) std::printf("  first bad byte at %llu (file %d, ranges %s)\n", static_cast<unsigned long long>(firstBad),
                              int(file[firstBad]), e->ranges.c_str());
         std::printf("  crash round %d: durable %llu of %zu bytes, %llu bad\n", round,
-                    (unsigned long long)ranges->covered(), data.size(), (unsigned long long)bad);
+                    static_cast<unsigned long long>(ranges->covered()), data.size(), static_cast<unsigned long long>(bad));
         CHECK_EQ(bad, 0u); // no recorded range holds unwritten zeros (or wrong bytes)
         CHECK(ranges->covered() >= prevCovered); // resumed, not restarted
         prevCovered = ranges->covered();
@@ -171,8 +171,8 @@ void crashConsistency() {
             CHECK(s != nullptr);
             if (s) CHECK(readAll(*s) == data);
             const auto dl = c->stats().downloaded;
-            std::printf("  resume fetched %llu bytes (had %llu)\n", (unsigned long long)dl,
-                        (unsigned long long)prevCovered);
+            std::printf("  resume fetched %llu bytes (had %llu)\n", static_cast<unsigned long long>(dl),
+                        static_cast<unsigned long long>(prevCovered));
             CHECK(dl <= data.size() - prevCovered + (1 << 20)); // the uncommitted tail may be refetched
             s.reset();
             CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Cached; }, 5s));
@@ -228,7 +228,7 @@ void ifRangeRestart() {
     }
     CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Cached; }, 5s));
     auto e = c->cacheEntry(1);
-    CHECK(e && e->etag == "\"v2\"" && e->size == (std::int64_t)v2.size());
+    CHECK(e && e->etag == "\"v2\"" && e->size == static_cast<std::int64_t>(v2.size()));
     CHECK(e && slurp(e->file) == v2);
     // Every range request carried If-Range.
     auto ranges = srv.rangesSeen();
@@ -592,8 +592,8 @@ void concurrentSeekCancel() {
         std::string buf(16, '\0');
         CHECK_EQ(s1->read(buf.data(), buf.size()), 0u); // interrupt is sticky
     }
-    std::printf("  concurrency: %llu reads, %llu interrupted, %llu wrong\n", (unsigned long long)reads.load(),
-                (unsigned long long)shortReads.load(), (unsigned long long)wrong.load());
+    std::printf("  concurrency: %llu reads, %llu interrupted, %llu wrong\n", static_cast<unsigned long long>(reads.load()),
+                static_cast<unsigned long long>(shortReads.load()), static_cast<unsigned long long>(wrong.load()));
     CHECK(reads > 20);
     CHECK_EQ(wrong.load(), 0u);
     // Shutting the client down under a blocked reader: the read returns.

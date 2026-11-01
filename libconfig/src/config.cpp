@@ -94,9 +94,9 @@ bool parseBool(const Value &v, bool &out, std::string &err) {
     if (!plainTyped(v, "bool", "true or false", err)) return false;
     const auto &s = v.scalar;
     for (const char *t : {"true", "True", "TRUE", "yes", "Yes", "YES", "on", "On", "ON"})
-        if (s == t) return out = true, true;
+        if (s == t) { out = true; return true; }
     for (const char *f : {"false", "False", "FALSE", "no", "No", "NO", "off", "Off", "OFF"})
-        if (s == f) return out = false, true;
+        if (s == f) { out = false; return true; }
     err = "expected true or false, got '" + s + "'";
     return false;
 }
@@ -473,11 +473,11 @@ bool updateConfigValues(const std::string &path, const std::vector<std::pair<std
 
 // ---------------------------------------------------------------- watcher
 
-FileWatcher::FileWatcher(const std::string &path, int debounceMs) : debounceMs_(debounceMs) {
+FileWatcher::FileWatcher(const std::string &path, int debounceMs)
+    : fd_(::inotify_init1(IN_NONBLOCK | IN_CLOEXEC)), debounceMs_(debounceMs) {
     const auto slash = path.rfind('/');
     const std::string dir = slash == std::string::npos ? "." : (slash == 0 ? "/" : path.substr(0, slash));
     name_ = slash == std::string::npos ? path : path.substr(slash + 1);
-    fd_ = ::inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     if (fd_ < 0) {
         err_ = std::string("inotify: ") + std::strerror(errno);
         return;
@@ -505,9 +505,14 @@ bool FileWatcher::changed() {
             break;
         }
         for (char *p = buf; p < buf + n;) {
-            const auto *ev = reinterpret_cast<const inotify_event *>(p);
+            // Copy the fixed-size header out (no alignment or aliasing assumptions); the
+            // NUL-padded name follows it in the buffer.
+            inotify_event hdr{};
+            std::memcpy(&hdr, p, sizeof hdr);
+            const inotify_event *const ev = &hdr;
+            const char *const evName = p + sizeof(inotify_event);
             if (ev->mask & IN_Q_OVERFLOW) hit = true;
-            else if (ev->len && name_ == ev->name && (ev->mask & (IN_CLOSE_WRITE | IN_MOVED_TO))) hit = true;
+            else if (ev->len && name_ == evName && (ev->mask & (IN_CLOSE_WRITE | IN_MOVED_TO))) hit = true;
             p += sizeof(inotify_event) + ev->len;
         }
     }

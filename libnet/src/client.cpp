@@ -177,7 +177,7 @@ bool parseContentRange(const std::string &v, std::uint64_t &a, std::uint64_t &b,
 // lower case.
 std::string urlHost(const std::string &url) {
     std::string a = url.substr(url.find("://") + 3);
-    a = a.substr(0, a.find_first_of("/?#"));
+    a.resize(std::min(a.size(), a.find_first_of("/?#")));
     if (auto at = a.rfind('@'); at != std::string::npos) a = a.substr(at + 1);
     std::string h;
     if (!a.empty() && a[0] == '[') {
@@ -293,21 +293,21 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         return tracksDir + "/" + name + "." + safeSuffix(suffix);
     }
 
-    // Names of the files in tracks/ that belong to base name `base` ("base.*"). A base
+    // Names of the files in tracks/ that belong to stem name `stem` ("stem.*"). A stem
     // never contains '.', so another entry's files never match. With the track's suffix
-    // only "base.part" and "base.<suffix>" are looked at (two lstat()s instead of a
+    // only "stem.part" and "stem.<suffix>" are looked at (two lstat()s instead of a
     // directory scan, which matters when a whole cache is renamed).
-    std::vector<std::string> filesOf(const std::string &base, const std::optional<std::string> &suffix = {}) {
+    std::vector<std::string> filesOf(const std::string &stem, const std::optional<std::string> &suffix = {}) {
         std::vector<std::string> out;
-        if (base.empty()) return out;
+        if (stem.empty()) return out;
         if (suffix) {
-            for (const std::string &f : {base + ".part", base + "." + safeSuffix(*suffix)}) {
+            for (const std::string &f : {stem + ".part", stem + "." + safeSuffix(*suffix)}) {
                 struct stat st{};
                 if (::lstat((tracksDir + "/" + f).c_str(), &st) == 0) out.push_back(f);
             }
             return out;
         }
-        const std::string prefix = base + ".";
+        const std::string prefix = stem + ".";
         if (DIR *d = ::opendir(tracksDir.c_str())) {
             while (dirent *de = ::readdir(d))
                 if (std::strncmp(de->d_name, prefix.c_str(), prefix.size()) == 0) out.emplace_back(de->d_name);
@@ -349,10 +349,10 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         plainName.clear();
         nameOwner.clear();
         for (const auto &t : db.allTracks()) {
-            auto base = cacheBaseName(t.artist.empty() ? t.albumArtist : t.artist, t.album, t.title, t.id);
-            auto [it, fresh] = nameOwner.emplace(base, t.id);
+            auto stem = cacheBaseName(t.artist.empty() ? t.albumArtist : t.artist, t.album, t.title, t.id);
+            auto [it, fresh] = nameOwner.emplace(stem, t.id);
             if (!fresh && t.id < it->second) it->second = t.id;
-            plainName[t.id] = std::move(base);
+            plainName[t.id] = std::move(stem);
         }
     }
     // The name a track's files should have (deterministic: a function of the mirror).
@@ -749,7 +749,10 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             std::lock_guard lk(cm);
             auto row = db.entry(e->id);
             EntryRow r{e->id, etag, static_cast<std::int64_t>(size), false, "", 0, row && row->pinned, wallNow(), "", ""};
-            if (row) r.name = row->name, r.prevName = row->prevName;
+            if (row) {
+                r.name = row->name;
+                r.prevName = row->prevName;
+            }
             db.putEntry(r);
             db.setTrackValidator(e->id, etag, static_cast<std::int64_t>(size));
         }

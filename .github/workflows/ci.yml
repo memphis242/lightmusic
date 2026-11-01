@@ -22,18 +22,39 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # gcc is the primary compiler (debug, unit-test and release builds); clang is
+          # an extra checking layer. Every build job is -Werror (LM_WERROR=ON).
+          # Optimised build with the project assertions forced on.
           - name: normal
+            cc: gcc
             build_type: RelWithDebInfo
-            cmake_args: ""
+            cmake_args: -DLM_WERROR=ON -DLM_ASSERTS=ON
+          # What ships: -O3, hardening flags, assertions compiled out.
+          - name: release
+            cc: gcc
+            build_type: Release
+            cmake_args: -DLM_WERROR=ON
           - name: asan-ubsan
+            cc: gcc
             build_type: Debug
-            cmake_args: -DLM_ASAN=ON
+            cmake_args: -DLM_WERROR=ON -DLM_ASAN=ON
           - name: tsan
+            cc: gcc
             build_type: Debug
-            cmake_args: -DLM_TSAN=ON
+            cmake_args: -DLM_WERROR=ON -DLM_TSAN=ON
           - name: net-off
+            cc: gcc
             build_type: RelWithDebInfo
-            cmake_args: -DLM_BUILD_NET=OFF
+            cmake_args: -DLM_WERROR=ON -DLM_BUILD_NET=OFF
+          - name: clang
+            cc: clang
+            build_type: RelWithDebInfo
+            cmake_args: -DLM_WERROR=ON
+          # clang-only UBSan checks (implicit-integer-truncation, local-bounds, nullability).
+          - name: clang-asan-ubsan
+            cc: clang
+            build_type: Debug
+            cmake_args: -DLM_WERROR=ON -DLM_ASAN=ON
     steps:
       - uses: actions/checkout@v5
 
@@ -62,6 +83,7 @@ jobs:
           docker run --rm --init \
             -v "$PWD:/src" -w /src \
             -e LM_FUZZ_SEED=${{ github.run_number }} \
+            -e LM_CC=${{ matrix.cc }} \
             fedora:43 \
             .github/ci/build-test.sh ${{ matrix.build_type }} ${{ matrix.cmake_args }}
 
@@ -74,3 +96,19 @@ jobs:
             ctest.log
             build/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
+
+  analyze:
+    name: fedora43 (${{ matrix.tool }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [clang-tidy, cppcheck]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Static analysis in fedora:43
+        if: hashFiles('CMakeLists.txt') != ''
+        run: |
+          docker run --rm --init -v "$PWD:/src" -w /src fedora:43 \
+            .github/ci/analyze.sh ${{ matrix.tool }}

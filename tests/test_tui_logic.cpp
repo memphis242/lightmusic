@@ -2,6 +2,7 @@
 #include "common.hpp"
 #include "tui_logic.hpp"
 
+#include <limits>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -76,7 +77,7 @@ static void testCollect() {
 static void testFormat() {
     CHECK(lmtui::formatTime(0) == "0:00");
     CHECK(lmtui::formatTime(-3) == "0:00");
-    CHECK(lmtui::formatTime(0.0 / 0.0) == "0:00");
+    CHECK(lmtui::formatTime(std::numeric_limits<double>::quiet_NaN()) == "0:00");
     CHECK(lmtui::formatTime(59.9) == "0:59");
     CHECK(lmtui::formatTime(61) == "1:01");
     CHECK(lmtui::formatTime(3599) == "59:59");

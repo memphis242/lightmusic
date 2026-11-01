@@ -91,7 +91,7 @@ Server startServer(const std::string &bin, const std::string &db, const std::str
             int devnull = open("/dev/null", O_WRONLY);
             dup2(devnull, 2);
         }
-        execl(bin.c_str(), bin.c_str(), "--db", db.c_str(), "--music", music.c_str(), "--port", "0", (char *)nullptr);
+        execl(bin.c_str(), bin.c_str(), "--db", db.c_str(), "--music", music.c_str(), "--port", "0", static_cast<char *>(nullptr));
         _exit(127);
     }
     close(out[1]);
@@ -151,7 +151,7 @@ int main() {
         return lmtest::kSkip;
     }
     char tmpl[] = "/tmp/lm_stream_e2e_XXXXXX";
-    const std::string tmp = mkdtemp(tmpl);
+    const std::string tmp = lmtest::makeTempDir(tmpl);
     const std::string music = tmp + "/music", db = tmp + "/server.db", cache = tmp + "/cache";
     fs::create_directories(music + "/Album");
     const std::string a = music + "/Album/01 One.flac", b = music + "/Album/02 Two.mp3",
@@ -218,7 +218,7 @@ int main() {
         lm::PlayerState st;
         const auto got = play(*client, {lm::net::Client::trackUri(ids[0]), lm::net::Client::trackUri(ids[1])}, rec, &st);
         std::printf("  streamed: %zu frames (expected %zu), underruns %llu\n", got.size() / 2, expect.size() / 2,
-                    (unsigned long long)st.underruns);
+                    static_cast<unsigned long long>(st.underruns));
         CHECK_EQ(mismatches(got, expect), 0u);
         CHECK_EQ(rec.count(lm::EventType::Error), 0u);
         CHECK(st.track.path.empty() || st.track.path.rfind("lm://", 0) == 0);
@@ -228,7 +228,7 @@ int main() {
         // The cached files are the server's bytes.
         auto e0 = client->cacheEntry(ids[0]);
         CHECK(e0 && fs::file_size(e0->file) == fs::file_size(a));
-        std::printf("  downloaded %llu bytes\n", (unsigned long long)client->stats().downloaded);
+        std::printf("  downloaded %llu bytes\n", static_cast<unsigned long long>(client->stats().downloaded));
     }
     stopServer(srv);
     {

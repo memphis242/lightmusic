@@ -48,14 +48,14 @@ int main() {
     CHECK_EQ(keys.size(), 100u);
 
     // Constant-time compare semantics.
-    Sha256 a = sha256("x"), b = sha256("x"), c = sha256("y");
-    CHECK(constant_time_equal(a, b));
-    CHECK(!constant_time_equal(a, c));
-    Sha256 d = a;
-    d[31] ^= 1;
-    CHECK(!constant_time_equal(a, d));
-    CHECK(!constant_time_equal(a.data(), 32, a.data(), 31));
-    CHECK(constant_time_equal(a.data(), 0, c.data(), 0));
+    Sha256 hx1 = sha256("x"), hx2 = sha256("x"), hy = sha256("y");
+    CHECK(constant_time_equal(hx1, hx2));
+    CHECK(!constant_time_equal(hx1, hy));
+    Sha256 hd = hx1;
+    hd[31] ^= 1;
+    CHECK(!constant_time_equal(hx1, hd));
+    CHECK(!constant_time_equal(hx1.data(), 32, hx1.data(), 31));
+    CHECK(constant_time_equal(hx1.data(), 0, hy.data(), 0));
 
     // Limiter with an injected clock.
     {
@@ -213,7 +213,7 @@ int main() {
     // Storage: only hashes, add / duplicate / verify / revoke.
     {
         char tmpl[] = "/tmp/lm_auth_XXXXXX";
-        std::string dir = mkdtemp(tmpl);
+        std::string dir = lmtest::makeTempDir(tmpl);
         {
             Db db(dir + "/s.db");
             std::string k1 = generate_api_key(), k2 = generate_api_key();
@@ -242,12 +242,12 @@ int main() {
     // Database modes, permissions and the bounded reader pool.
     {
         char tmpl[] = "/tmp/lm_dbm_XXXXXX";
-        std::string dir = mkdtemp(tmpl);
+        std::string dir = lmtest::makeTempDir(tmpl);
         std::string dbp = dir + "/new/sub/s.db";
         mode_t old = umask(022);
         {
             Db w(dbp);
-            struct stat sb;
+            struct stat sb{};
             CHECK(stat(dbp.c_str(), &sb) == 0 && (sb.st_mode & 0777) == 0600);
             CHECK(stat((dir + "/new/sub").c_str(), &sb) == 0 && (sb.st_mode & 0777) == 0700);
             CHECK(stat((dir + "/new").c_str(), &sb) == 0 && (sb.st_mode & 0777) == 0700);

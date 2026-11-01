@@ -8,6 +8,18 @@
 
 namespace lmtest {
 
+// mkdtemp() that aborts the test on failure instead of handing back nullptr
+// (std::string(nullptr) is undefined behaviour).
+inline std::string makeTempDir(char *tmpl) {
+    const char *d = ::mkdtemp(tmpl);
+    if (!d) {
+        std::perror("mkdtemp");
+        std::abort();
+    }
+    return d;
+}
+
+
 inline int g_failures = 0;
 
 #define CHECK(cond)                                                                                                    \
@@ -31,7 +43,7 @@ inline int g_failures = 0;
 
 #define CHECK_NEAR(a, b, tol)                                                                                          \
     do {                                                                                                               \
-        const double va_ = (a), vb_ = (b);                                                                             \
+        const double va_ = static_cast<double>(a), vb_ = static_cast<double>(b);                                                                      \
         if (!(va_ - vb_ <= (tol) && vb_ - va_ <= (tol))) {                                                             \
             std::fprintf(stderr, "%s:%d: CHECK_NEAR failed: %s ~ %s (%f vs %f, tol %f)\n", __FILE__, __LINE__, #a, #b, \
                          va_, vb_, static_cast<double>(tol));                                                          \
