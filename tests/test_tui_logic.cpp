@@ -84,7 +84,7 @@ static void testBrowseHelpers() {
     touch(root / "m/.hidden.mp3");
     touch(root / "m/Disc 10/a.ogg");
     touch(root / "m/Disc 2/a.ogg");
-    fs::create_directories(root / "m/.git");
+    CHECK(fs::create_directories(root / "m/.git"));
     fs::create_directory_symlink(root / "m/Disc 2", root / "m/linked");
     fs::create_symlink(root / "nowhere", root / "m/broken.mp3");
     CHECK_EQ(mkfifo((root / "m/fifo.mp3").c_str(), 0600), 0);
