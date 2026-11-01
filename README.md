@@ -43,6 +43,7 @@ it statically; `-DLM_BUILD_TUI=OFF` skips the TUI altogether.
 ```sh
 build/frontends/tui/lightmusic ~/Music/album              # files and/or directories
 build/frontends/tui/lightmusic --null ~/Music/a.flac      # Null backend (no sound card)
+build/frontends/tui/lightmusic                            # browse ~/Music (b)
 ```
 
 Directories are scanned recursively for `.mp3 .flac .opus .ogg .oga` and sorted
@@ -59,10 +60,31 @@ inserts that much silence between tracks (`playback.gap_seconds`).
 | + / - | volume ±5 % | ? / Esc | help / close help |
 | r | repeat: off → all → one | s | shuffle on / off |
 | a / A | queue selected / play it next | v | show the queue (up next) |
-| P | save offline (remote tracks) | q | quit (also Ctrl-C) |
+| b | browse library / folders | P | save offline (remote tracks) |
+| q | quit (also Ctrl-C) | | |
 
 In the queue pane (`v`): `j`/`k` select, `J`/`K` move the entry down/up, `d` or Delete
 removes it, `c` clears the queue, `enter` plays it now, `Esc`/`v` returns to the list.
+
+**Browser** (`b`). Pick what to play from inside the app. Without `--server` it is a
+folder browser starting at the music folder (`ui.music_dir`; default `$XDG_MUSIC_DIR`
+from `~/.config/user-dirs.dirs`, else `~/Music`): folders first, then audio files, in
+natural order; hidden entries are skipped; `⌫`/`h` goes up, also above the music folder.
+With `--server` the top level offers **Library (server)** — Artists → Albums → Tracks
+from the client's mirror, so it works offline too, with the cache markers (`●` cached,
+`◐` partial, `○` remote, `*` saved offline) and each album's cached share (`3/12
+cached`) — and **Folders**. Keys: `enter`/`l` opens a folder, artist or album; on a track
+it plays that folder's files (or the album) from it, replacing the list; `o` plays the
+selected folder (recursively), album or artist now; `a`/`A` add it to the user queue
+(end / next) without touching the list; `P` saves a server track or a whole album
+offline (again: unsave); `esc`/`b` returns to the list (the browser keeps its place).
+Started without files (and without a server), the TUI opens in the browser with an empty
+list; files or folders given on the command line still work as before. Replacing the
+list keeps the user queue. Only the open level is held in memory, and only the rows on
+screen are drawn: file rows get their "artist — title" label from `lm::readTags` on one
+background thread, only for visible rows (newest first, at most 64 waiting, up to 4096
+labels cached), so a large folder costs nothing until it is scrolled through. An idle
+browser has no timers or threads that wake up.
 
 **User queue ("up next")** (`a`, `A`, `v`). The list you started (the folder, album or
 library: the *context*) and your own queue are kept apart. Queued tracks play before
@@ -660,6 +682,8 @@ playback:
   shuffle: false                    # (hot; also the s key)
 ui:
   show_cache_markers: true          # the ● ◐ ○ * column
+  music_dir: ~/Music                # folder browser start (b); default $XDG_MUSIC_DIR
+                                    # from ~/.config/user-dirs.dirs, else ~/Music
   save_settings: true               # write volume/repeat/shuffle changes made in the
                                     # UI (or over MPRIS) back here
 ```
@@ -679,6 +703,7 @@ ui:
 | `playback.repeat` | – (`r` key) | off | yes |
 | `playback.shuffle` | – (`s` key) | false | yes |
 | `ui.show_cache_markers` | – | true | restart |
+| `ui.music_dir` | – | `$XDG_MUSIC_DIR`, else `~/Music` | yes (next time the browser opens at the top) |
 | `ui.save_settings` | – | true | yes |
 
 **Value forms.** Numbers are plain decimal integers: an optional sign and digits, no

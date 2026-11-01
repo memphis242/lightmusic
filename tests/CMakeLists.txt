@@ -37,6 +37,14 @@ if(TARGET lightmusic)
   target_link_libraries(test_tui_logic PRIVATE lm::tui_logic)
   add_test(NAME test_tui_smoke COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/test_tui_smoke.sh $<TARGET_FILE:lightmusic>)
   set_tests_properties(test_tui_smoke PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+  # Browser: folders always; the server library when the TUI has libnet and the server exists.
+  if(TARGET lm::net AND TARGET lightmusicd)
+    add_test(NAME test_tui_browse COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/test_tui_browse.sh
+                                          $<TARGET_FILE:lightmusic> $<TARGET_FILE:lightmusicd>)
+  else()
+    add_test(NAME test_tui_browse COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/test_tui_browse.sh $<TARGET_FILE:lightmusic>)
+  endif()
+  set_tests_properties(test_tui_browse PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
 endif()
 
 if(TARGET lightmusicd)

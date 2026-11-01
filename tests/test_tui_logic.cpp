@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -74,6 +75,42 @@ static void testCollect() {
     fs::remove_all(root);
 }
 
+static void testBrowseHelpers() {
+    const fs::path root = fs::temp_directory_path() / ("lm_tui_browse_" + std::to_string(getpid()));
+    fs::remove_all(root);
+    touch(root / "m/10 ten.mp3");
+    touch(root / "m/2 two.FLAC");
+    touch(root / "m/cover.jpg");
+    touch(root / "m/.hidden.mp3");
+    touch(root / "m/Disc 10/a.ogg");
+    touch(root / "m/Disc 2/a.ogg");
+    CHECK(fs::create_directories(root / "m/.git"));
+    fs::create_directory_symlink(root / "m/Disc 2", root / "m/linked");
+    fs::create_symlink(root / "nowhere", root / "m/broken.mp3");
+    CHECK_EQ(mkfifo((root / "m/fifo.mp3").c_str(), 0600), 0);
+    std::string err;
+    const auto v = lmtui::listDir((root / "m").string(), &err);
+    std::vector<std::string> names;
+    for (auto &e : v) names.push_back(e.name + (e.dir ? "/" : ""));
+    CHECK((names == std::vector<std::string>{"Disc 2/", "Disc 10/", "linked/", "2 two.FLAC", "10 ten.mp3"}));
+    CHECK(err.empty());
+    CHECK(lmtui::listDir((root / "missing").string(), &err).empty());
+    CHECK(err.find("No such file") != std::string::npos);
+    fs::remove_all(root);
+
+    CHECK(lmtui::parentDir("/a/b") == "/a");
+    CHECK(lmtui::parentDir("/a/b/") == "/a");
+    CHECK(lmtui::parentDir("/a") == "/");
+    CHECK(lmtui::parentDir("/") == "/");
+
+    CHECK(lmtui::defaultMusicDir("/h", "") == "/h/Music");
+    CHECK(lmtui::defaultMusicDir("/h", "# c\nXDG_MUSIC_DIR=\"$HOME/Musik\"\n") == "/h/Musik");
+    CHECK(lmtui::defaultMusicDir("/h", "XDG_MUSIC_DIR=\"/srv/music/\"") == "/srv/music");
+    CHECK(lmtui::defaultMusicDir("/h", "XDG_MUSIC_DIR=\"$HOME\"") == "/h/Music");
+    CHECK(lmtui::defaultMusicDir("/h", "XDG_MUSIC_DIR=relative") == "/h/Music");
+    CHECK(lmtui::defaultMusicDir("/h", "  XDG_DOWNLOAD_DIR=\"$HOME/D\"\n  XDG_MUSIC_DIR=\"$HOME/M\"") == "/h/M");
+}
+
 static void testFormat() {
     CHECK(lmtui::formatTime(0) == "0:00");
     CHECK(lmtui::formatTime(-3) == "0:00");
@@ -116,6 +153,16 @@ static void testKeys() {
     CHECK(lmtui::mapKey("s") == Command::ToggleShuffle);
     CHECK(lmtui::mapKey("R") == Command::None);
     CHECK(lmtui::mapKey("a") == Command::QueueAdd);
+    CHECK(lmtui::mapKey("b") == Command::ToggleBrowser);
+    CHECK(lmtui::mapKey("o") == Command::None);
+    CHECK(lmtui::mapBrowserKey("o") == Command::BrowsePlay);
+    CHECK(lmtui::mapBrowserKey("backspace") == Command::BrowseUp);
+    CHECK(lmtui::mapBrowserKey("h") == Command::BrowseUp);
+    CHECK(lmtui::mapBrowserKey("l") == Command::PlaySelected);
+    CHECK(lmtui::mapBrowserKey("enter") == Command::PlaySelected);
+    CHECK(lmtui::mapBrowserKey("escape") == Command::ToggleBrowser);
+    CHECK(lmtui::mapBrowserKey("a") == Command::QueueAdd);
+    CHECK(lmtui::mapBrowserKey(" ") == Command::TogglePause);
     CHECK(lmtui::mapKey("home") == Command::SeekStart);
     CHECK(lmtui::mapKey("end") == Command::SeekEnd);
     CHECK(lmtui::mapKey("g") == Command::SelectFirst);
@@ -174,6 +221,7 @@ static void testKeyParser() {
     CHECK(p.feed("\x1bOA\x1bOH\x1b[F") == (V{"up", "home", "end"}));
     CHECK(p.feed("\x1b[5~\x1b[6~\x1b[1~\x1b[4~") == (V{"pageup", "pagedown", "home", "end"}));
     CHECK(p.feed("\x1b[3~") == (V{"delete"}));
+    CHECK(p.feed("\x7f\x08") == (V{"backspace", "backspace"}));
     CHECK(p.feed("\x1b[1;5C") == (V{"right"}));   // Ctrl-Right -> right
     CHECK(p.feed("\x1b[200~x").size() == 1);     // unknown sequence dropped, x kept
     CHECK(p.feed("\r\n\x03") == (V{"enter", "enter", "ctrl-c"}));
@@ -192,13 +240,13 @@ static void testKeyParser() {
     // UTF-8 passes through whole, even when split.
     CHECK(p.feed("\xc3").empty());
     CHECK(p.feed("\xa9" "a") == (V{"\xc3\xa9", "a"}));
-    CHECK(p.feed("\x01\x7f").empty()); // other control bytes ignored
+    CHECK(p.feed("\x01\x02").empty()); // other control bytes ignored
     CHECK(!p.pending());
 
     // Malformed CSI: a byte outside 0x40..0x7e where the final byte belongs ends the
     // sequence attempt; ESC is reported and the rest is reparsed.
     CHECK(p.feed("\x1b[\x03") == (V{"escape", "[", "ctrl-c"}));
-    CHECK(p.feed("\x1b[1\x7fq") == (V{"escape", "[", "1", "q"}));
+    CHECK(p.feed("\x1b[1\x7fq") == (V{"escape", "[", "1", "backspace", "q"}));
     CHECK(p.feed("\x1b[\xc3\xa9") == (V{"escape", "[", "\xc3\xa9"}));
     CHECK(p.feed("\x1bO\rn") == (V{"escape", "O", "enter", "n"}));
     CHECK(p.feed("\x1b[\x1b[A") == (V{"escape", "[", "up"}));
@@ -279,6 +327,7 @@ int main() {
     testExtensions();
     testCollect();
     testFormat();
+    testBrowseHelpers();
     testKeys();
     return lmtest::finish("test_tui_logic");
 }

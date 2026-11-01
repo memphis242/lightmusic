@@ -1,7 +1,7 @@
 // lightmusic: terminal UI on top of libplayer, drawn with FTXUI's DOM (no
 // ScreenInteractive).
 //
-//   lightmusic [--null] [--rg] [--gap SECONDS] FILE|DIR...
+//   lightmusic [--null] [--rg] [--gap SECONDS] [FILE|DIR...]   (none: start in the browser)
 //   lightmusic --server URL --key-file PATH [--album ID]... [--list] [FILE|DIR...]
 //
 // With --server, the library is synced into the local mirror (libnet) and the remote
@@ -19,7 +19,11 @@
 //     off the UI thread. Position events (~1 Hz, only while playing) drive the progress
 //     redraw; there is no UI timer.
 //   - Queue labels come from a detached tag-scanner thread through a shared `LabelBox`
-//     and the same pipe; quitting never waits for it.
+//     and the same pipe; quitting never waits for it. A new list (chosen in the
+//     browser) gets a new box and scanner.
+//   - Browser rows (b) are labelled lazily by `TagWorker`: one detached thread, started
+//     on first use, reads tags only for rows on screen and wakes the loop the same way;
+//     idle it sleeps on a condition variable.
 //   - SIGWINCH/SIGINT/SIGTERM/SIGHUP/SIGCONT handlers set a flag and write to the same
 //     pipe. These signals (and SIGTSTP/SIGQUIT) are blocked before the player starts its
 //     threads, which inherit the mask, so asynchronous signals are only ever handled on
@@ -58,6 +62,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <unordered_map>
 #include <chrono>
 #include <cerrno>
 #include <csignal>
@@ -78,6 +85,7 @@ using namespace ftxui;
 namespace {
 
 int g_wakeWrite = -1;
+sigset_t g_async; // the asynchronous signals only the UI thread takes (set in run())
 static_assert(std::atomic<int>::is_always_lock_free, "signal flags must be lock-free");
 static_assert(std::atomic<bool>::is_always_lock_free, "uiActive is shared with the network thread");
 std::atomic<int> g_resized{0};
@@ -234,6 +242,130 @@ private:
     std::vector<std::pair<std::size_t, std::string>> labels_;
 };
 
+// Starts a detached helper thread with the asynchronous signals blocked (they belong to
+// the UI thread; see the file header).
+template <class F> void spawnDetached(F &&fn) {
+    // pthread_sigmask() fails only for an invalid `how` (EINVAL).
+    sigset_t old;
+    (void)pthread_sigmask(SIG_BLOCK, &g_async, &old);
+    try {
+        std::thread(std::forward<F>(fn)).detach();
+    } catch (...) {
+        (void)pthread_sigmask(SIG_SETMASK, &old, nullptr);
+        throw;
+    }
+    (void)pthread_sigmask(SIG_SETMASK, &old, nullptr);
+}
+
+// Lazy tag labels for the folder browser. The UI asks only for the file rows it draws;
+// one detached worker thread (started on the first request) reads them, newest request
+// first, with at most kMaxPending waiting (older ones are dropped and asked again if
+// still visible), and wakes the UI through the self-pipe. Labels are cached on the UI
+// thread, at most kMaxCache of them. Idle, the worker sleeps on a condition variable.
+class TagWorker {
+public:
+    TagWorker() = default;
+    TagWorker(const TagWorker &) = delete;
+    TagWorker &operator=(const TagWorker &) = delete;
+    ~TagWorker() {
+        {
+            std::lock_guard lk(sh_->m);
+            sh_->stop = true;
+        }
+        sh_->cv.notify_all();
+    }
+    // UI thread: the label for `path`, or nullptr while it is being read (requested once).
+    const std::string *label(const std::string &path) {
+        if (auto it = cache_.find(path); it != cache_.end()) return it->second.empty() ? nullptr : &it->second;
+        if (cache_.size() >= kMaxCache) cache_.clear();
+        cache_.emplace(path, std::string());
+        bool start = false;
+        {
+            std::lock_guard lk(sh_->m);
+            sh_->want.push_back(path);
+            if (sh_->want.size() > kMaxPending) {
+                cache_.erase(sh_->want.front()); // asked again when drawn again
+                sh_->want.pop_front();
+            }
+            start = !std::exchange(sh_->running, true);
+        }
+        if (start) {
+            spawnDetached([sh = sh_] {
+                std::unique_lock lk(sh->m);
+                for (;;) {
+                    sh->cv.wait(lk, [&] { return sh->stop || !sh->want.empty(); });
+                    if (sh->stop) return;
+                    std::string p = std::move(sh->want.back()); // newest first: what is on screen now
+                    sh->want.pop_back();
+                    lk.unlock();
+                    lm::Tags t;
+                    std::string l = lm::readTags(p, t) && !t.title.empty() ? lmtui::trackLabel(t.artist, t.title, p)
+                                                                           : lmtui::displayName(p);
+                    lk.lock();
+                    if (sh->stop) return;
+                    sh->done.emplace_back(std::move(p), std::move(l));
+                    wake();
+                }
+            });
+        } else {
+            sh_->cv.notify_one();
+        }
+        return nullptr;
+    }
+    // UI thread: takes finished labels; true if there were any (redraw).
+    bool drain() {
+        std::vector<std::pair<std::string, std::string>> d;
+        {
+            std::lock_guard lk(sh_->m);
+            d.swap(sh_->done);
+        }
+        for (auto &[p, l] : d)
+            if (auto it = cache_.find(p); it != cache_.end()) it->second = std::move(l);
+        return !d.empty();
+    }
+
+private:
+    static constexpr std::size_t kMaxCache = 4096, kMaxPending = 64;
+    struct Shared {
+        std::mutex m;
+        std::condition_variable cv;
+        std::deque<std::string> want;
+        std::vector<std::pair<std::string, std::string>> done;
+        bool stop = false, running = false;
+    };
+    std::shared_ptr<Shared> sh_ = std::make_shared<Shared>();
+    std::unordered_map<std::string, std::string> cache_; // "" = being read
+};
+
+// A track to put into the player: path or lm:// URI, list label, remote id (0: local).
+struct Spec {
+    std::string path, name;
+    std::int64_t remote = 0;
+};
+
+// In-app browser: a stack of levels (folder browser, or library Artists -> Albums ->
+// Tracks from the client's mirror). Only the current stack is held in memory and only
+// visible rows are drawn (and tagged).
+struct BrowseRow {
+    enum Kind { Dir, File, Root, Artist, Album, Track } kind = Dir;
+    std::string label; // Dir/File: the entry name
+    std::string path;  // Dir/File: absolute path; Root: "library"/"folders"; Artist: name
+    std::int64_t id = 0; // Album/Track
+    std::string sub;     // dim suffix: counts, duration, cached share
+    int cache = -1;      // Track: cache state (see cacheGlyph)
+    bool pinned = false;
+};
+struct BrowseLevel {
+    std::string title;
+    std::string dir; // folder levels: the directory
+    std::vector<BrowseRow> rows;
+    int selected = 0;
+};
+struct Browser {
+    bool open = false;
+    std::vector<BrowseLevel> stack;
+};
+
 // Raw-ish terminal mode on the alternate screen; restored by the destructor (and by
 // the crash/stop handlers through the same globals).
 class Tty {
@@ -297,6 +429,10 @@ struct Ui {
     // qselected indexes st.upNext.
     bool queueView = false;
     int qselected = 0;
+    // Entries [0, ctx) are the context (the list); later ones were added to the user
+    // queue only (from the browser). The arrays above mirror the player's entries.
+    std::size_t ctx = 0;
+    Browser browser;
     // Last volume we asked for and the player has not yet confirmed. setVolume() is
     // asynchronous, so both ui.st and player.state() can lag during key repeat.
     std::optional<float> volumeTarget;
@@ -352,11 +488,48 @@ Element renderUpNext(const Ui &ui, int height) {
     return vbox(std::move(rows)) | yframe | flex;
 }
 
-Element render(const Ui &ui, int height) {
+// The browser pane: title (where we are) and the visible window of the current level.
+// File rows ask the tag worker for their label (visible rows only).
+Element renderBrowser(const Ui &ui, TagWorker &tags, int height) {
+    Elements rows;
+    if (ui.browser.stack.empty()) return text("");
+    const BrowseLevel &lv = ui.browser.stack.back();
+    rows.push_back(hbox({text(lv.title) | bold, filler(),
+                         text("enter open  o play  a/A queue  ⌫ up  esc back") | dim}));
+    const int total = static_cast<int>(lv.rows.size());
+    const int visible = std::max(1, queueRows(height) - 1);
+    const int first = std::clamp(lv.selected - visible / 2, 0, std::max(0, total - visible));
+    const int stop = std::min(total, first + visible);
+    for (int i = first; i < stop; i++) {
+        const BrowseRow &r = lv.rows[static_cast<std::size_t>(i)];
+        std::string name = r.label;
+        if (r.kind == BrowseRow::File) {
+            const std::string *l = tags.label(r.path);
+            name = l ? *l : lmtui::displayName(r.label);
+        }
+        Element mark = text("  ");
+        if (r.kind == BrowseRow::Dir || r.kind == BrowseRow::Root || r.kind == BrowseRow::Artist ||
+            r.kind == BrowseRow::Album)
+            mark = text("▸ ") | dim;
+        else if (r.kind == BrowseRow::Track && ui.showCacheMarkers)
+        {
+            mark = text(lmtui::cacheGlyph(r.cache, r.pinned) + " ");
+            if (r.cache == 2) mark = mark | color(Color::Cyan);
+        }
+        Element row = hbox({text(" "), mark, text(name), filler(), text(r.sub) | dim, text(" ")});
+        if (r.kind == BrowseRow::Track && r.cache == 0 && ui.net.rfind("offline", 0) == 0) row = row | dim;
+        if (i == lv.selected) row = row | inverted;
+        rows.push_back(std::move(row));
+    }
+    if (lv.rows.empty()) rows.push_back(text("  (empty)") | dim);
+    return vbox(std::move(rows)) | yframe | flex;
+}
+
+Element render(const Ui &ui, TagWorker &tags, int height) {
     const auto &st = ui.st;
     // Queue: only build the visible window around the selection (a 10k-track queue
     // would otherwise build 10k rows per frame).
-    const int total = static_cast<int>(ui.names.size());
+    const int total = static_cast<int>(std::min(ui.ctx, ui.names.size()));
     const int visible = queueRows(height);
     const int first = std::clamp(ui.selected - visible / 2, 0, std::max(0, total - visible));
     const int stop = std::min(total, first + visible);
@@ -383,8 +556,10 @@ Element render(const Ui &ui, int height) {
         if (sel) row = row | inverted;
         rows.push_back(std::move(row));
     }
-    if (rows.empty()) rows.push_back(text("(no tracks)") | dim);
-    Element queue = ui.queueView ? renderUpNext(ui, height) : vbox(std::move(rows)) | yframe | flex;
+    if (rows.empty()) rows.push_back(text("(no tracks: b browses the library / folders)") | dim);
+    Element queue = ui.browser.open ? renderBrowser(ui, tags, height)
+                    : ui.queueView  ? renderUpNext(ui, height)
+                                    : vbox(std::move(rows)) | yframe | flex;
 
     // Now playing: title (or file name), then artist and album when tagged.
     std::string title = "—", sub;
@@ -425,7 +600,7 @@ Element render(const Ui &ui, int height) {
 }
 
 void usage(FILE *f) {
-    (void)std::fputs("usage: lightmusic [--null] [--rg] [--gap SECONDS] FILE|DIR...\n"
+    (void)std::fputs("usage: lightmusic [--null] [--rg] [--gap SECONDS] [FILE|DIR...]   (none: browse the music folder)\n"
                "       lightmusic --server URL --key-file PATH [--album ID]... [--list]\n"
                "                  [--cache-dir DIR] [--cache-max-mb N] [--no-fill] [--pause-on-metered]\n"
                "                  [--null] [--rg] [--gap SECONDS] [FILE|DIR...]\n"
@@ -477,7 +652,7 @@ void apply(Ui &ui, const lm::Event &ev) {
     case lm::EventType::Error: ui.message = "error: " + ev.message; break;
     case lm::EventType::TrackChanged:
         ui.message.clear();
-        if (ev.state.index >= 0) ui.selected = ev.state.index;
+        if (ev.state.index >= 0 && static_cast<std::size_t>(ev.state.index) < ui.ctx) ui.selected = ev.state.index;
         if (ev.state.index >= 0 && static_cast<std::size_t>(ev.state.index) < ui.names.size() &&
             ev.state.track.path == ui.paths[static_cast<std::size_t>(ev.state.index)])
             ui.names[static_cast<std::size_t>(ev.state.index)] =
@@ -560,10 +735,8 @@ int run(int argc, char **argv) {
     if (set.replayGain == lm::config::ReplayGain::Album)
         (void)std::fputs("lightmusic: playback.replaygain: album gain is not supported yet; using track gain\n", stderr);
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;
-    if (args.empty() && server.empty()) {
-        usage(stderr);
-        return 2;
-    }
+    // No files and no server: start with an empty list in the folder browser.
+    const bool browseAtStart = args.empty() && server.empty();
     if (server.empty() != keyFile.empty() && !server.empty()) {
         (void)std::fputs("lightmusic: --server and --key-file go together (server.url needs server.key_file)\n", stderr);
         return 2;
@@ -588,7 +761,7 @@ int run(int argc, char **argv) {
         return 1;
     }
     g_wakeWrite = pipeFds[1];
-    sigset_t async;
+    sigset_t &async = g_async;
     (void)sigemptyset(&async);
     for (int sig : {SIGWINCH, SIGINT, SIGTERM, SIGHUP, SIGCONT, SIGTSTP, SIGQUIT}) (void)sigaddset(&async, sig);
 
@@ -709,7 +882,8 @@ int run(int argc, char **argv) {
         if (offline) ui.message = "offline: " + netNote;
     }
 #endif
-    if (ui.paths.empty()) {
+    ui.ctx = ui.paths.size();
+    if (ui.paths.empty() && !browseAtStart) {
         (void)std::fputs(server.empty() ? "lightmusic: no playable files\n" : "lightmusic: no playable tracks\n", stderr);
         return 1;
     }
@@ -732,21 +906,28 @@ int run(int argc, char **argv) {
         };
         // Labels the queue from tags in the background (file names until then). The
         // scanner owns its state through a shared_ptr and is detached: quitting never
-        // waits for it, even if a read blocks (slow or network file). It is started
-        // while the async signals are still blocked, so it inherits that mask.
+        // waits for it, even if a read blocks (slow or network file). It runs with the
+        // async signals blocked (spawnDetached). A new list (browser) gets a new box; the
+        // old scanner's results are then dropped.
         auto labels = std::make_shared<LabelBox>();
-        std::thread([labels, paths = ui.paths, remote = ui.remote] {
-            for (std::size_t i = 0; i < paths.size() && !labels->stopped(); i++) {
-                if (remote[i]) continue; // labelled from the library mirror
-                lm::Tags t;
-                if (lm::readTags(paths[i], t) && !t.title.empty())
-                    labels->push(i, lmtui::trackLabel(t.artist, t.title, paths[i]));
-            }
-        }).detach();
+        auto scanLabels = [&](std::size_t from) { // entries from `from` on
+            if (from >= ui.paths.size()) return;
+            spawnDetached([box = labels, from, paths = std::vector<std::string>(ui.paths.begin() + static_cast<std::ptrdiff_t>(from), ui.paths.end()),
+                           remote = std::vector<std::int64_t>(ui.remote.begin() + static_cast<std::ptrdiff_t>(from), ui.remote.end())] {
+                for (std::size_t i = 0; i < paths.size() && !box->stopped(); i++) {
+                    if (remote[i]) continue; // labelled from the library mirror
+                    lm::Tags t;
+                    if (lm::readTags(paths[i], t) && !t.title.empty())
+                        box->push(from + i, lmtui::trackLabel(t.artist, t.title, paths[i]));
+                }
+            });
+        };
+        scanLabels(0);
         struct StopScan {
-            LabelBox &box;
-            ~StopScan() { box.stop(); }
-        } stopScan{*labels};
+            std::shared_ptr<LabelBox> &box;
+            ~StopScan() { box->stop(); }
+        } stopScan{labels};
+        TagWorker tagWorker; // browser rows
         std::optional<lm::Player> playerHolder;
         try {
             playerHolder.emplace(std::move(cfg));
@@ -762,7 +943,7 @@ int run(int argc, char **argv) {
             player.setVolume(*ui.volumeTarget);
         }
         ui.st = player.state();
-        player.play();
+        if (!browseAtStart) player.play();
         // MPRIS (media keys); sd-bus fd joins the poll below. Diagnostics go to the status
         // line (stderr would corrupt the screen); shown on the next redraw.
         bool mprisNote = false; // a diagnostic arrived: redraw
@@ -891,21 +1072,329 @@ int run(int argc, char **argv) {
                     }
                 ui.message = msg;
             };
-            const int last = static_cast<int>(ui.paths.size()) - 1;
-            auto select = [&](int i) { ui.selected = std::clamp(i, 0, last); };
+            auto last = [&] { return std::max(0, static_cast<int>(ui.ctx) - 1); };
+            auto select = [&](int i) { ui.selected = std::clamp(i, 0, last()); };
 
-            // Selection in the list, or in the queue pane while it is open.
+            // ---- browser ----
+            auto musicRoot = [&]() -> std::string {
+                if (!live.running.musicDir.empty()) return live.running.musicDir;
+                const char *home = std::getenv("HOME");
+                const std::string h = home && *home ? home : "/";
+                const char *xdg = std::getenv("XDG_CONFIG_HOME");
+                const std::string dirsFile =
+                    (xdg && *xdg == '/' ? std::string(xdg) : h + "/.config") + "/user-dirs.dirs";
+                std::string content;
+                if (FILE *f = std::fopen(dirsFile.c_str(), "re")) { // small text file
+                    char buf[4096];
+                    const std::size_t n = std::fread(buf, 1, sizeof buf, f);
+                    content.assign(buf, n);
+                    (void)std::fclose(f); // read-only: nothing to flush
+                }
+                return lmtui::defaultMusicDir(h, content);
+            };
+            auto folderLevel = [&](const std::string &dir) {
+                BrowseLevel lv;
+                lv.dir = dir;
+                lv.title = dir;
+                std::string err;
+                for (auto &e : lmtui::listDir(dir, &err)) {
+                    BrowseRow r;
+                    r.kind = e.dir ? BrowseRow::Dir : BrowseRow::File;
+                    r.path = dir == "/" ? "/" + e.name : dir + "/" + e.name;
+                    r.label = e.dir ? e.name + "/" : e.name;
+                    lv.rows.push_back(std::move(r));
+                }
+                if (!err.empty()) ui.message = err;
+                return lv;
+            };
+#ifdef LM_TUI_NET
+            auto cachedShare = [&](const std::vector<lm::net::Track> &ts) {
+                std::size_t n = 0;
+                for (const auto &t : ts) n += client->cacheInfo(t.id).state == lm::net::CacheState::Cached;
+                return std::to_string(n) + "/" + std::to_string(ts.size()) + " cached";
+            };
+            auto artistLevel = [&] {
+                BrowseLevel lv;
+                lv.title = "Library: artists";
+                std::vector<std::pair<std::string, int>> artists; // name, album count
+                for (const auto &al : client->albums()) {
+                    auto it = std::find_if(artists.begin(), artists.end(), [&](auto &a) { return a.first == al.artist; });
+                    if (it == artists.end()) artists.emplace_back(al.artist, 1);
+                    else it->second++;
+                }
+                std::sort(artists.begin(), artists.end(),
+                          [](auto &a, auto &b) { // "(unknown artist)" last
+                              if (a.first.empty() != b.first.empty()) return b.first.empty();
+                              return lmtui::naturalLess(a.first, b.first);
+                          });
+                for (auto &[name, n] : artists) {
+                    BrowseRow r;
+                    r.kind = BrowseRow::Artist;
+                    r.label = name.empty() ? "(unknown artist)" : name;
+                    r.path = name;
+                    r.sub = std::to_string(n) + (n == 1 ? " album" : " albums");
+                    lv.rows.push_back(std::move(r));
+                }
+                return lv;
+            };
+            auto albumLevel = [&](const std::string &artist) {
+                BrowseLevel lv;
+                lv.title = "Library: " + (artist.empty() ? std::string("(unknown artist)") : artist);
+                for (const auto &al : client->albums()) {
+                    if (al.artist != artist) continue;
+                    BrowseRow r;
+                    r.kind = BrowseRow::Album;
+                    r.id = al.id;
+                    r.label = al.title + (al.year ? " (" + std::to_string(al.year) + ")" : "");
+                    r.sub = cachedShare(client->tracksOfAlbum(al.id));
+                    lv.rows.push_back(std::move(r));
+                }
+                return lv;
+            };
+            auto trackLevel = [&](std::int64_t albumId, const std::string &title) {
+                BrowseLevel lv;
+                lv.title = "Library: " + title;
+                for (const auto &t : client->tracksOfAlbum(albumId)) {
+                    BrowseRow r;
+                    r.kind = BrowseRow::Track;
+                    r.id = t.id;
+                    r.label = (t.trackNo ? std::to_string(t.trackNo) + ". " : std::string()) +
+                              lmtui::trackLabel(t.artist == t.albumArtist ? std::string() : t.artist, t.title,
+                                                t.title.empty() ? "?" : t.title);
+                    r.sub = lmtui::formatTime(static_cast<double>(t.durationMs) / 1000);
+                    const auto ci = client->cacheInfo(t.id);
+                    r.cache = static_cast<int>(ci.state);
+                    r.pinned = ci.pinned;
+                    lv.rows.push_back(std::move(r));
+                }
+                return lv;
+            };
+            auto remoteSpec = [](const lm::net::Track &t) {
+                return Spec{lm::net::Client::trackUri(t.id),
+                            lmtui::trackLabel(t.artist, t.title, t.title.empty() ? "?" : t.title), t.id};
+            };
+            // Cache glyphs and album shares of the open level (after a cache change).
+            auto refreshBrowser = [&] {
+                if (!client || ui.browser.stack.empty()) return;
+                for (auto &r : ui.browser.stack.back().rows) {
+                    if (r.kind == BrowseRow::Track) {
+                        const auto ci = client->cacheInfo(r.id);
+                        r.cache = static_cast<int>(ci.state);
+                        r.pinned = ci.pinned;
+                    } else if (r.kind == BrowseRow::Album) {
+                        r.sub = cachedShare(client->tracksOfAlbum(r.id));
+                    }
+                }
+            };
+#endif
+            auto rootLevel = [&] {
+#ifdef LM_TUI_NET
+                if (client) {
+                    BrowseLevel lv;
+                    lv.title = "Browse";
+                    lv.rows.push_back(BrowseRow{BrowseRow::Root, "Library (server)", "library", 0,
+                                                offline ? "offline: cached tracks play" : "", -1, false});
+                    lv.rows.push_back(BrowseRow{BrowseRow::Root, "Folders", "folders", 0, musicRoot(), -1, false});
+                    return lv;
+                }
+#endif
+                return folderLevel(musicRoot());
+            };
+            // Tracks under a row: a folder recursively, an album, an artist's albums.
+            auto tracksOf = [&](const BrowseRow &r) {
+                std::vector<Spec> v;
+                auto local = [&](const std::vector<std::string> &paths) {
+                    for (const auto &p : paths) v.push_back(Spec{p, lmtui::displayName(p), 0});
+                };
+                switch (r.kind) {
+                case BrowseRow::Dir: local(lmtui::collectTracks({r.path}, nullptr)); break;
+                case BrowseRow::File: local({r.path}); break;
+                case BrowseRow::Root: break;
+#ifdef LM_TUI_NET
+                case BrowseRow::Artist:
+                    for (const auto &al : client->albums())
+                        if (al.artist == r.path)
+                            for (const auto &t : client->tracksOfAlbum(al.id)) v.push_back(remoteSpec(t));
+                    break;
+                case BrowseRow::Album:
+                    for (const auto &t : client->tracksOfAlbum(r.id)) v.push_back(remoteSpec(t));
+                    break;
+                case BrowseRow::Track:
+                    if (auto t = client->track(r.id)) v.push_back(remoteSpec(*t));
+                    break;
+#else
+                default: break;
+#endif
+                }
+                return v;
+            };
+            auto pushEntry = [&](Spec sp) {
+                ui.paths.push_back(std::move(sp.path));
+                ui.names.push_back(std::move(sp.name));
+                ui.remote.push_back(sp.remote);
+                ui.cache.push_back(sp.remote ? 0 : -1);
+                ui.pinned.push_back(0);
+            };
+            auto specOf = [&](std::size_t e) { return Spec{ui.paths[e], ui.names[e], ui.remote[e]}; };
+            // Makes `specs` the new list (context) and plays it from `start`. The user
+            // queue is kept: its tracks are re-added after the new list.
+            auto replaceContext = [&](std::vector<Spec> specs, int start) {
+                if (specs.empty()) {
+                    ui.message = "no playable tracks there";
+                    return;
+                }
+                std::vector<Spec> keep;
+                for (int e : ui.st.upNext)
+                    if (e >= 0 && static_cast<std::size_t>(e) < ui.paths.size()) keep.push_back(specOf(static_cast<std::size_t>(e)));
+                ui.paths.clear();
+                ui.names.clear();
+                ui.remote.clear();
+                ui.cache.clear();
+                ui.pinned.clear();
+                std::vector<std::string> ctxPaths, keepPaths;
+                for (auto &sp : specs) {
+                    ctxPaths.push_back(sp.path);
+                    pushEntry(std::move(sp));
+                }
+                ui.ctx = ui.paths.size();
+                for (auto &sp : keep) {
+                    keepPaths.push_back(sp.path);
+                    pushEntry(std::move(sp));
+                }
+                labels->stop(); // results of the old scanner refer to the old list
+                labels = std::make_shared<LabelBox>();
+                scanLabels(0);
+                player.clearQueue();
+                player.enqueue(std::move(ctxPaths));
+                if (!keepPaths.empty()) player.queueAdd(std::move(keepPaths));
+                player.playIndex(start);
+                ui.st.upNext.clear();
+                ui.st.index = -1;
+                ui.selected = std::clamp(start, 0, last());
+                ui.browser.open = false;
+                ui.queueView = false;
+#ifdef LM_TUI_NET
+                if (client) refreshCache(ui, *client, offline);
+#endif
+            };
+            // Adds tracks to the user queue as new entries (outside the list).
+            auto queueSpecs = [&](std::vector<Spec> specs, bool next) {
+                if (specs.empty()) {
+                    ui.message = "no playable tracks there";
+                    return;
+                }
+                const std::size_t from = ui.paths.size();
+                std::vector<std::string> paths;
+                for (auto &sp : specs) {
+                    paths.push_back(sp.path);
+                    pushEntry(std::move(sp));
+                }
+                scanLabels(from);
+                ui.message = (next ? "plays next: " : "queued: ") +
+                             (paths.size() == 1 ? ui.names[from] : std::to_string(paths.size()) + " tracks");
+                player.queueAdd(std::move(paths), next);
+#ifdef LM_TUI_NET
+                if (client) refreshCache(ui, *client, offline);
+#endif
+            };
+            auto browseRow = [&]() -> BrowseRow * {
+                if (ui.browser.stack.empty()) return nullptr;
+                auto &lv = ui.browser.stack.back();
+                if (lv.selected < 0 || static_cast<std::size_t>(lv.selected) >= lv.rows.size()) return nullptr;
+                return &lv.rows[static_cast<std::size_t>(lv.selected)];
+            };
+            auto browseOpen = [&] {
+                BrowseRow *r = browseRow();
+                if (!r) return;
+                auto &lv = ui.browser.stack.back();
+                switch (r->kind) {
+                case BrowseRow::Dir: ui.browser.stack.push_back(folderLevel(r->path)); break;
+                case BrowseRow::Root:
+#ifdef LM_TUI_NET
+                    if (r->path == "library") {
+                        ui.browser.stack.push_back(artistLevel());
+                        break;
+                    }
+#endif
+                    ui.browser.stack.push_back(folderLevel(musicRoot()));
+                    break;
+                case BrowseRow::File: {
+                    // Play this folder's files (this level, not subfolders) from here.
+                    std::vector<Spec> v;
+                    int start = 0;
+                    for (const auto &x : lv.rows)
+                        if (x.kind == BrowseRow::File) {
+                            if (&x == r) start = static_cast<int>(v.size());
+                            v.push_back(Spec{x.path, lmtui::displayName(x.path), 0});
+                        }
+                    replaceContext(std::move(v), start);
+                    break;
+                }
+#ifdef LM_TUI_NET
+                case BrowseRow::Artist: ui.browser.stack.push_back(albumLevel(r->path)); break;
+                case BrowseRow::Album: ui.browser.stack.push_back(trackLevel(r->id, r->label)); break;
+                case BrowseRow::Track: {
+                    // Play the album from this track.
+                    std::vector<Spec> v;
+                    int start = 0;
+                    for (const auto &x : lv.rows)
+                        if (auto t = client->track(x.id)) {
+                            if (&x == r) start = static_cast<int>(v.size());
+                            v.push_back(remoteSpec(*t));
+                        }
+                    replaceContext(std::move(v), start);
+                    break;
+                }
+#else
+                default: break;
+#endif
+                }
+            };
+            auto browseUp = [&] {
+                auto &st = ui.browser.stack;
+                if (st.size() > 1) {
+                    st.pop_back();
+                    return;
+                }
+                // At the top of the folder browser: go above the music folder.
+                if (st.empty() || st.back().dir.empty() || st.back().dir == "/") return;
+                const std::string from = st.back().dir;
+                st.back() = folderLevel(lmtui::parentDir(from));
+                for (std::size_t i = 0; i < st.back().rows.size(); i++)
+                    if (st.back().rows[i].path == from) st.back().selected = static_cast<int>(i);
+            };
+            if (browseAtStart) {
+                ui.browser.open = true;
+                ui.browser.stack.push_back(rootLevel());
+            }
+
+            // Selection in the list, the queue pane or the browser.
             auto selectRel = [&](int to) {
+                if (ui.browser.open && !ui.browser.stack.empty()) {
+                    auto &lv = ui.browser.stack.back();
+                    lv.selected = std::clamp(to, 0, std::max(0, static_cast<int>(lv.rows.size()) - 1));
+                    return;
+                }
                 if (!ui.queueView) return select(to);
                 ui.qselected = std::clamp(to, 0, std::max(0, static_cast<int>(ui.st.upNext.size()) - 1));
             };
-            auto curSel = [&] { return ui.queueView ? ui.qselected : ui.selected; };
+            auto curSel = [&] {
+                if (ui.browser.open && !ui.browser.stack.empty()) return ui.browser.stack.back().selected;
+                return ui.queueView ? ui.qselected : ui.selected;
+            };
+            auto lastSel = [&] {
+                if (ui.browser.open && !ui.browser.stack.empty())
+                    return static_cast<int>(ui.browser.stack.back().rows.size()) - 1;
+                return ui.queueView ? static_cast<int>(ui.st.upNext.size()) - 1 : last();
+            };
             auto qEntry = [&]() -> int {
                 const auto k = static_cast<std::size_t>(ui.qselected);
                 return k < ui.st.upNext.size() ? ui.st.upNext[k] : -1;
             };
             auto handleKey = [&](const std::string &key) {
-                const lmtui::Command cmd = ui.queueView ? lmtui::mapQueueKey(key) : lmtui::mapKey(key);
+                const lmtui::Command cmd = ui.browser.open ? lmtui::mapBrowserKey(key)
+                                           : ui.queueView  ? lmtui::mapQueueKey(key)
+                                                           : lmtui::mapKey(key);
                 if (cmd == lmtui::Command::None) return;
                 dirty = true;
                 if (cmd == lmtui::Command::Suspend) {
@@ -921,8 +1410,9 @@ int run(int argc, char **argv) {
                 case lmtui::Command::None: break;
                 case lmtui::Command::Suspend: break;
                 case lmtui::Command::TogglePause:
-                    if (ui.st.status == lm::Status::Stopped) player.playIndex(ui.selected);
-                    else player.togglePause();
+                    if (ui.st.status != lm::Status::Stopped) player.togglePause();
+                    else if (ui.st.index < 0 && static_cast<std::size_t>(ui.selected) < ui.ctx) player.playIndex(ui.selected);
+                    else player.play(); // the current track, or the user queue with an empty list
                     break;
                 case lmtui::Command::Next: player.next(); break;
                 case lmtui::Command::Prev: player.prev(); break;
@@ -955,8 +1445,10 @@ int run(int argc, char **argv) {
                     break;
                 }
                 case lmtui::Command::PlaySelected:
-                    if (!ui.queueView) {
-                        player.playIndex(ui.selected);
+                    if (ui.browser.open) {
+                        browseOpen();
+                    } else if (!ui.queueView) {
+                        if (static_cast<std::size_t>(ui.selected) < ui.ctx) player.playIndex(ui.selected);
                     } else if (const int e = qEntry(); e >= 0) {
                         // Play a queued track now: it moves to the front and is skipped to
                         // (it leaves the queue as it starts, like any queued track).
@@ -968,12 +1460,17 @@ int run(int argc, char **argv) {
                 case lmtui::Command::SelectUp: selectRel(curSel() - 1); break;
                 case lmtui::Command::SelectDown: selectRel(curSel() + 1); break;
                 case lmtui::Command::SelectFirst: selectRel(0); break;
-                case lmtui::Command::SelectLast: selectRel(ui.queueView ? static_cast<int>(ui.st.upNext.size()) - 1 : last); break;
+                case lmtui::Command::SelectLast: selectRel(lastSel()); break;
                 case lmtui::Command::PageUp: selectRel(curSel() - page); break;
                 case lmtui::Command::PageDown: selectRel(curSel() + page); break;
                 case lmtui::Command::QueueAdd:
                 case lmtui::Command::QueuePlayNext: {
                     const bool nextUp = cmd == lmtui::Command::QueuePlayNext;
+                    if (ui.browser.open) {
+                        if (const BrowseRow *r = browseRow()) queueSpecs(tracksOf(*r), nextUp);
+                        break;
+                    }
+                    if (static_cast<std::size_t>(ui.selected) >= ui.ctx) break;
                     player.queueAddEntries({ui.selected}, nextUp);
                     ui.message = (nextUp ? "plays next: " : "queued: ") + nameOf(ui, ui.selected);
                     break;
@@ -981,6 +1478,19 @@ int run(int argc, char **argv) {
                 case lmtui::Command::ToggleQueueView:
                     ui.queueView = !ui.queueView;
                     ui.qselected = 0;
+                    ui.browser.open = false;
+                    break;
+                case lmtui::Command::ToggleBrowser:
+                    ui.browser.open = !ui.browser.open;
+                    if (ui.browser.open && ui.browser.stack.empty()) ui.browser.stack.push_back(rootLevel());
+                    if (ui.browser.open) ui.queueView = false;
+                    break;
+                case lmtui::Command::BrowseUp: browseUp(); break;
+                case lmtui::Command::BrowsePlay:
+                    if (const BrowseRow *r = browseRow()) {
+                        if (r->kind == BrowseRow::File || r->kind == BrowseRow::Track) browseOpen();
+                        else replaceContext(tracksOf(*r), 0);
+                    }
                     break;
                 case lmtui::Command::QueueMoveUp:
                 case lmtui::Command::QueueMoveDown:
@@ -999,6 +1509,27 @@ int run(int argc, char **argv) {
                 case lmtui::Command::Quit: running = false; break;
                 case lmtui::Command::TogglePin: {
 #ifdef LM_TUI_NET
+                    if (ui.browser.open) {
+                        // A track, or every track of an album (all saved: unsave them all).
+                        BrowseRow *r = browseRow();
+                        if (!client || !r || (r->kind != BrowseRow::Track && r->kind != BrowseRow::Album)) {
+                            ui.message = "only server tracks and albums can be saved offline";
+                            break;
+                        }
+                        std::vector<std::int64_t> ids;
+                        if (r->kind == BrowseRow::Track) ids.push_back(r->id);
+                        else
+                            for (const auto &t : client->tracksOfAlbum(r->id)) ids.push_back(t.id);
+                        bool all = true;
+                        for (auto id : ids) all = all && client->cacheInfo(id).pinned;
+                        std::string err;
+                        for (auto id : ids)
+                            if (!client->pin(id, !all, &err)) break;
+                        ui.message = !err.empty() ? err : all ? "no longer saved offline" : "saved offline";
+                        refreshBrowser();
+                        refreshCache(ui, *client, offline);
+                        break;
+                    }
                     const auto sel = static_cast<std::size_t>(ui.selected);
                     if (client && sel < ui.remote.size() && ui.remote[sel]) {
                         std::string err;
@@ -1042,7 +1573,7 @@ int run(int argc, char **argv) {
                 }
                 if (dirty) {
                     auto screen = Screen::Create(Dimension::Fixed(width), Dimension::Fixed(height));
-                    Render(screen, render(ui, height));
+                    Render(screen, render(ui, tagWorker, height));
                     Tty::put("\x1b[H" + screen.ToString());
                     dirty = false;
                 }
@@ -1094,9 +1625,11 @@ int run(int argc, char **argv) {
 #ifdef LM_TUI_NET
                     if (client && g_cacheChanged.exchange(0)) {
                         refreshCache(ui, *client, offline);
+                        if (ui.browser.open) refreshBrowser();
                         dirty = true;
                     }
 #endif
+                    if (tagWorker.drain()) dirty = true;
                     for (auto &[i, label] : labels->take()) {
                         if (i < ui.names.size()) ui.names[i] = std::move(label);
                         dirty = true;

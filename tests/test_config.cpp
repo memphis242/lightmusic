@@ -327,6 +327,12 @@ void testGapReload() {
 // playback.repeat / playback.shuffle: defaults off, both hot.
 void testPlayOrderReload() {
     CHECK(ClientSettings{}.repeat == RepeatMode::Off && !ClientSettings{}.shuffle);
+    CHECK(ClientSettings{}.musicDir.empty());
+    {
+        Diags x;
+        auto m = load("ui:\n  music_dir: ~/Tunes\n", x);
+        CHECK(x.empty() && m.musicDir == g_dir + "/Tunes");
+    }
     const std::string path = writeFile("order.yaml", "playback:\n  repeat: all\n", 0600);
     Layer cli;
     ClientSettings running;

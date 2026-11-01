@@ -131,6 +131,71 @@ std::string trackLabel(std::string_view artist, std::string_view title, std::str
     return s;
 }
 
+std::vector<DirEntry> listDir(const std::string &dir, std::string *err) {
+    std::vector<DirEntry> out;
+    std::error_code ec;
+    fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
+    if (ec) {
+        if (err) *err = dir + ": " + ec.message();
+        return out;
+    }
+    for (const fs::directory_iterator end; it != end; it.increment(ec)) {
+        if (ec) break;
+        std::string name = it->path().filename().string();
+        if (name.empty() || name[0] == '.') continue;
+        std::error_code sec;
+        const auto st = it->status(sec); // follows symlinks
+        if (sec) continue;
+        if (fs::is_directory(st)) out.push_back({std::move(name), true});
+        else if (fs::is_regular_file(st) && hasAudioExtension(name)) out.push_back({std::move(name), false});
+    }
+    if (ec && err) *err = dir + ": " + ec.message();
+    std::sort(out.begin(), out.end(), [](const DirEntry &a, const DirEntry &b) {
+        if (a.dir != b.dir) return a.dir;
+        return naturalLess(a.name, b.name);
+    });
+    return out;
+}
+
+std::string parentDir(std::string_view path) {
+    while (path.size() > 1 && path.back() == '/') path.remove_suffix(1);
+    const auto slash = path.find_last_of('/');
+    if (slash == std::string_view::npos || slash == 0) return "/";
+    return std::string(path.substr(0, slash));
+}
+
+std::string defaultMusicDir(const std::string &home, std::string_view userDirs) {
+    std::string fallback = home + "/Music"; // not const: returned by move
+    std::size_t at = 0;
+    while (at < userDirs.size()) {
+        auto nl = userDirs.find('\n', at);
+        if (nl == std::string_view::npos) nl = userDirs.size();
+        std::string_view line = userDirs.substr(at, nl - at);
+        at = nl + 1;
+        while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.remove_prefix(1);
+        constexpr std::string_view key = "XDG_MUSIC_DIR=";
+        if (line.substr(0, key.size()) != key) continue;
+        line.remove_prefix(key.size());
+        if (line.size() < 2 || line.front() != '"') return fallback;
+        const auto close = line.find('"', 1);
+        if (close == std::string_view::npos) return fallback;
+        std::string_view v = line.substr(1, close - 1);
+        std::string out;
+        if (v.substr(0, 5) == "$HOME") {
+            v.remove_prefix(5);
+            if (v.empty() || v == "/") return fallback; // "$HOME" alone: no music dir
+            out = home + std::string(v);
+        } else if (!v.empty() && v.front() == '/') {
+            out = std::string(v);
+        } else {
+            return fallback;
+        }
+        while (out.size() > 1 && out.back() == '/') out.pop_back();
+        return out;
+    }
+    return fallback;
+}
+
 std::string displayName(std::string_view path) {
     const auto slash = path.find_last_of('/');
     if (slash != std::string_view::npos) path.remove_prefix(slash + 1);
@@ -176,7 +241,16 @@ Command mapKey(std::string_view k) {
     if (k == "a") return Command::QueueAdd;
     if (k == "A") return Command::QueuePlayNext;
     if (k == "v") return Command::ToggleQueueView;
+    if (k == "b") return Command::ToggleBrowser;
     return Command::None;
+}
+
+Command mapBrowserKey(std::string_view k) {
+    if (k == "l") return Command::PlaySelected;
+    if (k == "backspace" || k == "h") return Command::BrowseUp;
+    if (k == "o") return Command::BrowsePlay;
+    if (k == "escape") return Command::ToggleBrowser;
+    return mapKey(k);
 }
 
 Command mapQueueKey(std::string_view k) {
@@ -280,6 +354,7 @@ std::vector<std::string> KeyParser::parse(bool final) {
         }
         if (c == '\r' || c == '\n') out.emplace_back("enter");
         else if (c == 3) out.emplace_back("ctrl-c");
+        else if (c == 0x7f || c == 0x08) out.emplace_back("backspace");
         else if (c >= 0x20 && c < 0x7f) out.emplace_back(1, static_cast<char>(c));
         else if (c == 0x1a) out.emplace_back("ctrl-z");
         else if (c >= 0xc0 && c < 0xf8) { // UTF-8 lead byte: pass the whole sequence through
@@ -371,6 +446,10 @@ const std::vector<std::string> &helpLines() {
         "  c          clear the queue  enter  play now",
         "  esc / v    back to the list",
         "P          save offline / unsave (remote; not counted in the cache limit)",
+        "b          browse: library (server) / folders; in it:",
+        "  enter l    open / play from this track  ⌫ h  up",
+        "  o          play the selection now       a A  queue / play next",
+        "  P          save offline (server)        esc  back",
         "?  esc     toggle / close this help",
         "q          quit",
     };

@@ -30,6 +30,7 @@ struct ClientSettings {
     bool shuffle = false;
     // ui
     bool showCacheMarkers = true;
+    std::string musicDir; // folder browser root (hot); empty: $XDG_MUSIC_DIR, else ~/Music
     bool saveSettings = true; // write UI changes (volume, repeat, shuffle) back into cfg.yaml
     bool operator==(const ClientSettings &) const = default;
 };
