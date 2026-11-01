@@ -588,7 +588,7 @@ bool editOne(const std::string &text, const std::vector<std::string> &segs, cons
             err = where + " has an explicit tag (e.g. !!int); it is not rewritten";
             return false;
         }
-        std::size_t ve = vs;
+        std::size_t ve; // value end: set on both branches below
         char quote = 0;
         if (c0 == '"' || c0 == '\'') {
             quote = c0;

@@ -110,10 +110,10 @@ std::string normalize_ip(std::string_view ip) {
     std::string s(ip);
     if (s.size() > 2 && s.front() == '[' && s.back() == ']') s = s.substr(1, s.size() - 2);
     char out[INET6_ADDRSTRLEN];
-    in_addr a4;
+    in_addr a4{};
     if (inet_pton(AF_INET, s.c_str(), &a4) == 1)
         return inet_ntop(AF_INET, &a4, out, sizeof out) ? out : "";
-    in6_addr a6;
+    in6_addr a6{};
     if (s.find('%') != std::string::npos) return "";  // no zone ids
     if (inet_pton(AF_INET6, s.c_str(), &a6) != 1) return "";
     if (IN6_IS_ADDR_V4MAPPED(&a6)) {
@@ -166,7 +166,7 @@ std::string AuthLimiter::key_for(const std::string &ip) {
     std::string n = normalize_ip(ip);
     if (n.empty()) return ip;
     if (n.find(':') == std::string::npos) return n;
-    in6_addr a6;
+    in6_addr a6{};
     if (inet_pton(AF_INET6, n.c_str(), &a6) != 1) return n;
     std::memset(a6.s6_addr + 8, 0, 8);
     char out[INET6_ADDRSTRLEN];

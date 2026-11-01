@@ -1,10 +1,10 @@
-# cppcheck suppressions. Prefer an inline `// cppcheck-suppress <id>` with a reason next
-# to the code; list global ones here only with a reason.
-#
-# Vendored and fetched code is not ours to fix (also excluded with -i).
+// cppcheck suppressions. Prefer an inline `// cppcheck-suppress <id>` with a reason next
+// to the code; list global ones here only with a reason.
+//
+// Vendored and fetched code is not ours to fix (also excluded with -i).
 *:*/third_party/*
 *:*/_deps/*
-# System headers are not part of the analysis; cppcheck cannot see most of them anyway.
+// System headers are not part of the analysis; cppcheck cannot see most of them anyway.
 missingIncludeSystem
-# Reported when a suppression here does not match on some cppcheck version.
+// Reported when a suppression here does not match on some cppcheck version.
 unmatchedSuppression

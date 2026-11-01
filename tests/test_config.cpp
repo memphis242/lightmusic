@@ -23,6 +23,12 @@
 
 using namespace lm::config;
 
+// $HOME, or "" when unset (std::string(nullptr) would be UB).
+static std::string homeDir() {
+    const char *h = std::getenv("HOME");
+    return h ? h : "";
+}
+
 namespace {
 
 std::string g_dir;
@@ -106,7 +112,7 @@ void testFullFile() {
     CHECK_EQ(s.cacheMinFreeMb, 512);
     CHECK(!s.backgroundFill);
     CHECK(s.pauseOnMetered);
-    CHECK(s.cacheDir == std::string(std::getenv("HOME")) + "/lmcache");
+    CHECK(s.cacheDir == homeDir() + "/lmcache");
     CHECK_EQ(s.volume, 70);
     CHECK(s.replayGain == ReplayGain::Album);
     CHECK(!s.showCacheMarkers);
@@ -327,7 +333,7 @@ void testHomeExpansion() {
     const Diag *x = findDiag(e, "no such user 'no_such_user_lm'");
     CHECK(x && x->level == Diag::Error && x->line == 2);
     // HOME unset: an error, not "/k".
-    const std::string home = std::getenv("HOME");
+    const std::string home = homeDir();
     ::unsetenv("HOME");
     std::string out, err;
     CHECK(!expandPath("~/k", "", out, err) && err.find("HOME is not set") != std::string::npos);
@@ -714,7 +720,8 @@ void testMalformed() {
                              "  dir: \"/tmp/x\"\nplayback: {volume: 80, replaygain: 'track'}\nlist: [a, b, c]\n";
     const char alphabet[] = ":-[]{}#&*!|>'\"%@`,? \t\n\r\\0123abc~.\x80\xff";
     std::mt19937 rng(12345);
-    const int iters = std::getenv("LM_FUZZ_ITERS") ? std::atoi(std::getenv("LM_FUZZ_ITERS")) : 4000;
+    const char *itersEnv = std::getenv("LM_FUZZ_ITERS");
+    const int iters = itersEnv ? std::atoi(itersEnv) : 4000;
     for (int i = 0; i < iters; i++) {
         std::string t = seed;
         const int edits = 1 + static_cast<int>(rng() % 8);
@@ -940,7 +947,8 @@ void testEditFuzz() {
     const char *env = std::getenv("LM_FUZZ_SEED");
     std::mt19937 rng(env ? static_cast<unsigned>(std::atoi(env)) : 777u);
     auto pick = [&](std::initializer_list<const char *> l) { return std::string(*(l.begin() + rng() % l.size())); };
-    const int iters = std::getenv("LM_FUZZ_ITERS") ? std::atoi(std::getenv("LM_FUZZ_ITERS")) : 1500;
+    const char *itersEnv = std::getenv("LM_FUZZ_ITERS");
+    const int iters = itersEnv ? std::atoi(itersEnv) : 1500;
     int accepted = 0;
     for (int it = 0; it < iters; it++) {
         const std::string nl = rng() % 5 == 0 ? "\r\n" : "\n";

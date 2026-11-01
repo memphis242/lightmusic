@@ -297,7 +297,7 @@ template <class T> Field<T> floatField(std::string key, double T::*p, double lo,
 // `check` (optional) validates the parsed string.
 template <class T>
 Field<T> stringField(std::string key, std::string T::*p, bool hot = false,
-                     std::function<bool(const std::string &, std::string &)> check = {}) {
+                     const std::function<bool(const std::string &, std::string &)> &check = {}) {
     auto f = detail::base(std::move(key), p, hot);
     f.set = [p, check](T &t, const Value &v, std::string &err) {
         std::string s;
@@ -350,7 +350,7 @@ Field<T> enumField(std::string key, E T::*p, std::vector<std::pair<std::string, 
 // expanded like pathField.
 template <class T>
 Field<T> listField(std::string key, std::vector<std::string> T::*p, bool paths = false, bool hot = false,
-                   std::function<bool(const std::string &, std::string &)> check = {}) {
+                   const std::function<bool(const std::string &, std::string &)> &check = {}) {
     auto f = detail::base(std::move(key), p, hot);
     f.set = [p, paths, check](T &t, const Value &v, std::string &err) {
         std::vector<std::string> items;

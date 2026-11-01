@@ -16,7 +16,7 @@ namespace fs = std::filesystem;
 
 namespace {
 bool lstat_file(const std::string &p, std::int64_t &size, std::int64_t &mtime_ns) {
-    struct stat sb;
+    struct stat sb{};
     if (::lstat(p.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode)) return false;
     size = sb.st_size;
     mtime_ns = std::int64_t(sb.st_mtim.tv_sec) * 1000000000 + sb.st_mtim.tv_nsec;
@@ -97,7 +97,7 @@ ScanStats Indexer::scan(const std::vector<std::string> &dirs, const std::string 
     using Key = std::tuple<std::int64_t, std::int64_t, std::string>;
     std::map<Key, std::vector<std::pair<std::string, std::int64_t>>> vanished;
     for (auto &[p, fsst] : known)
-        if (!seen.count(p)) vanished[{fsst.size, fsst.mtime_ns, base_name(p)}].push_back({p, fsst.id});
+        if (!seen.count(p)) vanished[{fsst.size, fsst.mtime_ns, base_name(p)}].emplace_back(p, fsst.id);
 
     constexpr std::size_t kBatch = 256;
     std::size_t in_batch = 0;

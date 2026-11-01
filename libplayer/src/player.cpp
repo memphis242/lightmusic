@@ -747,7 +747,7 @@ struct Player::Impl {
             const std::uint64_t f = markers.front().ringFrame;
             t = std::min(t, at((f > audible ? static_cast<double>(f - audible) / rate : 0) + 0.002));
         }
-        if (decoderExhausted) t = std::min(t, at(static_cast<double>(ring.readable() / kCh) / rate + 0.02));
+        if (decoderExhausted) t = std::min(t, at(static_cast<double>(ring.readable() / kCh) / rate + 0.02)); // NOLINT(bugprone-integer-division): whole frames on purpose
         return t;
     }
 

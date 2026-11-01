@@ -20,7 +20,7 @@ dnf -y -q install --setopt=install_weak_deps=False \
 git config --global --add safe.directory '*'
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE="$build_type" -DLM_FETCH_FTXUI=OFF "$@"
 "$CXX" --version | head -1
-cmake --build build
+cmake --build build -- -k 0   # report every failing file, not just the first
 
 # Fail on any test failure; also fail if any test skipped (exit 77): every
 # optional tool (ffmpeg, script, dbus-run-session, playerctl) is installed here.

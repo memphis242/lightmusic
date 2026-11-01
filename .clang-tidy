@@ -8,12 +8,18 @@ Checks: >
   -bugprone-narrowing-conversions,
   -bugprone-branch-clone,
   -bugprone-switch-missing-default-case,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-forward-declaration-namespace,
   cert-*,
   -cert-err58-cpp,
   -cert-dcl21-cpp,
+  -cert-err33-c,
   concurrency-*,
+  -concurrency-mt-unsafe,
   performance-*,
   -performance-enum-size,
+  -performance-inefficient-string-concatenation,
   clang-analyzer-*,
   -clang-analyzer-optin.performance.Padding,
   misc-*,
@@ -47,6 +53,17 @@ Checks: >
 #  narrowing-conversions: duplicates -Wconversion, which the compilers already enforce.
 #  branch-clone: identical branches are used deliberately in parsers/state machines.
 #  switch-missing-default-case: -Wswitch(-enum) covers enums; defaults would hide them.
+#  assignment-in-if-condition: `if ((r = sd_call(...)) < 0)` is the sd-bus/POSIX idiom;
+#    -Wparentheses already catches the accidental `if (a = b)`.
+#  implicit-widening-of-multiplication-result: every hit was a constant (64 * 1024) or a
+#    small bounded index; constant overflow is a compiler error (-Woverflow) anyway.
+#  forward-declaration-namespace: fires inside yaml-cpp's headers, not our code.
+#  cert-err33-c: unchecked printf/fprintf/snprintf results (1300+ hits); nothing to do
+#    on a failed diagnostic print.
+#  concurrency-mt-unsafe: flags strerror/getenv/exit/system. glibc's strerror is MT-safe
+#    for valid errno values, nothing calls setenv outside single-threaded test setup,
+#    and exit() is only reached before threads start. Revisit for the Windows port.
+#  inefficient-string-concatenation: error-message building on cold paths.
 #  cert-err58-cpp: static objects whose constructors may throw (std::string tables): fine.
 #  cert-dcl21-cpp: deprecated advice (const return of postfix ++).
 #  performance-enum-size: micro-optimisation with ABI churn.

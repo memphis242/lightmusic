@@ -505,11 +505,14 @@ bool FileWatcher::changed() {
             break;
         }
         for (char *p = buf; p < buf + n;) {
-            // Not a misaligned access: buf is alignas(inotify_event) and the kernel pads every
-            // record to that alignment; the void* hop only tells -Wcast-align so.
-            const auto *ev = static_cast<const inotify_event *>(static_cast<const void *>(p));
+            // Copy the fixed-size header out (no alignment or aliasing assumptions); the
+            // NUL-padded name follows it in the buffer.
+            inotify_event hdr;
+            std::memcpy(&hdr, p, sizeof hdr);
+            const inotify_event *const ev = &hdr;
+            const char *const evName = p + sizeof(inotify_event);
             if (ev->mask & IN_Q_OVERFLOW) hit = true;
-            else if (ev->len && name_ == ev->name && (ev->mask & (IN_CLOSE_WRITE | IN_MOVED_TO))) hit = true;
+            else if (ev->len && name_ == evName && (ev->mask & (IN_CLOSE_WRITE | IN_MOVED_TO))) hit = true;
             p += sizeof(inotify_event) + ev->len;
         }
     }

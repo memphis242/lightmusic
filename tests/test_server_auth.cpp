@@ -247,7 +247,7 @@ int main() {
         mode_t old = umask(022);
         {
             Db w(dbp);
-            struct stat sb;
+            struct stat sb{};
             CHECK(stat(dbp.c_str(), &sb) == 0 && (sb.st_mode & 0777) == 0600);
             CHECK(stat((dir + "/new/sub").c_str(), &sb) == 0 && (sb.st_mode & 0777) == 0700);
             CHECK(stat((dir + "/new").c_str(), &sb) == 0 && (sb.st_mode & 0777) == 0700);

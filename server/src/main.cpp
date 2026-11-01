@@ -132,7 +132,8 @@ int main(int argc, char **argv) try {
     });
     api.run();
     // run() also returns if listening failed; make sure the signal thread ends.
-    pthread_kill(sig_thread.native_handle(), SIGTERM);
+    // Not a thread kill: the thread is blocked in sigwait() on SIGTERM; this wakes it.
+    pthread_kill(sig_thread.native_handle(), SIGTERM); // NOLINT(bugprone-bad-signal-to-kill-thread)
     sig_thread.join();
     watcher.stop();
     return 0;

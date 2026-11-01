@@ -108,12 +108,12 @@ int main(int argc, char **argv) {
         case 'p': player.togglePause(); break;
         case 'n': player.next(); break;
         case 'b': player.prev(); break;
-        case 's': player.seek(std::atof(arg)); break;
-        case 'v': player.setVolume(static_cast<float>(std::atof(arg))); break;
-        case 'x': player.stop(); break;
-        case 'i': printState("info", player.state(), ""); break;
-        case 'q': g_done = true; break;
-        case 'w': std::this_thread::sleep_for(std::chrono::duration<double>(std::atof(arg))); break;
+        case 's': player.seek(std::atof(arg)); break; // NOLINT(cert-err34-c): dev harness, junk -> 0
+        case 'v': player.setVolume(static_cast<float>(std::atof(arg))); break; // NOLINT(cert-err34-c): dev harness, junk -> 0
+        case 'x': player.stop(); break; // NOLINT(cert-err34-c): dev harness, junk -> 0
+        case 'i': printState("info", player.state(), ""); break; // NOLINT(cert-err34-c): dev harness, junk -> 0
+        case 'q': g_done = true; break; // NOLINT(cert-err34-c): dev harness, junk -> 0
+        case 'w': std::this_thread::sleep_for(std::chrono::duration<double>(std::atof(arg))); break; // NOLINT(cert-err34-c): dev harness, junk -> 0
         default: {
             std::lock_guard lk(g_print);
             std::puts("? commands: p n b s<sec> v<vol> i x w<sec> q");

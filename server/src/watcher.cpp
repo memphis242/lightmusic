@@ -210,9 +210,12 @@ void Watcher::run() {
         if (ops.empty() && !overflow) first = now;
         last = now;
         for (char *p = buf; p < buf + len;) {
-            // Not a misaligned access: buf is alignas(inotify_event) and the kernel pads every
-            // record to that alignment; the void* hop only tells -Wcast-align so.
-            const auto *ev = static_cast<const inotify_event *>(static_cast<const void *>(p));
+            // Copy the fixed-size header out (no alignment or aliasing assumptions); the
+            // NUL-padded name follows it in the buffer.
+            inotify_event hdr;
+            std::memcpy(&hdr, p, sizeof hdr);
+            const inotify_event *const ev = &hdr;
+            const char *const evName = p + sizeof(inotify_event);
             p += sizeof(inotify_event) + ev->len;
             if (ev->mask & IN_Q_OVERFLOW) {
                 overflow = true;
@@ -228,14 +231,14 @@ void Watcher::run() {
                 continue;
             }
             if (wit == wd_path_.end() || ev->len == 0) continue;
-            std::string full = wit->second + "/" + ev->name;
+            std::string full = wit->second + "/" + evName;
             bool dir = ev->mask & IN_ISDIR;
             if (ev->mask & IN_CREATE) {
                 if (dir) {
                     add_watch_tree(full);  // watch first, scan at flush
                     push({Op::ScanDir, full, {}, 0, true});
                 } else {
-                    struct stat sb;
+                    struct stat sb{};
                     if (::lstat(full.c_str(), &sb) == 0 && S_ISREG(sb.st_mode))
                         push({Op::Index, full, {}, 0, false});
                 }

@@ -251,9 +251,9 @@ static void newCases() {
     {
         // v2.3 tag written with syncsafe frame sizes (size >= 128 so the encodings differ).
         const std::string longTitle(200, 'x');
-        bytes f1 = frame("TIT2", latin1(longTitle), 4), f2 = frame("TPE1", latin1("Art"), 4);
-        append(f1, f2);
-        const bytes t = tag(3, 0, f1);
+        bytes fTitle = frame("TIT2", latin1(longTitle), 4), fArtist = frame("TPE1", latin1("Art"), 4);
+        append(fTitle, fArtist);
+        const bytes t = tag(3, 0, fTitle);
         Tags tg;
         parseId3v2(t.data(), t.size(), &tg, nullptr);
         CHECK(tg.title == longTitle);
@@ -323,11 +323,11 @@ static void newCases() {
         CHECK(lm::detail::readTagsFrom(src, tg, nullptr));
         checkTags("mp3 v1 fallback", tg, "V1 Title", "V1 Artist", "", 0, 0, 1987);
         // ...but not merged field-by-field into a partial ID3v2 tag.
-        bytes f2 = tag(3, 0, frame("TPE1", latin1("V2 Artist"), 3));
-        f2.insert(f2.end(), {0xFF, 0xFB, 0x90, 0x00});
-        append(f2, audio);
-        append(f2, v1);
-        MemSource s2(f2);
+        bytes fArtist = tag(3, 0, frame("TPE1", latin1("V2 Artist"), 3));
+        fArtist.insert(fArtist.end(), {0xFF, 0xFB, 0x90, 0x00});
+        append(fArtist, audio);
+        append(fArtist, v1);
+        MemSource s2(fArtist);
         Tags t2;
         CHECK(lm::detail::readTagsFrom(s2, t2, nullptr));
         checkTags("mp3 no v1 merge", t2, "", "V2 Artist", "", 0, 0, 0);

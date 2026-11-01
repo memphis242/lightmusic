@@ -50,7 +50,7 @@ void appendCleanUtf8(std::string &out, const unsigned char *p, const unsigned ch
         const unsigned char c = *p;
         int n = c < 0x80 ? 0 : (c & 0xE0) == 0xC0 ? 1 : (c & 0xF0) == 0xE0 ? 2 : (c & 0xF8) == 0xF0 ? 3 : -1;
         if (n < 0 || end - p <= n) { p++; continue; }
-        std::uint32_t cp = n == 0 ? c : c & (0x3F >> n);
+        std::uint32_t cp = n == 0 ? c : c & (0x3Fu >> n);
         bool ok = true;
         for (int i = 1; i <= n; i++) {
             if ((p[i] & 0xC0) != 0x80) { ok = false; break; }
@@ -58,7 +58,7 @@ void appendCleanUtf8(std::string &out, const unsigned char *p, const unsigned ch
         }
         static constexpr std::uint32_t kMin[] = {0, 0x80, 0x800, 0x10000};
         if (!ok || cp < kMin[n] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) { p++; continue; }
-        if (cp >= 0x20 && cp != 0x7F) out.append(reinterpret_cast<const char *>(p), static_cast<std::size_t>(n + 1));
+        if (cp >= 0x20 && cp != 0x7F) out.append(reinterpret_cast<const char *>(p), static_cast<std::size_t>(n) + 1);
         p += n + 1;
     }
 }
@@ -139,7 +139,7 @@ void setIfZero(int &dst, std::string_view v) {
     if (!dst) dst = parseLeadingInt(v);
 }
 
-bool id(const unsigned char *f, const char *s) { return f[0] == s[0] && f[1] == s[1] && f[2] == s[2] && f[3] == s[3]; }
+bool id(const unsigned char *f, const char *s) { return std::memcmp(f, s, 4) == 0; }
 
 void id3Frame(const unsigned char *fid, const unsigned char *body, const unsigned char *end, Tags *tags,
               std::optional<float> *gain) {
