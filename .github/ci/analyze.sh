@@ -29,7 +29,7 @@ case "$tool" in
     out=$(clang-tidy --config-file=.clang-tidy --checks='-*,bugprone-unsafe-functions' "$canary" -- -std=c++23 2>&1 || true)
     # (the check's default list has neither function, so a hit proves CustomFunctions works)
     for fn in snprintf puts; do
-      if ! grep -q "'$fn'.*\[bugprone-unsafe-functions\]" <<<"$out"; then
+      if ! grep -q "function '$fn' is marked as unsafe.*\[bugprone-unsafe-functions" <<<"$out"; then
         echo "clang-tidy did not flag $fn: bugprone-unsafe-functions.CustomFunctions is not applied" >&2
         echo "$out" >&2
         exit 1
