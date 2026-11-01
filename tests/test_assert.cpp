@@ -24,19 +24,19 @@ int runChild(const std::function<void()> &fn, std::string &err) {
     if (pipe(fds) != 0) return -1;
     const pid_t pid = fork();
     if (pid == 0) {
-        dup2(fds[1], 2);
-        close(fds[0]);
-        close(fds[1]);
+        (void)dup2(fds[1], 2);
+        (void)close(fds[0]);
+        (void)close(fds[1]);
         fn();
         _exit(0);
     }
-    close(fds[1]);
+    (void)close(fds[1]);
     char buf[512];
     ssize_t n;
     while ((n = read(fds[0], buf, sizeof buf)) > 0) err.append(buf, static_cast<std::size_t>(n));
-    close(fds[0]);
+    (void)close(fds[0]);
     int st = 0;
-    waitpid(pid, &st, 0);
+    (void)waitpid(pid, &st, 0);
     return WIFSIGNALED(st) ? WTERMSIG(st) : 0;
 }
 

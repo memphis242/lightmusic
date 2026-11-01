@@ -84,21 +84,21 @@ Server startServer(const std::string &bin, const std::string &db, const std::str
     if (pipe(out) != 0) return s;
     s.pid = fork();
     if (s.pid == 0) {
-        dup2(out[1], 1);
-        close(out[0]);
-        close(out[1]);
+        (void)dup2(out[1], 1);
+        (void)close(out[0]);
+        (void)close(out[1]);
         if (!std::getenv("LM_TEST_VERBOSE")) {
             int devnull = open("/dev/null", O_WRONLY);
-            dup2(devnull, 2);
+            (void)dup2(devnull, 2);
         }
         execl(bin.c_str(), bin.c_str(), "--db", db.c_str(), "--music", music.c_str(), "--port", "0", static_cast<char *>(nullptr));
         _exit(127);
     }
-    close(out[1]);
+    (void)close(out[1]);
     std::string line;
     char c;
     while (read(out[0], &c, 1) == 1 && c != '\n') line += c;
-    close(out[0]);
+    (void)close(out[0]);
     std::smatch m;
     if (std::regex_search(line, m, std::regex(":([0-9]+)$"))) s.port = std::atoi(m[1].str().c_str());
     return s;
@@ -106,9 +106,9 @@ Server startServer(const std::string &bin, const std::string &db, const std::str
 
 void stopServer(Server &s) {
     if (s.pid <= 0) return;
-    kill(s.pid, SIGTERM);
+    (void)kill(s.pid, SIGTERM);
     int st;
-    waitpid(s.pid, &st, 0);
+    (void)waitpid(s.pid, &st, 0);
     s.pid = -1;
 }
 
@@ -153,7 +153,7 @@ int main() {
     char tmpl[] = "/tmp/lm_stream_e2e_XXXXXX";
     const std::string tmp = lmtest::makeTempDir(tmpl);
     const std::string music = tmp + "/music", db = tmp + "/server.db", cache = tmp + "/cache";
-    fs::create_directories(music + "/Album");
+    (void)fs::create_directories(music + "/Album");
     const std::string a = music + "/Album/01 One.flac", b = music + "/Album/02 Two.mp3",
                       c = music + "/Album/03 Three.flac";
     const std::string ff = "ffmpeg -hide_banner -loglevel error -y -f lavfi -i ";
@@ -186,7 +186,7 @@ int main() {
     cc.serverUrl = "http://127.0.0.1:" + std::to_string(srv.port);
     cc.apiKey = key;
     cc.cacheDir = cache;
-    if (std::getenv("LM_TEST_VERBOSE")) cc.log = [](const std::string &s) { std::fprintf(stderr, "  [client] %s\n", s.c_str()); };
+    if (std::getenv("LM_TEST_VERBOSE")) cc.log = [](const std::string &s) { (void)std::fprintf(stderr, "  [client] %s\n", s.c_str()); };
 
     std::vector<std::int64_t> ids;
     const auto expect = [&] {

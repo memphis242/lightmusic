@@ -25,7 +25,7 @@ inline int g_failures = 0;
 #define CHECK(cond)                                                                                                    \
     do {                                                                                                               \
         if (!(cond)) {                                                                                                 \
-            std::fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond);                              \
+            (void)std::fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond);                              \
             ++lmtest::g_failures;                                                                                      \
         }                                                                                                              \
     } while (0)
@@ -35,7 +35,7 @@ inline int g_failures = 0;
         const auto va_ = (a);                                                                                          \
         const auto vb_ = (b);                                                                                          \
         if (!(va_ == vb_)) {                                                                                           \
-            std::fprintf(stderr, "%s:%d: CHECK_EQ failed: %s == %s (%lld vs %lld)\n", __FILE__, __LINE__, #a, #b,      \
+            (void)std::fprintf(stderr, "%s:%d: CHECK_EQ failed: %s == %s (%lld vs %lld)\n", __FILE__, __LINE__, #a, #b,      \
                          static_cast<long long>(va_), static_cast<long long>(vb_));                                    \
             ++lmtest::g_failures;                                                                                      \
         }                                                                                                              \
@@ -45,14 +45,14 @@ inline int g_failures = 0;
     do {                                                                                                               \
         const double va_ = static_cast<double>(a), vb_ = static_cast<double>(b);                                                                      \
         if (!(va_ - vb_ <= (tol) && vb_ - va_ <= (tol))) {                                                             \
-            std::fprintf(stderr, "%s:%d: CHECK_NEAR failed: %s ~ %s (%f vs %f, tol %f)\n", __FILE__, __LINE__, #a, #b, \
+            (void)std::fprintf(stderr, "%s:%d: CHECK_NEAR failed: %s ~ %s (%f vs %f, tol %f)\n", __FILE__, __LINE__, #a, #b, \
                          va_, vb_, static_cast<double>(tol));                                                          \
             ++lmtest::g_failures;                                                                                      \
         }                                                                                                              \
     } while (0)
 
 inline int finish(const char *name) {
-    if (g_failures) std::fprintf(stderr, "%s: %d check(s) failed\n", name, g_failures);
+    if (g_failures) (void)std::fprintf(stderr, "%s: %d check(s) failed\n", name, g_failures);
     else std::printf("%s: OK\n", name);
     return g_failures ? 1 : 0;
 }
@@ -78,7 +78,7 @@ inline std::string fixtureDir(const char *sub) {
     const char *base = std::getenv("LM_FIXTURE_DIR");
     std::filesystem::path p = base ? base : "fixtures";
     p /= sub;
-    std::filesystem::create_directories(p);
+    (void)std::filesystem::create_directories(p);
     return p.string();
 }
 

@@ -41,7 +41,7 @@ public:
     void event(const lm::Event &ev) {
         if (server_) server_->onEvent(ev);
     }
-    bool quitRequested() const { return server_ && server_->quitRequested(); }
+    [[nodiscard]] bool quitRequested() const { return server_ && server_->quitRequested(); }
 
 private:
     std::unique_ptr<lm::mpris::Server> server_;
@@ -51,7 +51,7 @@ private:
     int timeout(int t) const { return t; }
     void process() {}
     void event(const lm::Event &) {}
-    bool quitRequested() const { return false; }
+    [[nodiscard]] bool quitRequested() const { return false; }
 #endif
 };
 

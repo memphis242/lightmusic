@@ -22,7 +22,7 @@ public:
     bool init(std::string *err) {
         // Same tag reader as lm::readTags (the source is rewound before decoding).
         // TODO: APE tags (REPLAYGAIN_TRACK_GAIN) and the LAME header's RG field.
-        readTagsFrom(*src_, tags_, &gain_);
+        (void)readTagsFrom(*src_, tags_, &gain_); // tags are optional; the rewind below is checked
         if (!src_->seek(0, ByteSource::Whence::Set) ||
             !drmp3_init(&mp3_, onRead, onSeek, onTell, nullptr, this, nullptr)) {
             if (err) *err = "dr_mp3: not a decodable MP3: " + src_->name();

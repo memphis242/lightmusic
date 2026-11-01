@@ -53,7 +53,7 @@ int walk(int root, const std::string &rel) {
             fd = ::openat(cur, comp.c_str(), O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         }
         int err = errno;
-        if (cur != root) ::close(cur);
+        if (cur != root) (void)::close(cur); // cleanup; nothing written through it is pending
         if (fd < 0) {
             errno = err;
             return -1;
@@ -108,7 +108,7 @@ RootDirs::RootDirs(const std::vector<std::string> &roots) {
         int fd = ::open(r.c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC);
         if (fd < 0) {
             int err = errno;
-            for (auto &[p, f] : roots_) ::close(f);
+            for (auto &[p, f] : roots_) (void)::close(f); // cleanup; nothing written through it is pending
             throw std::runtime_error("cannot open music root " + r + ": " + std::strerror(err));
         }
         std::string p = r;
@@ -118,7 +118,7 @@ RootDirs::RootDirs(const std::vector<std::string> &roots) {
 }
 
 RootDirs::~RootDirs() {
-    for (auto &[p, f] : roots_) ::close(f);
+    for (auto &[p, f] : roots_) (void)::close(f); // cleanup; nothing written through it is pending
 }
 
 int RootDirs::open(const std::string &path) const {

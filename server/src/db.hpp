@@ -46,7 +46,7 @@ public:
     void reset();
     std::int64_t i64(int col) const;
     std::string text(int col) const;
-    bool is_null(int col) const;
+    [[nodiscard]] bool is_null(int col) const;
     const void *blob(int col, int &n) const;
 
 private:
@@ -95,11 +95,11 @@ public:
     void exec(const char *sql);
 
     // ---- API keys ----
-    bool add_key(const std::string &name, const Sha256 &hash);  // false: name exists
-    bool revoke_key(const std::string &name);
+    [[nodiscard]] bool add_key(const std::string &name, const Sha256 &hash);  // false: name exists
+    [[nodiscard]] bool revoke_key(const std::string &name);
     std::vector<KeyInfo> list_keys();
     // Compares against every stored hash in constant time per entry; returns key id.
-    std::optional<std::int64_t> verify_key(const Sha256 &hash);
+    [[nodiscard]] std::optional<std::int64_t> verify_key(const Sha256 &hash);
 
     // ---- writer side (indexer) ----
     void begin();               // BEGIN IMMEDIATE; prepares the next revision
@@ -113,19 +113,19 @@ public:
     // Directory-level operations on every track whose path starts with dir + "/".
     std::size_t rename_prefix(const std::string &from_dir, const std::string &to_dir);
     std::size_t delete_prefix(const std::string &dir);
-    std::optional<FileState> state_of(const std::string &path);
+    [[nodiscard]] std::optional<FileState> state_of(const std::string &path);
     std::size_t track_count();
 
     // ---- reader side (API); return serialised JSON ----
-    std::optional<TrackFile> track_file(std::int64_t id);
+    [[nodiscard]] std::optional<TrackFile> track_file(std::int64_t id);
     std::vector<std::string> album_track_paths(std::int64_t album_id);  // by disc/track
-    std::optional<std::int64_t> album_rev(std::int64_t album_id);
+    [[nodiscard]] std::optional<std::int64_t> album_rev(std::int64_t album_id);
     std::string json_changes(std::int64_t since);
     std::string json_artists();
-    std::optional<std::string> json_artist(std::int64_t id);
+    [[nodiscard]] std::optional<std::string> json_artist(std::int64_t id);
     std::string json_albums(const std::string &sort, std::int64_t offset, std::int64_t limit);
-    std::optional<std::string> json_album(std::int64_t id);
-    std::optional<std::string> json_track(std::int64_t id);
+    [[nodiscard]] std::optional<std::string> json_album(std::int64_t id);
+    [[nodiscard]] std::optional<std::string> json_track(std::int64_t id);
     std::string json_search(const std::string &q, std::int64_t limit);
 
 private:

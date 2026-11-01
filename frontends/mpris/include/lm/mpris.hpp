@@ -32,7 +32,7 @@ public:
     // logs once, closes it and retries with backoff (pollFd() is then fd -1 and
     // timeoutMs() the time to the next attempt), re-registering the same interfaces.
     using Logger = std::function<void(const std::string &)>;
-    static std::unique_ptr<Server> create(Player &player, std::string *err, Logger log = nullptr);
+    [[nodiscard]] static std::unique_ptr<Server> create(Player &player, std::string *err, Logger log = nullptr);
     ~Server();
     Server(const Server &) = delete;
     Server &operator=(const Server &) = delete;
@@ -41,7 +41,7 @@ public:
     int timeoutMs() const; // -1 when sd-bus has no pending deadline; 0 when input is left over
     void process();        // handles at most 64 messages per call
     void onEvent(const Event &ev);
-    bool quitRequested() const;
+    [[nodiscard]] bool quitRequested() const;
     const std::string &busName() const;
 
     struct Impl;

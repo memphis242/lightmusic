@@ -51,7 +51,7 @@ public:
     // Rename/move of a file or directory inside the roots; keeps ids.
     void rename(const std::string &from, const std::string &to);
 
-    bool under_roots(const std::string &path) const;
+    [[nodiscard]] bool under_roots(const std::string &path) const;
     const std::vector<std::string> &roots() const { return roots_; }
 
 private:

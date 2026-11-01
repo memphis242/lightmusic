@@ -36,7 +36,7 @@ void printState(const char *tag, const lm::PlayerState &s, const std::string &ms
                 s.index, s.queueSize, s.position, s.track.duration, static_cast<double>(s.volume),
                 static_cast<unsigned long long>(s.underruns), s.track.path.c_str(), msg.empty() ? "" : "  ",
                 msg.c_str());
-    std::fflush(stdout);
+    (void)std::fflush(stdout); // progress output only
 }
 
 } // namespace
@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
             char *end = nullptr;
             const double g = i + 1 < argc ? std::strtod(argv[i + 1], &end) : -1;
             if (i + 1 >= argc || end == argv[i + 1] || *end || !(g >= 0 && g <= 30)) {
-                std::fputs("lightmusic-play: --gap needs seconds in 0..30\n", stderr);
+                (void)std::fputs("lightmusic-play: --gap needs seconds in 0..30\n", stderr);
                 return 2;
             }
             cfg.gapSeconds = g;
@@ -66,7 +66,7 @@ int main(int argc, char **argv) {
         } else files.emplace_back(argv[i]);
     }
     if (files.empty()) {
-        std::fputs("usage: lightmusic-play [--null] [--rg] [--gap SECONDS] [--quiet] FILE...\n", stderr);
+        (void)std::fputs("usage: lightmusic-play [--null] [--rg] [--gap SECONDS] [--quiet] FILE...\n", stderr);
         return 2;
     }
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;
@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
         if (e.type == lm::EventType::TrackChanged) {
             const auto &t = e.state.track;
             char buf[160];
-            std::snprintf(buf, sizeof buf, "(%s %u Hz %uch%s)", lm::formatName(t.format), t.sampleRate, t.channels,
+            (void)std::snprintf(buf, sizeof buf, "(%s %u Hz %uch%s)", lm::formatName(t.format), t.sampleRate, t.channels,
                           t.trackGainDb ? (" rg=" + std::to_string(*t.trackGainDb) + "dB").c_str() : "");
             msg = buf;
         }
@@ -97,7 +97,7 @@ int main(int argc, char **argv) {
         if (!std::getline(std::cin, line)) {
             // stdin closed: keep playing until the queue ends (lets scripts pipe in nothing).
             while (!g_done) {
-                poll(nullptr, 0, 200);
+                (void)poll(nullptr, 0, 200); // plain sleep
             }
             break;
         }

@@ -69,7 +69,7 @@ private:
                 default:
                     if (c < 0x20 || c == 0x7f) {
                         char b[8];
-                        std::snprintf(b, sizeof b, "\\u%04x", c);
+                        (void)std::snprintf(b, sizeof b, "\\u%04x", c);
                         out_ += b;
                     } else {
                         out_ += char(c);

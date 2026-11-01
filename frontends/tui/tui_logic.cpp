@@ -143,8 +143,8 @@ std::string formatTime(double seconds) {
     if (!(seconds > 0)) seconds = 0;
     const long t = static_cast<long>(seconds);
     char buf[32];
-    if (t >= 3600) std::snprintf(buf, sizeof buf, "%ld:%02ld:%02ld", t / 3600, (t / 60) % 60, t % 60);
-    else std::snprintf(buf, sizeof buf, "%ld:%02ld", t / 60, t % 60);
+    if (t >= 3600) (void)std::snprintf(buf, sizeof buf, "%ld:%02ld:%02ld", t / 3600, (t / 60) % 60, t % 60);
+    else (void)std::snprintf(buf, sizeof buf, "%ld:%02ld", t / 60, t % 60);
     return buf;
 }
 
@@ -287,7 +287,7 @@ bool readKeyFile(const std::string &path, std::string &key, std::string &err) {
         ok = false;
     } else if ((st.st_mode & 077) != 0) {
         char mode[8];
-        std::snprintf(mode, sizeof mode, "%04o", static_cast<unsigned>(st.st_mode & 07777));
+        (void)std::snprintf(mode, sizeof mode, "%04o", static_cast<unsigned>(st.st_mode & 07777));
         err = "key file " + path + " has mode " + mode + "; refusing (chmod 600 " + path + ")";
         ok = false;
     } else {
@@ -295,7 +295,7 @@ bool readKeyFile(const std::string &path, std::string &key, std::string &err) {
         ssize_t n;
         while (data.size() < 4096 && (n = ::read(fd, buf, sizeof buf)) > 0) data.append(buf, static_cast<std::size_t>(n));
     }
-    ::close(fd);
+    (void)::close(fd); // cleanup; nothing written through it is pending
     if (!ok) return false;
     const auto nl = data.find('\n');
     if (nl != std::string::npos) data.resize(nl);

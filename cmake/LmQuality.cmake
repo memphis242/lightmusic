@@ -1,4 +1,4 @@
-# Code-quality settings: warnings (lm_warnings, our code only), -Werror policy,
+# Code-quality settings: warnings (lm_warnings_app / lm_warnings_test, our code only), -Werror policy,
 # sanitizers and hardening. See CLAUDE.md for the policy behind these choices.
 
 # --- -Werror policy --------------------------------------------------------------
@@ -16,12 +16,18 @@ set(_lm_gcc   $<CXX_COMPILER_ID:GNU>)
 set(_lm_clang $<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>>)
 
 # --- Warnings (our code only) ----------------------------------------------------
-add_library(lm_warnings INTERFACE)
+# Two sets (see CLAUDE.md, "App vs test warning sets"):
+#  lm_warnings_app   every library, server, frontend and tool target: the strictest set.
+#  lm_warnings_test  unit-test executables and test-only helpers: the shared base set,
+#                    without the app-only extras below.
+# A warning whose nuisance hits are only in tests is turned off for tests only, never
+# for app code. Both sets get -Werror under LM_WERROR.
 set(_lm_warn_common
   -Wall -Wextra -Wpedantic
   -Wshadow -Wconversion -Wsign-conversion -Wdouble-promotion
   -Wcast-qual -Wcast-align -Wformat=2 -Wundef
-  -Wimplicit-fallthrough -Wmissing-declarations -Wvla)
+  -Wimplicit-fallthrough -Wmissing-declarations -Wvla
+  -Wunused-result)
 set(_lm_warn_cxx
   -Wold-style-cast -Wnon-virtual-dtor -Woverloaded-virtual -Wextra-semi
   -Wsuggest-override -Wzero-as-null-pointer-constant)
@@ -34,12 +40,32 @@ set(_lm_warn_clang
   -Wshadow-all -Wcomma -Wunreachable-code-aggressive -Wloop-analysis
   -Wimplicit-int-float-conversion -Wmissing-prototypes -Wmissing-variable-declarations
   -Wnewline-eof -Wextra-semi-stmt -Wthread-safety -Wnull-dereference)
-target_compile_options(lm_warnings INTERFACE
-  ${_lm_warn_common}
-  "$<$<COMPILE_LANGUAGE:CXX>:${_lm_warn_cxx}>"
-  "$<${_lm_gcc}:${_lm_warn_gcc}>"
-  "$<${_lm_clang}:${_lm_warn_clang}>"
-  $<$<BOOL:${LM_WERROR}>:-Werror>)
+# App-only (gcc): -Wnull-dereference. In tests it reports paths inlined from libstdc++
+# (std::streambuf::gptr()/egptr() via istreambuf_iterator in test file readers) that our
+# code cannot change; app code has no such hits, so it is on there.
+set(_lm_warn_gcc_app -Wnull-dereference)
+# Not enabled in either set:
+#  gcc -Wuseless-cast: every hit (21 in app code with gcc 13) is a cast between types
+#   that are only identical on LP64 glibc and are needed elsewhere: uint64_t ring
+#   positions -> size_t (32-bit size_t), time_t/off_t -> int64_t (32-bit time_t/off_t),
+#   off_t -> long for libvorbisfile (32-bit long on Windows), mode_t -> unsigned for
+#   printf. Dropping them breaks -Wconversion on those targets (Windows port planned).
+
+function(_lm_add_warnings target)
+  target_compile_options(${target} INTERFACE
+    ${_lm_warn_common}
+    "$<$<COMPILE_LANGUAGE:CXX>:${_lm_warn_cxx}>"
+    "$<${_lm_gcc}:${_lm_warn_gcc}>"
+    "$<${_lm_clang}:${_lm_warn_clang}>"
+    $<$<BOOL:${LM_WERROR}>:-Werror>)
+endfunction()
+
+add_library(lm_warnings_app INTERFACE)
+_lm_add_warnings(lm_warnings_app)
+target_compile_options(lm_warnings_app INTERFACE "$<${_lm_gcc}:${_lm_warn_gcc_app}>")
+
+add_library(lm_warnings_test INTERFACE)
+_lm_add_warnings(lm_warnings_test)
 
 # --- Sanitizers (unit-test builds) -------------------------------------------------
 # UBSan extras beyond -fsanitize=undefined. Failures abort (-fno-sanitize-recover=all)

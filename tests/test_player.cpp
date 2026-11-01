@@ -381,7 +381,7 @@ void enqueueAtEnd(const std::string &dir) {
             if (e.type == lm::EventType::TrackChanged && e.state.index == 1 && eoq < 0) played2 = true;
         }
         if (queued >= 0 && queued < eoq && !played2)
-            std::fprintf(stderr, "  enqueueAtEnd: enqueue at +%d ms lost to EndOfQueue\n", 200 + 8 * k);
+            (void)std::fprintf(stderr, "  enqueueAtEnd: enqueue at +%d ms lost to EndOfQueue\n", 200 + 8 * k);
         CHECK(queued >= 0);
         CHECK(!(queued < eoq && !played2));
     }

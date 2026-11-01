@@ -1,5 +1,6 @@
-# Tests: the root config plus a few checks turned off that only make sense for
-# production code. Reasons:
+# Tests: the root (strict, app) config, relaxed for test code only. Checks turned off
+# here stay ON for app code; never move one of these to the root config because of test
+# noise (CLAUDE.md). Reasons:
 #  cert-env33-c: tests run ffmpeg/dbus helpers with system() on purpose.
 #  cert-err34-c: atoi/atof on test environment knobs (LM_FUZZ_ITERS ...).
 #  cert-msc32-c / cert-msc51-cpp: fixed PRNG seeds keep fuzz cases reproducible.
@@ -9,6 +10,13 @@
 #    test-only code, no hot paths.
 #  clang-analyzer-unix.StdCLibraryFunctions: same CHECK(fd >= 0); use(fd) pattern.
 #  cert-dcl50-cpp: a C-variadic wrapper around sd_bus_call_method (which is variadic).
+#  bugprone-implicit-widening-of-multiplication-result: fixture sizes/offsets such as
+#    `n * 4096` with small constants (19 hits).
+#  bugprone-switch-missing-default-case: a test switch over a raw byte (1 hit).
+#  cert-err58-cpp: file-scope std::string fixture tables (3 hits).
+#  misc-use-anonymous-namespace: `static` helpers in test files (53 hits).
+# Still ON for tests: cert-err33-c and bugprone-unused-return-value (results are checked
+# or discarded with (void), as in app code).
 InheritParentConfig: true
 Checks: >
   -cert-env33-c,
@@ -19,4 +27,8 @@ Checks: >
   -performance-inefficient-vector-operation,
   -performance-unnecessary-value-param,
   -cert-dcl50-cpp,
-  -clang-analyzer-unix.StdCLibraryFunctions
+  -clang-analyzer-unix.StdCLibraryFunctions,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-switch-missing-default-case,
+  -cert-err58-cpp,
+  -misc-use-anonymous-namespace

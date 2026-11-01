@@ -53,16 +53,16 @@ static Srv start(const std::string &bin, std::vector<std::string> args) {
     if (pipe(out) != 0) return s;
     s.pid = fork();
     if (s.pid == 0) {
-        dup2(out[1], 1);
-        close(out[0]);
-        close(out[1]);
+        (void)dup2(out[1], 1);
+        (void)close(out[0]);
+        (void)close(out[1]);
         std::vector<char *> av{const_cast<char *>(bin.c_str())};
         for (auto &a : args) av.push_back(const_cast<char *>(a.c_str()));
         av.push_back(nullptr);
         execv(bin.c_str(), av.data());
         _exit(127);
     }
-    close(out[1]);
+    (void)close(out[1]);
     s.out = out[0];
     std::string line;
     char c;
@@ -72,10 +72,10 @@ static Srv start(const std::string &bin, std::vector<std::string> args) {
 }
 
 static int stop(Srv &s) {
-    kill(s.pid, SIGTERM);
+    (void)kill(s.pid, SIGTERM);
     int status = 0;
-    waitpid(s.pid, &status, 0);
-    close(s.out);
+    (void)waitpid(s.pid, &status, 0);
+    (void)close(s.out);
     return status;
 }
 
@@ -87,7 +87,7 @@ static int tcp(int port) {
     a.sin_port = htons(std::uint16_t(port));
     a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
     if (connect(fd, reinterpret_cast<sockaddr *>(&a), sizeof a) != 0) {
-        close(fd);
+        (void)close(fd);
         return -1;
     }
     return fd;
@@ -117,7 +117,7 @@ int main(int argc, char **argv) {
     char tmpl[] = "/tmp/lm_e2e_XXXXXX";
     std::string tmp = lmtest::makeTempDir(tmpl);
     std::string lib = tmp + "/lib", dbp = tmp + "/s.db";
-    fs::create_directories(lib + "/Album");
+    (void)fs::create_directories(lib + "/Album");
     const std::string ff = "ffmpeg -hide_banner -loglevel error -y ";
     bool ok = sh(ff + "-f lavfi -i sine=frequency=440:duration=2 -metadata title=One -metadata artist=Band "
                       "-metadata album=Record -metadata track=1 -c:a libmp3lame \"" + lib + "/Album/01.mp3\"") &&
@@ -153,8 +153,8 @@ int main(int argc, char **argv) {
     int port = srv.port;
     CHECK(port > 0);
     if (port <= 0) {
-        kill(srv.pid, SIGKILL);
-        waitpid(srv.pid, nullptr, 0);
+        (void)kill(srv.pid, SIGKILL);
+        (void)waitpid(srv.pid, nullptr, 0);
         return lmtest::finish("test_server_e2e");
     }
 
@@ -248,7 +248,7 @@ int main(int argc, char **argv) {
     for (const char *bad : {"bytes=20-10", "bytes=abc", "bytes=-", "bytes 0-1", "items=0-5", "bytes=0-9,x"}) {
         r = get("/api/v1/stream/" + id, {{"Range", bad}});
         CHECK(r && r->status == 200 && r->body == file);
-        if (!r || r->status != 200) std::fprintf(stderr, "  Range: %s -> %d\n", bad, r ? r->status : 0);
+        if (!r || r->status != 200) (void)std::fprintf(stderr, "  Range: %s -> %d\n", bad, r ? r->status : 0);
     }
     r = get("/api/v1/stream/" + id, {{"Range", "bytes= 10-19"}});  // httplib rejects; ours accepts
     CHECK(r && r->status == 206 && r->body == file.substr(10, 10));
@@ -290,12 +290,12 @@ int main(int argc, char **argv) {
         bool closed = false;
         for (int i = 0; i < 12 && !closed; ++i) {
             closed = closed_within(fd, 500);
-            if (!closed) send(fd, "X-a: b\r\n", 8, MSG_NOSIGNAL);
+            if (!closed) (void)send(fd, "X-a: b\r\n", 8, MSG_NOSIGNAL);
         }
         double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         CHECK(closed);
         CHECK(secs < 4.5);
-        close(fd);
+        (void)close(fd);
     }
     // a request body (no route takes one) is refused with 413 before it is read, and the
     // connection closed: a body trickled in cannot hold the worker
@@ -317,10 +317,10 @@ int main(int argc, char **argv) {
         CHECK(got.rfind("HTTP/1.1 413", 0) == 0);
         CHECK(got.find("Connection: close") != std::string::npos);
         CHECK(secs < 1.0);
-        close(fd);
+        (void)close(fd);
         const char *te = "GET /api/v1/ping HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n";
         fd = tcp(port);
-        send(fd, te, std::strlen(te), MSG_NOSIGNAL);
+        (void)send(fd, te, std::strlen(te), MSG_NOSIGNAL);
         got.clear();
         while (poll(&p, 1, 1500) > 0) {
             p.fd = fd;
@@ -329,7 +329,7 @@ int main(int argc, char **argv) {
             got.append(b, std::size_t(n));
         }
         CHECK(got.rfind("HTTP/1.1 413", 0) == 0);
-        close(fd);
+        (void)close(fd);
     }
     // per-peer connection cap (--max-conns-per-ip 12): the 13th concurrent connection is
     // closed at once; capacity comes back when the others close
@@ -337,14 +337,14 @@ int main(int argc, char **argv) {
         std::vector<int> held;
         for (int i = 0; i < 12; ++i) {
             int fd = tcp(port);
-            send(fd, "GET", 3, MSG_NOSIGNAL);  // occupies a worker (header phase)
+            (void)send(fd, "GET", 3, MSG_NOSIGNAL);  // occupies a worker (header phase)
             held.push_back(fd);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         int extra = tcp(port);
         CHECK(extra >= 0 && closed_within(extra, 1000));
-        if (extra >= 0) close(extra);
-        for (int fd : held) close(fd);
+        if (extra >= 0) (void)close(extra);
+        for (int fd : held) (void)close(fd);
         bool back = false;
         for (int i = 0; i < 50 && !back; ++i) {
             auto p = cli.Get("/api/v1/ping");
@@ -451,11 +451,11 @@ int main(int argc, char **argv) {
         std::vector<int> held;
         for (int i = 0; i < 10; ++i) {
             held.push_back(tcp(px.port));
-            send(held.back(), "G", 1, MSG_NOSIGNAL);
+            (void)send(held.back(), "G", 1, MSG_NOSIGNAL);
         }
         auto p = pc.Get("/api/v1/ping");
         CHECK(p && p->status == 200);
-        for (int fd : held) close(fd);
+        for (int fd : held) (void)close(fd);
         status = stop(px);
         CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
     }
@@ -469,11 +469,11 @@ int main(int argc, char **argv) {
         CHECK(q.port > 0);
         int body = tcp(q.port);  // slow body: answered 413 and closed, frees the worker
         const char *req = "GET /api/v1/ping HTTP/1.1\r\nHost: x\r\nContent-Length: 60000\r\n\r\n";
-        send(body, req, std::strlen(req), MSG_NOSIGNAL);
-        send(body, "a", 1, MSG_NOSIGNAL);
+        (void)send(body, req, std::strlen(req), MSG_NOSIGNAL);
+        (void)send(body, "a", 1, MSG_NOSIGNAL);
         CHECK(closed_within(body, 1000));
         int busy = tcp(q.port);
-        send(busy, "G", 1, MSG_NOSIGNAL);  // holds the only worker (header phase, 30 s)
+        (void)send(busy, "G", 1, MSG_NOSIGNAL);  // holds the only worker (header phase, 30 s)
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         std::vector<int> extra;
         for (int i = 0; i < 8; ++i) extra.push_back(tcp(q.port));
@@ -485,9 +485,9 @@ int main(int argc, char **argv) {
         double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
         CHECK(secs < 2.0);
-        for (int fd : extra) close(fd);
-        close(busy);
-        close(body);
+        for (int fd : extra) (void)close(fd);
+        (void)close(busy);
+        (void)close(body);
     }
 
     fs::remove_all(tmp);

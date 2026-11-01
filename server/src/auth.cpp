@@ -27,7 +27,7 @@ inline std::uint32_t rotr(std::uint32_t x, int n) { return (x >> n) | (x << (32 
 
 void block(std::uint32_t h[8], const std::uint8_t *p) {
     std::uint32_t w[64];
-    for (int i = 0; i < 16; ++i)
+    for (std::size_t i = 0; i < 16; ++i)
         w[i] = (std::uint32_t(p[4 * i]) << 24) | (std::uint32_t(p[4 * i + 1]) << 16) |
                (std::uint32_t(p[4 * i + 2]) << 8) | std::uint32_t(p[4 * i + 3]);
     for (int i = 16; i < 64; ++i) {

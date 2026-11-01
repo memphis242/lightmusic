@@ -57,14 +57,14 @@ lm::net::ClientConfig baseCfg(const std::string &url, const std::string &dir) {
         *total = 1ull << 41;
         return true;
     };
-    if (std::getenv("LM_TEST_VERBOSE")) c.log = [](const std::string &s) { std::fprintf(stderr, "  [client] %s\n", s.c_str()); };
+    if (std::getenv("LM_TEST_VERBOSE")) c.log = [](const std::string &s) { (void)std::fprintf(stderr, "  [client] %s\n", s.c_str()); };
     return c;
 }
 
 std::unique_ptr<Client> open(lm::net::ClientConfig c) {
     std::string err;
     auto cl = Client::open(std::move(c), &err);
-    if (!cl) std::fprintf(stderr, "Client::open: %s\n", err.c_str());
+    if (!cl) (void)std::fprintf(stderr, "Client::open: %s\n", err.c_str());
     return cl;
 }
 
@@ -98,7 +98,7 @@ bool waitUntil(const std::function<bool()> &pred, std::chrono::milliseconds limi
 bool syncOk(Client &c) {
     std::string err;
     const bool ok = c.sync(&err);
-    if (!ok) std::fprintf(stderr, "sync: %s\n", err.c_str());
+    if (!ok) (void)std::fprintf(stderr, "sync: %s\n", err.c_str());
     return ok;
 }
 
@@ -129,9 +129,9 @@ void crashConsistency() {
             _exit(127);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(500 + rng() % 600));
-        kill(pid, SIGKILL);
+        (void)kill(pid, SIGKILL);
         int st = 0;
-        waitpid(pid, &st, 0);
+        (void)waitpid(pid, &st, 0);
         CHECK(WIFSIGNALED(st));
         // Inspect what the killed process left behind.
         auto c = open(baseCfg(srv.url(), dir));
@@ -662,10 +662,10 @@ void ignoreRange() {
         std::string err;
         auto s = c->openTrack(1, &err);
         CHECK(readN(*s, 4096) == data.substr(0, 4096));
-        s->seek(1800000, lm::ByteSource::Whence::Set);
+        (void)s->seek(1800000, lm::ByteSource::Whence::Set);
         const std::string b = readN(*s, 4096);
         CHECK(b == data.substr(1800000, 4096));
-        s->seek(0, lm::ByteSource::Whence::Set);
+        (void)s->seek(0, lm::ByteSource::Whence::Set);
         CHECK(readAll(*s) == data);
         auto e = c->cacheEntry(1);
         CHECK(e && e->etag == "\"ir\"");
@@ -730,7 +730,7 @@ void wrongTotal() {
     srv.bytesPerSec = 0;
     srv.totalDelta = 1;
     s = c->openTrack(1, &err);
-    s->seek(256 << 10, lm::ByteSource::Whence::Set);
+    (void)s->seek(256 << 10, lm::ByteSource::Whence::Set);
     const std::string got = readN(*s, data.size());
     CHECK(got.size() <= data.size() - (256 << 10) && got == data.substr(256 << 10, got.size()));
     CHECK(covered() >= (64u << 10)); // no reset: the prefix survived
@@ -796,7 +796,7 @@ void noValidator() {
     for (auto [id, data] : {std::pair<int, const std::string *>{1, &a}, {2, &b}}) {
         auto s = c->openTrack(id, &err);
         CHECK(readAll(*s) == *data);
-        s->seek(1000, lm::ByteSource::Whence::Set);
+        (void)s->seek(1000, lm::ByteSource::Whence::Set);
         CHECK(readN(*s, 100) == data->substr(1000, 100));
         auto e = c->cacheEntry(id);
         CHECK(e && !e->complete && e->ranges.empty()); // never committed
@@ -927,7 +927,7 @@ void diskFloor() {
 #define CHECK_STR(a, b)                                                                                                \
     do {                                                                                                               \
         const std::string sa_ = (a), sb_ = (b);                                                                        \
-        if (sa_ != sb_) std::fprintf(stderr, "  got \"%s\", want \"%s\"\n", sa_.c_str(), sb_.c_str());                 \
+        if (sa_ != sb_) (void)std::fprintf(stderr, "  got \"%s\", want \"%s\"\n", sa_.c_str(), sb_.c_str());                 \
         CHECK(sa_ == sb_);                                                                                             \
     } while (0)
 
@@ -1102,7 +1102,7 @@ void migrateOldLayout() {
         CHECK(sqlite3_exec(db, "DROP INDEX cache_entry_name; DROP INDEX cache_entry_prev_name; "
                            "ALTER TABLE cache_entry DROP COLUMN name; ALTER TABLE cache_entry DROP COLUMN prev_name;",
                            nullptr, nullptr, nullptr) == SQLITE_OK);
-        sqlite3_close(db);
+        (void)sqlite3_close(db);
     }
     std::ofstream(dir + "/tracks/notes.txt") << "mine";
     std::ofstream(dir + "/tracks/77.mp3") << "no row";
@@ -1270,7 +1270,7 @@ void loopbackWarning() {
 int main(int argc, char **argv) {
     g_self = fs::canonical("/proc/self/exe").string();
     if (argc == 5 && std::string(argv[1]) == "child") return childMain(argv[2], argv[3], std::atoll(argv[4]));
-    signal(SIGPIPE, SIG_IGN);
+    (void)signal(SIGPIPE, SIG_IGN);
     const std::string only = argc > 1 ? argv[1] : "";
     const std::pair<const char *, void (*)()> tests[] = {
         {"crash", crashConsistency},     {"ifrange", ifRangeRestart}, {"etag", etagInvalidation},
@@ -1286,7 +1286,7 @@ int main(int argc, char **argv) {
     for (auto &[name, fn] : tests) {
         if (!only.empty() && only != name) continue;
         std::printf("- %s\n", name);
-        std::fflush(stdout);
+        (void)std::fflush(stdout);
         fn();
     }
     return lmtest::finish("test_cache");

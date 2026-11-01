@@ -212,7 +212,7 @@ constexpr int kMaxTransientFailures = 5;
 struct Entry {
     explicit Entry(std::int64_t i) : id(i) {}
     ~Entry() {
-        if (fd >= 0) ::close(fd);
+        if (fd >= 0) (void)::close(fd); // cleanup; nothing written through it is pending
     }
     const std::int64_t id;
     std::string partPath, finalPath;
@@ -320,8 +320,8 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     }
     void syncDir() {
         if (int dfd = ::open(tracksDir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC); dfd >= 0) {
-            ::fsync(dfd);
-            ::close(dfd);
+            (void)::fsync(dfd); // best effort: only the rename's durability, the data is already synced
+            (void)::close(dfd); // cleanup; nothing written through it is pending
         }
     }
     // Base names a row's files may have: name, prevName, and "<id>" for a row from the
@@ -338,7 +338,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     void removeEntryLocked(std::int64_t id) {
         if (auto row = db.entry(id))
             for (const auto &b : basesOf(*row))
-                for (const auto &f : filesOf(b)) ::unlink((tracksDir + "/" + f).c_str());
+                for (const auto &f : filesOf(b)) (void)::unlink((tracksDir + "/" + f).c_str());
         db.deleteEntry(id);
     }
 
@@ -390,7 +390,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
                     break;
                 }
             }
-            ::unlink(src.c_str());
+            (void)::unlink(src.c_str()); // best effort: a leftover file is reconciled on the next start
         }
         syncDir();
         return ok;
@@ -564,8 +564,8 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         bool reset = false;
         if (e->ephemeral) {
             ranges = RangeSet{};
-            ::unlink(e->finalPath.c_str());
-            ::unlink(e->partPath.c_str()); // never trust bytes without a validator
+            (void)::unlink(e->finalPath.c_str()); // best effort: a leftover file is reconciled on the next start
+            (void)::unlink(e->partPath.c_str()); // never trust bytes without a validator
             if (row->complete || !row->ranges.empty()) reset = true;
         } else if (!row->complete && ranges.complete(e->size)) {
             // Crash between finalize()'s rename and its "complete" commit: the final file
@@ -587,9 +587,9 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
                 ranges = RangeSet{};
                 ranges.add(0, e->size);
             } else {
-                if (e->fd >= 0) ::close(e->fd);
+                if (e->fd >= 0) (void)::close(e->fd); // cleanup; nothing written through it is pending
                 e->fd = -1;
-                ::unlink(e->finalPath.c_str());
+                (void)::unlink(e->finalPath.c_str()); // best effort: a leftover file is reconciled on the next start
                 reset = true;
             }
         }
@@ -597,7 +597,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             e->fd = ::open(e->partPath.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
             struct stat st{};
             if (e->fd < 0 || ::fstat(e->fd, &st) != 0 || std::uint64_t(st.st_size) != e->size) {
-                if (e->fd >= 0) ::close(e->fd);
+                if (e->fd >= 0) (void)::close(e->fd); // cleanup; nothing written through it is pending
                 if (!ranges.empty()) reset = true;
                 e->fd = ::open(e->partPath.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
                 if (e->fd < 0 || ::ftruncate(e->fd, static_cast<off_t>(e->size)) != 0) {
@@ -749,7 +749,16 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         dirty.erase(e);
         // The completed file leaves its final name before the new validator is recorded,
         // so acquire() never adopts an old final file under the new ETag after a crash.
-        if (wasComplete) ::rename(e->finalPath.c_str(), e->partPath.c_str());
+        if (wasComplete && ::rename(e->finalPath.c_str(), e->partPath.c_str()) != 0 && errno != ENOENT) {
+            // The old final file must not survive under its final name: remove it instead
+            // (the part file is re-downloaded either way). ENOENT from unlink is fine too.
+            if (::unlink(e->finalPath.c_str()) != 0 && errno != ENOENT) {
+                // Recording the new validator now could let acquire() adopt the old file
+                // under it after a crash; keep the old row (the next request retries).
+                log("cache: cannot remove stale " + e->finalPath + ": " + std::strerror(errno));
+                return;
+            }
+        }
         {
             std::lock_guard lk(cm);
             auto row = db.entry(e->id);
@@ -1224,7 +1233,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         int next = -1;
         auto want = [&](Clock::time_point t) {
             const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t - now).count();
-            const int v = int(std::clamp<long long>(ms, 1, 3600 * 1000));
+            const int v = int(std::clamp<long long>(ms, 1, 3600LL * 1000));
             next = next < 0 ? v : std::min(next, v);
         };
         for (auto it = dirty.begin(); it != dirty.end();) {
@@ -1468,7 +1477,8 @@ std::unique_ptr<Client> Client::open(ClientConfig cfg, std::string *err) {
         struct stat st{};
         if (::lstat(d.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return fail(d + " is not a directory");
         if (st.st_uid != ::geteuid()) return fail(d + " is not owned by the current user");
-        if ((st.st_mode & 077) != 0) ::chmod(d.c_str(), 0700);
+        if ((st.st_mode & 077) != 0 && ::chmod(d.c_str(), 0700) != 0)
+            return fail("cannot make " + d + " private (chmod 0700): " + std::strerror(errno));
     }
     auto core = std::make_shared<Core>();
     core->base = base;
@@ -1499,7 +1509,7 @@ std::unique_ptr<Client> Client::open(ClientConfig cfg, std::string *err) {
             }
             ::closedir(d);
         }
-        for (auto &o : orphans) ::unlink((core->tracksDir + "/" + o).c_str());
+        for (auto &o : orphans) (void)::unlink((core->tracksDir + "/" + o).c_str());
     }
     NetConfig nc;
     nc.bearer = cfg.apiKey;

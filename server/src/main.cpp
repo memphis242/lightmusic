@@ -23,10 +23,10 @@ void log_line(const std::string &s) {
     std::lock_guard lk(log_mu);
     std::time_t t = std::time(nullptr);
     std::tm tm{};
-    localtime_r(&t, &tm);
+    (void)localtime_r(&t, &tm); // on overflow tm stays zero-initialised
     char ts[32];
-    std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", &tm);
-    std::fprintf(stderr, "%s %s\n", ts, s.c_str());
+    if (std::strftime(ts, sizeof ts, "%Y-%m-%d %H:%M:%S", &tm) == 0) ts[0] = '\0';
+    (void)std::fprintf(stderr, "%s %s\n", ts, s.c_str());
 }
 
 int admin(const Config &c) {
@@ -34,29 +34,34 @@ int admin(const Config &c) {
     if (c.add_key) {
         std::string key = generate_api_key();
         if (!db.add_key(*c.add_key, sha256(key))) {
-            std::fprintf(stderr, "lightmusicd: a key named '%s' already exists\n", c.add_key->c_str());
+            (void)std::fprintf(stderr, "lightmusicd: a key named '%s' already exists\n", c.add_key->c_str());
             return 1;
         }
         // The only time the key is ever shown; only its SHA-256 is stored.
-        std::printf("%s\n", key.c_str());
-        std::fflush(stdout);
-        std::fprintf(stderr, "key '%s' created; store it now, it cannot be shown again\n",
+        // If the key does not reach stdout it is lost for good: fail loudly (the key row
+        // stays; revoke it and retry).
+        if (std::printf("%s\n", key.c_str()) < 0 || std::fflush(stdout) != 0) {
+            (void)std::fprintf(stderr, "lightmusicd: cannot write the new key to stdout; revoke '%s' and retry\n",
+                               c.add_key->c_str());
+            return 1;
+        }
+        (void)std::fprintf(stderr, "key '%s' created; store it now, it cannot be shown again\n",
                      c.add_key->c_str());
     }
     if (c.revoke_key) {
         if (!db.revoke_key(*c.revoke_key)) {
-            std::fprintf(stderr, "lightmusicd: no key named '%s'\n", c.revoke_key->c_str());
+            (void)std::fprintf(stderr, "lightmusicd: no key named '%s'\n", c.revoke_key->c_str());
             return 1;
         }
-        std::fprintf(stderr, "key '%s' revoked\n", c.revoke_key->c_str());
+        (void)std::fprintf(stderr, "key '%s' revoked\n", c.revoke_key->c_str());
     }
     if (c.list_keys)
         for (auto &k : db.list_keys()) {
             std::time_t t = std::time_t(k.created);
             char b[32];
             std::tm tm{};
-            gmtime_r(&t, &tm);
-            std::strftime(b, sizeof b, "%Y-%m-%dT%H:%M:%SZ", &tm);
+            (void)gmtime_r(&t, &tm); // on overflow tm stays zero-initialised
+            if (std::strftime(b, sizeof b, "%Y-%m-%dT%H:%M:%SZ", &tm) == 0) b[0] = '\0';
             std::printf("%s\t%s\n", k.name.c_str(), b);
         }
     return 0;
@@ -74,7 +79,7 @@ int main(int argc, char **argv) try {
         std::error_code ec;
         auto p = fs::canonical(d, ec);
         if (ec || !fs::is_directory(p)) {
-            std::fprintf(stderr, "lightmusicd: not a directory: %s\n", d.c_str());
+            (void)std::fprintf(stderr, "lightmusicd: not a directory: %s\n", d.c_str());
             return 2;
         }
         roots.push_back(p.string());
@@ -95,11 +100,15 @@ int main(int argc, char **argv) try {
 
     // SIGINT/SIGTERM are handled by a dedicated thread; block them everywhere else.
     sigset_t sigs;
-    sigemptyset(&sigs);
-    sigaddset(&sigs, SIGINT);
-    sigaddset(&sigs, SIGTERM);
-    pthread_sigmask(SIG_BLOCK, &sigs, nullptr);
-    std::signal(SIGPIPE, SIG_IGN);
+    (void)sigemptyset(&sigs);
+    (void)sigaddset(&sigs, SIGINT);
+    (void)sigaddset(&sigs, SIGTERM);
+    // Both are required: sigwait() below needs the signals blocked in every thread, and an
+    // un-ignored SIGPIPE would kill the server on the first write to a closed socket.
+    if (pthread_sigmask(SIG_BLOCK, &sigs, nullptr) != 0 || std::signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        (void)std::fprintf(stderr, "lightmusicd: cannot set up signal handling\n");
+        return 1;
+    }
 
     Watcher watcher(ix, Watcher::Options{std::chrono::milliseconds(250),
                                          std::chrono::milliseconds(2000), cfg->watch});
@@ -109,7 +118,7 @@ int main(int argc, char **argv) try {
     api.log = log_line;
     int port = api.bind();
     if (port < 0) {
-        std::fprintf(stderr, "lightmusicd: cannot bind %s:%d\n", cfg->listen_addr.c_str(), cfg->port);
+        (void)std::fprintf(stderr, "lightmusicd: cannot bind %s:%d\n", cfg->listen_addr.c_str(), cfg->port);
         return 1;
     }
     if (cfg->trusted_proxies.empty() && is_loopback_addr(cfg->listen_addr))
@@ -122,11 +131,11 @@ int main(int argc, char **argv) try {
                  " without a reverse proxy (no TLS)");
     watcher.start();
     std::printf("lightmusicd listening on %s:%d\n", cfg->listen_addr.c_str(), port);
-    std::fflush(stdout);
+    (void)std::fflush(stdout); // informational line only; a closed stdout must not stop the server
 
     std::thread sig_thread([&] {
         int s = 0;
-        sigwait(&sigs, &s);
+        if (sigwait(&sigs, &s) != 0) s = SIGTERM; // cannot wait: stop rather than hang
         log_line(std::string("signal ") + std::to_string(s) + ", stopping");
         api.stop();
     });
@@ -138,6 +147,6 @@ int main(int argc, char **argv) try {
     watcher.stop();
     return 0;
 } catch (const std::exception &e) {
-    std::fprintf(stderr, "lightmusicd: %s\n", e.what());
+    (void)std::fprintf(stderr, "lightmusicd: %s\n", e.what());
     return 1;
 }

@@ -9,10 +9,10 @@
 namespace lm::net {
 
 // nullopt with *err when unknown (no sd-bus support, no bus, no NetworkManager).
-std::optional<bool> probeNetworkManagerMetered(std::string *err);
+[[nodiscard]] std::optional<bool> probeNetworkManagerMetered(std::string *err);
 
 // Pure policy: may the idle fill run now?
-inline bool idleFillAllowed(bool backgroundFill, bool pauseOnMetered, std::optional<bool> metered) {
+[[nodiscard]] inline bool idleFillAllowed(bool backgroundFill, bool pauseOnMetered, std::optional<bool> metered) {
     if (!backgroundFill) return false;
     if (pauseOnMetered && metered.value_or(false)) return false;
     return true;

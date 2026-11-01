@@ -47,25 +47,25 @@ public:
     ClientDb &operator=(const ClientDb &) = delete;
 
     // Creates the file 0600 and the schema. Returns false with *err.
-    bool open(const std::string &path, std::string *err);
+    [[nodiscard]] bool open(const std::string &path, std::string *err);
 
     std::string meta(const std::string &k);
     void setMeta(const std::string &k, const std::string &v);
     std::int64_t revision();
 
     // Applies a /library/changes response in one transaction.
-    bool applyChanges(const json::Value &v, SyncResult &out, std::string *err);
+    [[nodiscard]] bool applyChanges(const json::Value &v, SyncResult &out, std::string *err);
     // Drops the mirror and every cache row (server changed).
     void wipe();
 
-    std::optional<Track> track(std::int64_t id);
+    [[nodiscard]] std::optional<Track> track(std::int64_t id);
     void setTrackValidator(std::int64_t id, const std::string &etag, std::int64_t size);
     std::vector<Album> albums();
     std::vector<Track> tracksOfAlbum(std::int64_t albumId);
     // Every track, by album artist, album, disc, track number.
     std::vector<Track> allTracks();
 
-    std::optional<EntryRow> entry(std::int64_t trackId);
+    [[nodiscard]] std::optional<EntryRow> entry(std::int64_t trackId);
     std::vector<EntryRow> entries();
     void putEntry(const EntryRow &e); // insert or replace
     void updateRanges(std::int64_t trackId, const std::string &ranges, std::int64_t cached, bool complete);
@@ -76,7 +76,7 @@ public:
     // durable: committed with synchronous=FULL (the step before files are renamed).
     void setEntryName(std::int64_t trackId, const std::string &name, const std::string &prevName, bool durable);
     // Does any entry other than `except` use `name` (as name or prevName)?
-    bool nameTaken(const std::string &name, std::int64_t except);
+    [[nodiscard]] bool nameTaken(const std::string &name, std::int64_t except);
     // Sum of entry sizes (space reserved by the sparse files), and of pinned ones.
     std::int64_t usage();
     std::int64_t pinnedUsage();

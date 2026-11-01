@@ -28,7 +28,7 @@ namespace lm::config {
 namespace {
 
 constexpr int kMaxDepth = 16;                    // settings nesting (a.b.c...)
-constexpr std::size_t kMaxBytes = 64 * 1024;     // a config file is a few hundred bytes
+constexpr std::size_t kMaxBytes = std::size_t{64} * 1024;     // a config file is a few hundred bytes
 constexpr int kMaxFlowNesting = 32;              // [ { ... before parsing (stack bound)
 
 struct Node {
@@ -382,7 +382,7 @@ std::string doubleQuoted(const std::string &v) {
         else if (ch == '\t') r += "\\t";
         else if (c < 0x20 || c == 0x7f) {
             char b[8];
-            std::snprintf(b, sizeof b, "\\x%02x", c);
+            (void)std::snprintf(b, sizeof b, "\\x%02x", c);
             r += b;
         } else r += ch;
     }

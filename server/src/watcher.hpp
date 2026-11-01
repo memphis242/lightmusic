@@ -44,7 +44,7 @@ public:
     void start();  // spawns the thread: add watches, full scan, event loop
     void stop();
     // True once the initial scan has completed (tests wait for it).
-    bool ready() const { return ready_.load(); }
+    [[nodiscard]] bool ready() const { return ready_.load(); }
     // Number of event batches applied so far (tests use it to wait for quiescence).
     std::uint64_t batches() const { return batches_.load(); }
     std::size_t watch_count() const { return watch_count_.load(); }

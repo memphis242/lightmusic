@@ -22,7 +22,7 @@ add_library(lm::net ALIAS net)
 target_include_directories(net PUBLIC include PRIVATE src)
 target_link_libraries(net
   PUBLIC lm::player Threads::Threads
-  PRIVATE lm_warnings PkgConfig::CURL PkgConfig::SQLITE3)
+  PRIVATE lm_warnings_app PkgConfig::CURL PkgConfig::SQLITE3)
 if(SDBUS_FOUND)
   target_compile_definitions(net PRIVATE LM_HAVE_SDBUS=1)
   target_link_libraries(net PRIVATE PkgConfig::SDBUS)

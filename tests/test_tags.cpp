@@ -20,7 +20,7 @@ static void checkTags(const char *what, const Tags &t, const std::string &title,
     const bool ok = t.title == title && t.artist == artist && t.album == album && t.track == track &&
                     t.disc == disc && t.year == year;
     if (!ok) {
-        std::fprintf(stderr, "%s: got title='%s' artist='%s' album='%s' track=%d disc=%d year=%d\n", what,
+        (void)std::fprintf(stderr, "%s: got title='%s' artist='%s' album='%s' track=%d disc=%d year=%d\n", what,
                      t.title.c_str(), t.artist.c_str(), t.album.c_str(), t.track, t.disc, t.year);
         ++lmtest::g_failures;
     }
@@ -483,7 +483,7 @@ static void fuzzStructured(std::mt19937 &r, int iters) {
         b.insert(b.end(), {0xFF, 0xFB, 0x90, 0x00});
         MemSource src(b);
         Tags t2;
-        lm::detail::readTagsFrom(src, t2, &g);
+        (void)lm::detail::readTagsFrom(src, t2, &g);
         CHECK(t.title.size() <= 4096 && t2.title.size() <= 4096);
         // Vorbis comment blocks: random lengths, truncated.
         bytes vc = vorbisComments({"TITLE=a", "ARTIST=b"});

@@ -65,14 +65,14 @@ struct ClientConfig {
     double readTimeoutSec = 20;  // a read waiting this long without progress fails
     long connectTimeoutSec = 10;
     long stallTimeoutSec = 20;   // transfers below 1 B/s this long are aborted
-    std::size_t commitBytes = 256 * 1024; // batch: fdatasync + SQLite every 256 KiB ...
+    std::size_t commitBytes = std::size_t{256} * 1024; // batch: fdatasync + SQLite every 256 KiB ...
     int commitMs = 1000;                  // ... or 1 s, whichever first
     // After setCacheSettings() lowers the cap, eviction down to it waits this long and
     // for the network to be idle (new entries respect the lower cap at once).
     int capTrimDelayMs = 2000;
     // A playback fetch already running at most this far before the read position is
     // kept; otherwise it is cancelled and restarted at the read position.
-    std::uint64_t seekRestartBytes = 512 * 1024;
+    std::uint64_t seekRestartBytes = std::uint64_t{512} * 1024;
     std::function<void(const std::string &)> log;
     // Network thread: a track became cached/partial/invalidated, or a sync applied.
     std::function<void()> onCacheChange;
@@ -114,29 +114,29 @@ class Client {
 public:
     // Opens (creates) the cache directory and client database. Does not touch the
     // network. nullptr with *err on failure.
-    static std::unique_ptr<Client> open(ClientConfig cfg, std::string *err);
+    [[nodiscard]] static std::unique_ptr<Client> open(ClientConfig cfg, std::string *err);
     ~Client(); // stops the network thread; open sources then fail their reads
     Client(const Client &) = delete;
     Client &operator=(const Client &) = delete;
 
     // GET /library/changes?since=<rev> into the mirror (blocking; network). Tracks
     // whose ETag changed or that were deleted lose their cache entries.
-    bool sync(std::string *err);
+    [[nodiscard]] bool sync(std::string *err);
     std::int64_t revision();
 
     // Mirror (works offline).
     std::vector<Album> albums();
     std::vector<Track> tracksOfAlbum(std::int64_t albumId);
     std::vector<Track> allTracks();
-    std::optional<Track> track(std::int64_t id);
+    [[nodiscard]] std::optional<Track> track(std::int64_t id);
 
     CacheInfo cacheInfo(std::int64_t trackId);
-    std::optional<CacheEntryInfo> cacheEntry(std::int64_t trackId);
+    [[nodiscard]] std::optional<CacheEntryInfo> cacheEntry(std::int64_t trackId);
     CacheStats stats();
     // Pinned ("saved offline") tracks are never evicted, do not count toward the cap, and
     // are filled in the background. Pinning fails when the track's missing bytes would
     // leave less free disk space than the floor (ClientConfig::minFreeBytes).
-    bool pin(std::int64_t trackId, bool pinned, std::string *err);
+    [[nodiscard]] bool pin(std::int64_t trackId, bool pinned, std::string *err);
     // Tracks to fill in the background next (e.g. the next few in the play queue);
     // replaces the previous list.
     void setFillQueue(std::vector<std::int64_t> trackIds);
@@ -149,12 +149,12 @@ public:
 
     // A ByteSource for the track (cache first, network for holes). Blocking reads;
     // decoder thread only. nullptr with *err if the track is unknown.
-    std::unique_ptr<ByteSource> openTrack(std::int64_t trackId, std::string *err);
+    [[nodiscard]] std::unique_ptr<ByteSource> openTrack(std::int64_t trackId, std::string *err);
     // For lm::PlayerConfig::openSource: resolves trackUri() strings.
     std::function<std::unique_ptr<ByteSource>(const std::string &, std::string *)> sourceOpener();
 
     static std::string trackUri(std::int64_t trackId); // "lm://server/track/<id>"
-    static std::optional<std::int64_t> parseTrackUri(const std::string &uri);
+    [[nodiscard]] static std::optional<std::int64_t> parseTrackUri(const std::string &uri);
 
     struct Core;
 

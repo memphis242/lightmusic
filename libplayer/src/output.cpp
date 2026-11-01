@@ -157,7 +157,7 @@ std::string AudioOutput::describe() const {
     const std::uint32_t irate = d.playback.internalSampleRate;
     const std::uint32_t per = d.playback.internalPeriodSizeInFrames, nper = d.playback.internalPeriods;
     char buf[512];
-    std::snprintf(buf, sizeof buf, "audio: backend=%s device=\"%s\" sink=\"%s\" rate=%u internal=%s/%uch/%u period=%u x%u (%.1f ms)",
+    (void)std::snprintf(buf, sizeof buf, "audio: backend=%s device=\"%s\" sink=\"%s\" rate=%u internal=%s/%uch/%u period=%u x%u (%.1f ms)",
                   backendName().c_str(), deviceName().c_str(), connectedSink().c_str(), rate_,
                   ma_get_format_name(d.playback.internalFormat), d.playback.internalChannels, irate, per, nper,
                   irate ? 1000.0 * per * nper / irate : 0.0);

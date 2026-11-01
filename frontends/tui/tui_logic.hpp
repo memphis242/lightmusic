@@ -12,11 +12,11 @@ namespace lmtui {
 // Natural ("human") order: digit runs compare numerically ("2" < "10"), everything
 // else compares case-insensitively byte by byte; ties fall back to plain byte order so
 // the order is total.
-bool naturalLess(std::string_view a, std::string_view b);
+[[nodiscard]] bool naturalLess(std::string_view a, std::string_view b);
 
 // True if the extension (case-insensitive) is one the core can decode:
 // mp3, flac, opus, ogg, oga.
-bool hasAudioExtension(std::string_view path);
+[[nodiscard]] bool hasAudioExtension(std::string_view path);
 
 // Expands command-line arguments into a play queue. Files are kept as given (the core
 // sniffs the format by magic bytes, so an explicitly named file is never filtered).
@@ -80,7 +80,7 @@ float stepVolume(float v, int dir);
 class KeyParser {
 public:
     std::vector<std::string> feed(std::string_view bytes);
-    bool pending() const { return !buf_.empty(); }
+    [[nodiscard]] bool pending() const { return !buf_.empty(); }
     std::vector<std::string> flush(); // emits what is buffered (lone ESC -> "escape")
 
 private:
@@ -92,7 +92,7 @@ private:
 // no group/other permission bits (0600 or 0400; anything looser is refused so a key is
 // never read from a file others can read). The key is the first line, trimmed; it must be
 // printable ASCII without spaces. Returns false with `err` set.
-bool readKeyFile(const std::string &path, std::string &key, std::string &err);
+[[nodiscard]] bool readKeyFile(const std::string &path, std::string &key, std::string &err);
 
 // Cache-state marker for a queue row: "●" cached, "◐" partial, "○" remote only,
 // "" for a local file. `pinned` adds "*".

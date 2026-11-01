@@ -8,6 +8,8 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <stdexcept>
+#include <string>
 #include <thread>
 #include <unordered_map>
 
@@ -230,7 +232,9 @@ struct NetThread::Impl {
 
 NetThread::NetThread(NetConfig cfg) : impl_(std::make_unique<Impl>()) {
     static std::once_flag once;
-    std::call_once(once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
+    static CURLcode initRc = CURLE_OK;
+    std::call_once(once, [] { initRc = curl_global_init(CURL_GLOBAL_DEFAULT); });
+    if (initRc != CURLE_OK) throw std::runtime_error(std::string("curl_global_init: ") + curl_easy_strerror(initRc));
     impl_->tick = cfg.tick;
     impl_->cfg = std::move(cfg);
     impl_->multi = curl_multi_init();

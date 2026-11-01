@@ -32,14 +32,16 @@ bool is_audio_path(const std::string &path) {
     return e == "mp3" || e == "flac" || e == "opus" || e == "ogg" || e == "oga";
 }
 
-static std::string s(const TagLib::String &t) { return t.to8Bit(true); }
+namespace {
+std::string s(const TagLib::String &t) { return t.to8Bit(true); }
 
-static int leading_int(const TagLib::PropertyMap &p, const char *key) {
+int leading_int(const TagLib::PropertyMap &p, const char *key) {
     auto it = p.find(key);
     if (it == p.end() || it->second.isEmpty()) return 0;
     // NOLINTNEXTLINE(cert-err34-c): prefix parse on purpose ("1/2" -> 1); junk -> 0 = unknown
     return std::atoi(it->second.front().toCString(true));
 }
+} // namespace
 
 bool read_track_meta(TrackMeta &m) {
     TagLib::FileRef f(m.path.c_str(), true, TagLib::AudioProperties::Average);
@@ -96,12 +98,12 @@ std::optional<Picture> read_embedded_picture(int fd, const std::string &name) {
     int dfd = ::fcntl(fd, F_DUPFD_CLOEXEC, 0);
     if (dfd < 0) return std::nullopt;
     if (::lseek(dfd, 0, SEEK_SET) < 0) {
-        ::close(dfd);
+        (void)::close(dfd); // cleanup; nothing written through it is pending
         return std::nullopt;
     }
     TagLib::FileStream stream(dfd, true);
     if (!stream.isOpen()) {  // fdopen() failed: the stream does not own dfd
-        ::close(dfd);
+        (void)::close(dfd); // cleanup; nothing written through it is pending
         return std::nullopt;
     }
     if (ext == "mp3") {

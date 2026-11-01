@@ -36,7 +36,7 @@ static void testExtensions() {
 }
 
 static void touch(const fs::path &p) {
-    fs::create_directories(p.parent_path());
+    (void)fs::create_directories(p.parent_path());
     std::ofstream(p) << "x";
 }
 
@@ -59,7 +59,7 @@ static void testCollect() {
                                            l + "/cd2/1 one.opus", l + "/cd10/1 one.ogg"};
     CHECK(got == want);
     if (got != want)
-        for (auto &g : got) std::fprintf(stderr, "  got %s\n", g.c_str());
+        for (auto &g : got) (void)std::fprintf(stderr, "  got %s\n", g.c_str());
     CHECK_EQ(errors.size(), 1u);
     if (!errors.empty()) CHECK(errors[0].find("No such file") != std::string::npos);
 
@@ -187,7 +187,7 @@ static void testKeyParser() {
 
 static void testKeyFile() {
     const fs::path dir = fs::temp_directory_path() / ("lm_keyfile_" + std::to_string(getpid()));
-    fs::create_directories(dir);
+    (void)fs::create_directories(dir);
     const std::string p = (dir / "key").string();
     {
         std::ofstream(p) << "  abcDEF0123456789  \r\nsecond line ignored\n";

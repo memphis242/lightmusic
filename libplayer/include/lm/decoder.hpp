@@ -26,7 +26,7 @@ struct Tags {
     int track = 0; // "3/12" -> 3
     int disc = 0;
     int year = 0;
-    bool empty() const { return title.empty() && artist.empty() && album.empty() && !track && !disc && !year; }
+    [[nodiscard]] bool empty() const { return title.empty() && artist.empty() && album.empty() && !track && !disc && !year; }
     bool operator==(const Tags &) const = default;
 };
 
@@ -47,9 +47,9 @@ public:
     // stopped early; the frames returned before it are valid.
     const std::string &lastError() const { return error_; }
     // Seeks to an absolute PCM frame. Returns false on failure.
-    virtual bool seek(std::uint64_t frame) = 0;
+    [[nodiscard]] virtual bool seek(std::uint64_t frame) = 0;
     // ReplayGain track gain in dB, if the file carries one (see tags.cpp).
-    virtual std::optional<float> trackGainDb() const { return gain_; }
+    [[nodiscard]] virtual std::optional<float> trackGainDb() const { return gain_; }
     const Tags &tags() const { return tags_; }
 
 protected:
@@ -61,13 +61,13 @@ protected:
 // Detects the container/codec from the first bytes (magic numbers, not the file
 // extension) and returns the matching decoder, or nullptr with `err` set.
 Format sniffFormat(ByteSource &src);
-std::unique_ptr<Decoder> openDecoder(std::unique_ptr<ByteSource> src, std::string *err = nullptr);
+[[nodiscard]] std::unique_ptr<Decoder> openDecoder(std::unique_ptr<ByteSource> src, std::string *err = nullptr);
 // Convenience: openFileSource + openDecoder.
-std::unique_ptr<Decoder> openDecoderForFile(const std::string &path, std::string *err = nullptr);
+[[nodiscard]] std::unique_ptr<Decoder> openDecoderForFile(const std::string &path, std::string *err = nullptr);
 // Reads only the tags of a file: no decoder is opened and only tag bytes are read
 // (pictures skipped, ~1 MiB cap). Returns false if the file cannot be opened, is not a
 // regular file, or is not a supported format (it is not checked to be decodable). Thread-safe; meant for
 // frontends that label a queue before its tracks play.
-bool readTags(const std::string &path, Tags &out, std::string *err = nullptr);
+[[nodiscard]] bool readTags(const std::string &path, Tags &out, std::string *err = nullptr);
 
 } // namespace lm

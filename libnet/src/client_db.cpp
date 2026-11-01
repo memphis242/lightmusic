@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <cerrno>
+#include <cstring>
 #include <stdexcept>
 
 namespace lm::net {
@@ -36,13 +38,17 @@ struct Stmt {
         if (sqlite3_prepare_v2(db, sql, -1, &s, nullptr) != SQLITE_OK)
             throw std::runtime_error(std::string("sqlite prepare: ") + sqlite3_errmsg(db));
     }
-    ~Stmt() { sqlite3_finalize(s); }
+    ~Stmt() { (void)sqlite3_finalize(s); } // returns the last step's error, already reported
+    // A failed bind would otherwise run the statement with NULL in that slot.
+    void check(int rc) const {
+        if (rc != SQLITE_OK) throw std::runtime_error(std::string("sqlite bind: ") + sqlite3_errstr(rc));
+    }
     Stmt &bind(int i, std::int64_t v) {
-        sqlite3_bind_int64(s, i, v);
+        check(sqlite3_bind_int64(s, i, v));
         return *this;
     }
     Stmt &bind(int i, const std::string &v) {
-        sqlite3_bind_text(s, i, v.data(), int(v.size()), SQLITE_TRANSIENT);
+        check(sqlite3_bind_text(s, i, v.data(), int(v.size()), SQLITE_TRANSIENT));
         return *this;
     }
     bool step() {
@@ -53,8 +59,8 @@ struct Stmt {
     }
     void run() {
         step();
-        sqlite3_reset(s);
-        sqlite3_clear_bindings(s);
+        (void)sqlite3_reset(s); // repeats the error step() already threw for
+        (void)sqlite3_clear_bindings(s);
     }
     std::int64_t i64(int c) { return sqlite3_column_int64(s, c); }
     std::string str(int c) {
@@ -105,7 +111,7 @@ EntryRow entryFrom(Stmt &s) {
 } // namespace
 
 ClientDb::~ClientDb() {
-    if (db_) sqlite3_close(db_);
+    if (db_) (void)sqlite3_close(db_); // cleanup; nothing to report
 }
 
 void ClientDb::exec(const char *sql) {
@@ -125,8 +131,13 @@ bool ClientDb::open(const std::string &path, std::string *err) {
         if (err) *err = "cannot create " + path;
         return false;
     }
-    fchmod(fd, 0600);
-    ::close(fd);
+    // The umask may have been ignored for an existing file: the mirror must stay private.
+    if (::fchmod(fd, 0600) != 0) {
+        if (err) *err = "cannot make " + path + " private (chmod 0600): " + std::strerror(errno);
+        (void)::close(fd); // read-only use so far: nothing to lose
+        return false;
+    }
+    (void)::close(fd); // nothing was written through this descriptor
     if (sqlite3_open_v2(path.c_str(), &db_, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nullptr) != SQLITE_OK) {
         if (err) *err = std::string("cannot open database: ") + (db_ ? sqlite3_errmsg(db_) : "?");
         return false;
@@ -249,7 +260,7 @@ bool ClientDb::applyChanges(const json::Value &v, SyncResult &out, std::string *
             .run();
         exec("COMMIT");
     } catch (const std::exception &e) {
-        sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
+        (void)sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr);
         if (err) *err = e.what();
         return false;
     }

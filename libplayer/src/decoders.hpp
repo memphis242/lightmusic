@@ -9,14 +9,14 @@
 namespace lm::detail {
 
 std::unique_ptr<Decoder> openMp3(std::unique_ptr<ByteSource> src, std::string *err);
-std::unique_ptr<Decoder> openFlac(std::unique_ptr<ByteSource> src, std::string *err);
-std::unique_ptr<Decoder> openOpus(std::unique_ptr<ByteSource> src, std::string *err);
-std::unique_ptr<Decoder> openVorbis(std::unique_ptr<ByteSource> src, std::string *err);
+[[nodiscard]] std::unique_ptr<Decoder> openFlac(std::unique_ptr<ByteSource> src, std::string *err);
+[[nodiscard]] std::unique_ptr<Decoder> openOpus(std::unique_ptr<ByteSource> src, std::string *err);
+[[nodiscard]] std::unique_ptr<Decoder> openVorbis(std::unique_ptr<ByteSource> src, std::string *err);
 
 // "REPLAYGAIN_TRACK_GAIN=-6.5 dB" style Vorbis comment -> -6.5 (case-insensitive key).
-std::optional<float> parseVorbisCommentGain(std::string_view comment);
+[[nodiscard]] std::optional<float> parseVorbisCommentGain(std::string_view comment);
 // "-6.50 dB" -> -6.5
-std::optional<float> parseGainValue(std::string_view value);
+[[nodiscard]] std::optional<float> parseGainValue(std::string_view value);
 // Raw ID3v2 tag (header included) -> TXXX:REPLAYGAIN_TRACK_GAIN, if present.
 std::optional<float> parseId3v2TrackGain(const unsigned char *tag, std::size_t size);
 
@@ -42,7 +42,7 @@ void parseVorbisCommentBlock(const unsigned char *p, std::size_t size, Tags &tag
 // FLAC the VORBIS_COMMENT block (other blocks skipped); Ogg the first pages up to the
 // comment header (no seeking to the end). Returns false for an unsupported format.
 // Leaves the source position unspecified.
-bool readTagsFrom(ByteSource &src, Tags &tags, std::optional<float> *gain);
+[[nodiscard]] bool readTagsFrom(ByteSource &src, Tags &tags, std::optional<float> *gain);
 // Leading integer of "3/12", "2004-05-01" etc.; 0 if none or out of range.
 int parseLeadingInt(std::string_view s);
 

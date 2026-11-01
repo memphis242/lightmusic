@@ -50,8 +50,8 @@ void Watcher::stop() {
         [[maybe_unused]] auto r = ::write(stop_fd_, &one, sizeof one);
         th_.join();
     }
-    if (ifd_ >= 0) ::close(ifd_);
-    if (stop_fd_ >= 0) ::close(stop_fd_);
+    if (ifd_ >= 0) (void)::close(ifd_); // cleanup; nothing written through it is pending
+    if (stop_fd_ >= 0) (void)::close(stop_fd_); // cleanup; nothing written through it is pending
     ifd_ = stop_fd_ = -1;
 }
 

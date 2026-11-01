@@ -32,7 +32,7 @@ struct Value {
         auto *v = get(k);
         return v && v->type == Type::String ? v->str : std::string();
     }
-    bool boolean(std::string_view k) const {
+    [[nodiscard]] bool boolean(std::string_view k) const {
         auto *v = get(k);
         return v && v->type == Type::Bool && v->b;
     }
@@ -44,6 +44,6 @@ struct Value {
 };
 
 // nullopt on malformed input (error text in *err).
-std::optional<Value> parse(std::string_view text, std::string *err = nullptr);
+[[nodiscard]] std::optional<Value> parse(std::string_view text, std::string *err = nullptr);
 
 } // namespace lm::net::json

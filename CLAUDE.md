@@ -5,7 +5,7 @@ platform: Fedora 43 (gcc 15, clang 21). See README.md for the user-facing docs.
 
 ## Coding principles
 
-1. **Let the compilers analyse the code.** `lm_warnings` (cmake/LmQuality.cmake) enables a
+1. **Let the compilers analyse the code.** `lm_warnings_app`/`lm_warnings_test` (cmake/LmQuality.cmake) enables a
    wide warning set (`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
    -Wold-style-cast ...` plus gcc-only and clang-only extras). New code must build
    warning-free on both compilers. Fix the cause; do not cast or pragma a warning away
@@ -27,21 +27,39 @@ platform: Fedora 43 (gcc 15, clang 21). See README.md for the user-facing docs.
    static analyzer's symbolic execution via `clang-analyzer-*`) and cppcheck (data-flow).
    Real findings are fixed; false positives are suppressed inline
    (`// NOLINT(check): reason`, `// cppcheck-suppress id` + reason), never wholesale.
-6. **Assertions** (`include/lm/assert.hpp`): `static_assert` for anything knowable at
+6. **App vs test warning sets.** App code (libplayer, libnet, libconfig, server,
+   frontends, tools, include) uses the strictest set: `lm_warnings_app`, the root
+   `.clang-tidy`, the global cppcheck config. Tests and test-only helpers use
+   `lm_warnings_test`, `tests/.clang-tidy` (inherits the root and relaxes it) and
+   suppressions scoped to `tests/`. Unit tests may have much lower warning standards;
+   **never disable an app check because of nuisance hits in tests**: relax it for tests
+   only. A check stays off for app code only when its reason applies to app code (e.g.
+   hits inside libstdc++ headers), with that reason written next to it. -Werror (CI)
+   applies to both sets.
+7. **Check every return value**, especially of system calls: handle the error, or, where
+   ignoring it is truly correct (diagnostic printf/fprintf, best-effort cleanup close or
+   unlink), discard it explicitly with `(void)` plus a brief comment when not obvious.
+   Our own functions whose result matters are `[[nodiscard]]`. Enforced by cert-err33-c,
+   bugprone-unused-return-value (CheckedFunctions widened to POSIX/sqlite/curl calls in
+   `.clang-tidy`) and `-Wunused-result`, in app and test code.
+8. **Assertions** (`include/lm/assert.hpp`): `static_assert` for anything knowable at
    compile time; `LM_ASSERT(cond, msg)` for internal invariants (pre/postconditions,
    data-structure consistency); `LM_ASSERT_RT(cond)` inside the realtime audio callback
    (no I/O, traps). Active without `NDEBUG` or with `-DLM_ASSERTS=ON`; keep conditions
    side-effect free. Never assert on untrusted input: audio files/tags, network data and
    config get proper error handling in every build.
-7. **Behaviour stays unchanged when fixing warnings**: run the full test suite after each
+9. **Behaviour stays unchanged when fixing warnings**: run the full test suite after each
    batch of fixes.
-8. Do not modify `third_party/` (vendored; see third_party/VERSIONS.md).
+10. Do not modify `third_party/` (vendored; see third_party/VERSIONS.md).
 
 Decisions recorded:
-- `-Wuseless-cast` (gcc) is off: it flags `int64_t`/`off_t`/`long long` casts that are
-  no-ops on x86-64 Linux but needed for printf formats and 32-bit/Windows portability.
-- gcc's `-Wnull-dereference` is off (clang's is on): at -O2 gcc reports paths inlined from
-  libstdc++ (`streambuf::gptr`) that cannot be fixed in our code.
+- `-Wuseless-cast` (gcc) is off for app and tests: re-evaluated for app code, all 21 hits
+  are casts between types identical only on LP64 glibc (uint64_t ring positions ->
+  size_t, time_t/off_t -> int64_t, off_t -> long for vorbisfile, mode_t -> unsigned for
+  printf); they are required for 32-bit and Windows (planned) under -Wconversion.
+- gcc's `-Wnull-dereference` is ON for app code (no hits) and off for tests only: there
+  gcc reports paths inlined from libstdc++ (`streambuf::gptr/egptr` via
+  istreambuf_iterator in test file readers). clang's is on for both.
 - UBSan `unsigned-integer-overflow` (clang) is off: unsigned wrap is well defined and used
   on purpose (hashes, PRNGs, ring-buffer indices).
 - clang UBSan `implicit-conversion` is limited to `implicit-integer-truncation`: the

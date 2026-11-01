@@ -2,7 +2,7 @@ set(LM_FIXTURE_DIR ${CMAKE_CURRENT_BINARY_DIR}/fixtures)
 
 function(lm_test name)
   add_executable(${name} ${name}.cpp)
-  target_link_libraries(${name} PRIVATE lm::player lm_warnings)
+  target_link_libraries(${name} PRIVATE lm::player lm_warnings_test)
   add_test(NAME ${name} COMMAND ${name})
   set_tests_properties(${name} PROPERTIES
     SKIP_RETURN_CODE 77
@@ -14,7 +14,7 @@ lm_test(test_ring)
 # Assertion facility death tests: header-only (no lm::player, so forcing assertions on
 # here cannot give inline functions two definitions), on in every build type.
 add_executable(test_assert test_assert.cpp)
-target_link_libraries(test_assert PRIVATE lm_warnings)
+target_link_libraries(test_assert PRIVATE lm_warnings_test)
 target_include_directories(test_assert PRIVATE ${PROJECT_SOURCE_DIR}/libplayer/include)
 target_compile_definitions(test_assert PRIVATE LM_ENABLE_ASSERTS)
 add_test(NAME test_assert COMMAND test_assert)
@@ -42,7 +42,7 @@ endif()
 if(TARGET lightmusicd)
   function(lm_server_test name)
     add_executable(${name} ${name}.cpp)
-    target_link_libraries(${name} PRIVATE lm::server_core lm_warnings)
+    target_link_libraries(${name} PRIVATE lm::server_core lm_warnings_test)
     add_test(NAME ${name} COMMAND ${name} ${ARGN})
     set_tests_properties(${name} PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
   endfunction()
@@ -90,7 +90,7 @@ endif()
 
 if(TARGET lm::mpris)
   add_executable(test_mpris test_mpris.cpp)
-  target_link_libraries(test_mpris PRIVATE lm::mpris lm_warnings)
+  target_link_libraries(test_mpris PRIVATE lm::mpris lm_warnings_test)
   add_test(NAME test_mpris COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/test_mpris.sh $<TARGET_FILE:test_mpris>)
   set_tests_properties(test_mpris PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
                        ENVIRONMENT "LM_FIXTURE_DIR=${LM_FIXTURE_DIR}")

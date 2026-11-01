@@ -67,7 +67,7 @@ struct Loop {
                 logs.push_back(msg);
             });
             if (!srv) {
-                std::fprintf(stderr, "%s\n", err.c_str());
+                (void)std::fprintf(stderr, "%s\n", err.c_str());
                 ready = true;
                 return;
             }
@@ -75,7 +75,7 @@ struct Loop {
             ready = true;
             while (!stop) {
                 pollfd fds[2] = {{pipeFds[0], POLLIN, 0}, srv->pollFd()};
-                poll(fds, 2, srv->timeoutMs());
+                (void)poll(fds, 2, srv->timeoutMs());
                 wakeups++;
                 srv->process();
                 if (srv->quitRequested()) quit = true;
@@ -97,8 +97,8 @@ struct Loop {
         char c = 1;
         (void)!write(pipeFds[1], &c, 1);
         th.join();
-        close(pipeFds[0]);
-        close(pipeFds[1]);
+        (void)close(pipeFds[0]);
+        (void)close(pipeFds[1]);
     }
 };
 
@@ -146,7 +146,7 @@ struct Client {
         while (std::chrono::steady_clock::now() < end) {
             while (sd_bus_process(bus, nullptr) > 0) {
             }
-            sd_bus_wait(bus, 20000);
+            (void)sd_bus_wait(bus, 20000);
         }
     }
     bool waitFor(const std::function<bool()> &pred, std::chrono::milliseconds d = 5000ms) {
@@ -455,13 +455,13 @@ int main() {
         const std::string sock = sockDir + "/bus";
         const std::string addr = "unix:path=" + sock;
         auto startDaemon = [&]() -> int {
-            unlink(sock.c_str());
+            (void)unlink(sock.c_str());
             return std::atoi(run("dbus-daemon --session --fork --print-pid --address=" + addr).c_str());
         };
         int dpid = startDaemon();
         CHECK(dpid > 0);
         if (dpid <= 0) return lmtest::finish("test_mpris");
-        setenv("DBUS_SESSION_BUS_ADDRESS", addr.c_str(), 1);
+        (void)setenv("DBUS_SESSION_BUS_ADDRESS", addr.c_str(), 1);
         Loop l2(player);
         {
             std::lock_guard lk(lm_);
@@ -469,7 +469,7 @@ int main() {
         }
         l2.start();
         CHECK(l2.name == kName);
-        kill(dpid, SIGTERM);
+        (void)kill(dpid, SIGTERM);
         auto t0 = std::chrono::steady_clock::now();
         while (l2.logText().find("connection lost") == std::string::npos &&
                std::chrono::steady_clock::now() - t0 < 5s)
@@ -494,10 +494,10 @@ int main() {
             std::lock_guard lk(lm_);
             loopPtr = nullptr;
         }
-        kill(dpid, SIGTERM);
-        unlink(sock.c_str());
-        rmdir(sockDir.c_str());
-        std::fputs(l2.logText().c_str(), stdout);
+        (void)kill(dpid, SIGTERM);
+        (void)unlink(sock.c_str());
+        (void)rmdir(sockDir.c_str());
+        (void)std::fputs(l2.logText().c_str(), stdout);
     }
     return lmtest::finish("test_mpris");
 }

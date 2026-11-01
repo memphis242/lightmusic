@@ -61,8 +61,8 @@ static int open_fds() {
 // Symlink-safe opens beneath a root, via openat2 and via the O_NOFOLLOW walk.
 static void test_safe_open(const std::string &tmp) {
     std::string root = tmp + "/sroot", out = tmp + "/sout";
-    fs::create_directories(root + "/dir/sub");
-    fs::create_directories(out);
+    (void)fs::create_directories(root + "/dir/sub");
+    (void)fs::create_directories(out);
     std::ofstream(root + "/dir/sub/f.mp3") << "inside";
     std::ofstream(out + "/secret.mp3") << "outside";
     fs::create_directory_symlink(out, root + "/dir/link");     // dir symlink escaping
@@ -77,19 +77,19 @@ static void test_safe_open(const std::string &tmp) {
         if (fd >= 0) {
             char b[16] = {};
             CHECK_EQ(::read(fd, b, sizeof b), 6);
-            ::close(fd);
+            (void)::close(fd);
         }
         for (const char *bad : {"dir/link/secret.mp3", "inlink/f.mp3", "dir/sub/s.mp3", "../sout/secret.mp3",
                                 "dir/../dir/sub/f.mp3", "/etc/passwd", "dir//sub/f.mp3", "", "dir/sub/./f.mp3"}) {
             int f = open_beneath(rfd, bad, walk);
             if (f >= 0) {
-                std::fprintf(stderr, "opened %s (walk=%d)\n", bad, int(walk));
-                ::close(f);
+                (void)std::fprintf(stderr, "opened %s (walk=%d)\n", bad, int(walk));
+                (void)::close(f);
             }
             CHECK(f < 0);
         }
         int ff = open_beneath(rfd, "dir/fifo.mp3", walk);  // O_NONBLOCK: does not hang
-        if (ff >= 0) ::close(ff);
+        if (ff >= 0) (void)::close(ff);
     }
     // EPERM from openat2 (a seccomp filter) falls back to the walk, but only while openat2
     // has never succeeded; afterwards EPERM is a real answer.
@@ -107,28 +107,28 @@ static void test_safe_open(const std::string &tmp) {
         set_openat2_for_test(shim);
         int f = open_beneath(rfd, "dir/sub/f.mp3");
         CHECK(f >= 0);  // via the walk
-        if (f >= 0) ::close(f);
+        if (f >= 0) (void)::close(f);
         CHECK(openat2_disabled());
         f = open_beneath(rfd, "dir/sub/f.mp3");  // latched: openat2 not tried again
-        if (f >= 0) ::close(f);
+        if (f >= 0) (void)::close(f);
         CHECK_EQ(calls, 1);
 
         set_openat2_for_test(shim);  // fresh state; openat2 works once, then EPERM
         mode = 1;
         f = open_beneath(rfd, "dir/sub/f.mp3");
         CHECK(f >= 0);
-        if (f >= 0) ::close(f);
+        if (f >= 0) (void)::close(f);
         mode = 0;
         CHECK(open_beneath(rfd, "dir/sub/f.mp3") < 0 && errno == EPERM);  // no fallback
         CHECK(!openat2_disabled());
         set_openat2_for_test(nullptr);
     }
-    ::close(rfd);
+    (void)::close(rfd);
     RootDirs roots({fs::canonical(root).string()});
     std::string croot = fs::canonical(root).string();
     int fd = roots.open(croot + "/dir/sub/f.mp3");
     CHECK(fd >= 0);
-    if (fd >= 0) ::close(fd);
+    if (fd >= 0) (void)::close(fd);
     CHECK(roots.open(croot + "/dir/link/secret.mp3") < 0);
     CHECK(roots.open(fs::canonical(out).string() + "/secret.mp3") < 0);  // not under a root
     CHECK(roots.open(croot + "x/dir/sub/f.mp3") < 0);                      // prefix, not a parent
@@ -149,8 +149,8 @@ int main() {
     std::string tmp = lmtest::makeTempDir(tmpl);
     g_src = tmp + "/src";
     std::string lib = tmp + "/lib";
-    fs::create_directories(g_src);
-    fs::create_directories(lib + "/A");
+    (void)fs::create_directories(g_src);
+    (void)fs::create_directories(lib + "/A");
     bool ok = gen("a.mp3", "Alpha", "First", "-c:a libmp3lame -f mp3") &&
               gen("b.flac", "Beta", "First", "-c:a flac -f flac") &&
               gen("c.opus", "Gamma", "Second", "-c:a libopus -f ogg") &&
@@ -212,7 +212,7 @@ int main() {
     }
 
     // 4. rename while not watching: same size+mtime+name → id kept
-    fs::create_directories(lib + "/B");
+    (void)fs::create_directories(lib + "/B");
     fs::rename(lib + "/A/b.flac", lib + "/B/b.flac");
     auto b_id_before = state(r, lib + "/B/b.flac");
     CHECK(!b_id_before);
@@ -223,7 +223,7 @@ int main() {
 
     // 5. delete while not watching → tombstone, album "First" survives (a.mp3)
     auto d_id = state(r, lib + "/A/d.ogg")->id;
-    fs::remove(lib + "/A/d.ogg");
+    (void)fs::remove(lib + "/A/d.ogg");
     auto rev_before = r.revision();
     st = ix.full_scan();
     CHECK_EQ(st.removed, 1u);
@@ -251,13 +251,13 @@ int main() {
         CHECK(pic && pic->data.size() > 8 && pic->data.compare(1, 3, "PNG") == 0);
         CHECK(::fcntl(fd, F_GETFD) != -1);  // caller's fd still open
         CHECK(!read_embedded_picture(fd, "/x/plain.txt"));
-        ::close(fd);
+        (void)::close(fd);
         CHECK_EQ(open_fds(), before);  // no descriptor leaked by TagLib's FileStream
     }
 
     // 6. watcher
     Watcher wat(ix, Watcher::Options{std::chrono::milliseconds(50), std::chrono::milliseconds(500), true});
-    wat.log = [](const std::string &s) { std::fprintf(stderr, "watcher: %s\n", s.c_str()); };
+    wat.log = [](const std::string &s) { (void)std::fprintf(stderr, "watcher: %s\n", s.c_str()); };
     wat.start();
     CHECK(wait_for([&] { return wat.ready(); }));
     CHECK(wat.watch_count() >= 3u);  // lib, A, B
@@ -269,7 +269,7 @@ int main() {
     CHECK(state(r, lib + "/A/a2.mp3") && state(r, lib + "/A/a2.mp3")->id == a_id);
 
     // 6b. new subdirectory + file written right away (watch-then-scan race)
-    fs::create_directories(lib + "/N/deep");
+    (void)fs::create_directories(lib + "/N/deep");
     fs::copy_file(g_src + "/e.mp3", lib + "/N/deep/e.mp3");
     CHECK(wait_for([&] { return state(r, lib + "/N/deep/e.mp3").has_value(); }));
     auto e_id = state(r, lib + "/N/deep/e.mp3") ? state(r, lib + "/N/deep/e.mp3")->id : -1;
@@ -298,7 +298,7 @@ int main() {
 
     // 6e. delete
     auto b_id = state(r, lib + "/B/b.flac")->id;
-    fs::remove(lib + "/B/b.flac");
+    (void)fs::remove(lib + "/B/b.flac");
     CHECK(wait_for([&] { return !state(r, lib + "/B/b.flac"); }));
     CHECK_EQ(tombstones(r, b_id), 1);
 
