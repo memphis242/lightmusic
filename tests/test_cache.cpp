@@ -29,6 +29,7 @@
 #include <set>
 #include <sstream>
 #include <thread>
+#include <tuple>
 
 using namespace std::chrono_literals;
 namespace fs = std::filesystem;
@@ -1190,6 +1191,188 @@ void renameCrash() {
     fs::remove_all(dir);
 }
 
+bool noTempNames(const std::string &dir) {
+    for (const auto &f : listTracks(dir))
+        if (f.rfind("renaming--", 0) == 0) {
+            (void)std::fprintf(stderr, "  leftover %s\n", f.c_str());
+            return false;
+        }
+    return true;
+}
+
+// Regression: the server's database was reset/replaced, so the same files come back
+// under new ids (here permuted: old 1 is now 3, old 3 is now 1, old 2 is now 7). Cached
+// entries are adopted by (ETag, size) under their new ids without downloading anything
+// again, renamed if needed, and no temporary names are left behind.
+void idRemap() {
+    FakeServer srv;
+    srv.resetLibrary("lib-a");
+    const std::string d1 = FakeServer::randomBytes(50000, 101), d2 = FakeServer::randomBytes(60000, 102),
+                      d3 = FakeServer::randomBytes(70000, 103);
+    srv.setTrack(1, d1, "\"e1\"");
+    srv.setTrack(2, d2, "\"e2\"");
+    srv.setTrack(3, d3, "\"e3\"");
+    srv.setTags(1, "Band", "Record", "One");
+    srv.setTags(2, "Band", "Record", "Two");
+    srv.setTags(3, "Band", "Record", "Three");
+    const std::string dir = tempDir("remap");
+    auto cfg = baseCfg(srv.url(), dir);
+    cfg.backgroundFill = false;
+    {
+        auto c = open(cfg);
+        CHECK(c && syncOk(*c));
+        if (!c) return;
+        CHECK(cacheFully(*c, 1, d1));
+        CHECK(cacheFully(*c, 2, d2));
+        CHECK(cacheFully(*c, 3, d3));
+    }
+    srv.resetLibrary("lib-b");
+    srv.setTrack(3, d1, "\"e1\"");
+    srv.setTags(3, "Band", "Record", "One");
+    srv.setTrack(1, d3, "\"e3\"");
+    srv.setTags(1, "Band", "Record", "Three");
+    srv.setTrack(7, d2, "\"e2\"");
+    srv.setTags(7, "Band", "Record", "Two");
+    srv.stall = true; // nothing may be downloaded again
+    const int streams = srv.streams.load();
+    {
+        auto c = open(cfg);
+        CHECK(c && syncOk(*c));
+        if (!c) return;
+        for (auto [id, data, name] : {std::tuple<std::int64_t, const std::string *, const char *>{3, &d1, "band-record-one.mp3"},
+                                      {7, &d2, "band-record-two.mp3"},
+                                      {1, &d3, "band-record-three.mp3"}}) {
+            CHECK(c->cacheInfo(id).state == CacheState::Cached);
+            CHECK_STR(fileOf(*c, id), std::string(name));
+            std::string err;
+            auto s = c->openTrack(id, &err);
+            CHECK(s && readAll(*s) == *data);
+        }
+        CHECK(!c->cacheEntry(2));
+    }
+    CHECK_EQ(srv.streams.load(), streams);
+    CHECK((listTracks(dir) == std::set<std::string>{"band-record-one.mp3", "band-record-two.mp3", "band-record-three.mp3"}));
+    // Remapped again, now with a changed file: that entry is dropped, not adopted.
+    srv.resetLibrary("lib-c");
+    srv.setTrack(4, d1 + "x", "\"e1x\"");
+    srv.setTags(4, "Band", "Record", "One");
+    {
+        auto c = open(cfg);
+        CHECK(c && syncOk(*c));
+        if (!c) return;
+        CHECK(c->cacheInfo(4).state == CacheState::Remote);
+        CHECK(!c->cacheEntry(1) && !c->cacheEntry(3) && !c->cacheEntry(7));
+    }
+    CHECK(listTracks(dir).empty());
+    srv.stall = false;
+    fs::remove_all(dir);
+}
+
+// Regression: lightmusicd restarted on another port (e.g. --port 0) looks like another
+// server, which wipes the cache rows; their files used to stay behind and hold the names
+// the tracks wanted again, so they got "renaming--<id>" names, and the next restart
+// failed with "cannot name the cache file of track <id>". Also: a row-less
+// "renaming--<id>" file left by an older version is removed on open.
+void restartOtherUrl() {
+    const std::string d1 = FakeServer::randomBytes(40000, 111), d2 = FakeServer::randomBytes(45000, 112),
+                      d3 = FakeServer::randomBytes(47000, 113);
+    const std::string dir = tempDir("otherurl");
+    for (int run = 0; run < 3; run++) {
+        FakeServer srv; // a new port each time
+        srv.setTrack(1, d1, "\"o1\"");
+        srv.setTrack(2, d2, "\"o2\"");
+        srv.setTrack(3, d3, "\"o3\"");
+        if (run == 2) std::ofstream(dir + "/tracks/renaming--3.mp3") << "stale";
+        auto cfg = baseCfg(srv.url(), dir);
+        cfg.backgroundFill = false;
+        auto c = open(cfg);
+        CHECK(c && syncOk(*c));
+        if (!c) return;
+        const std::int64_t ids[] = {3, 1, 2};
+        const std::string *datas[] = {&d3, &d1, &d2};
+        for (std::size_t i = 0; i < 3; i++) {
+            const std::int64_t id = ids[i];
+            std::string err;
+            auto s = c->openTrack(id, &err);
+            if (!s) (void)std::fprintf(stderr, "  run %d track %lld: %s\n", run, static_cast<long long>(id), err.c_str());
+            CHECK(s && readAll(*s) == *datas[i]);
+            s.reset();
+            CHECK(waitUntil([&] { return c->cacheInfo(id).state == CacheState::Cached; }, 5s));
+        }
+        CHECK_STR(fileOf(*c, 3), std::string("band-record-t3.mp3"));
+        CHECK(noTempNames(dir));
+        CHECK_EQ(listTracks(dir).size(), 3u);
+    }
+    fs::remove_all(dir);
+}
+
+// Regression: a rename cycle interrupted with one entry parked under its temporary
+// name, whose track was then deleted on the server while it was in use (so the entry
+// was never removed: the client stopped first). The next start drops that entry and its
+// "renaming--" file, and finishes the other renames.
+void interruptedCycle() {
+    FakeServer srv;
+    const std::string d1 = FakeServer::randomBytes(30000, 121), d2 = FakeServer::randomBytes(31000, 122),
+                      d3 = FakeServer::randomBytes(32000, 123);
+    srv.setTrack(1, d1, "\"c1\"");
+    srv.setTrack(2, d2, "\"c2\"");
+    srv.setTrack(3, d3, "\"c3\"");
+    const std::string dir = tempDir("cycle");
+    auto cfg = baseCfg(srv.url(), dir);
+    cfg.backgroundFill = false;
+    {
+        auto c = open(cfg);
+        CHECK(c && syncOk(*c));
+        if (!c) return;
+        CHECK(cacheFully(*c, 1, d1));
+        CHECK(cacheFully(*c, 2, d2));
+        CHECK(cacheFully(*c, 3, d3));
+    }
+    const std::string t = dir + "/tracks/";
+    auto setName = [&](std::int64_t id, const std::string &name, const std::string &prev) {
+        lm::net::ClientDb db;
+        std::string err;
+        CHECK(db.open(dir + "/client.db", &err));
+        db.setEntryName(id, name, prev, true);
+    };
+    // 1 and 2 swap names: 1 was parked (step 1 committed, link done, old name not yet
+    // unlinked); 2 is untouched.
+    setName(1, "renaming--1", "band-record-t1");
+    fs::create_hard_link(t + "band-record-t1.mp3", t + "renaming--1.mp3");
+    srv.setTags(1, "Band", "Record", "T2");
+    srv.setTags(2, "Band", "Record", "T1");
+    srv.stall = true;
+    {
+        auto c = open(cfg);
+        CHECK(c && syncOk(*c));
+        if (!c) return;
+        CHECK_STR(fileOf(*c, 1), std::string("band-record-t2.mp3"));
+        CHECK_STR(fileOf(*c, 2), std::string("band-record-t1.mp3"));
+        CHECK(slurp(t + "band-record-t2.mp3") == d1);
+        CHECK(slurp(t + "band-record-t1.mp3") == d2);
+        CHECK(noTempNames(dir));
+        // Track 3 is deleted on the server while it plays, parked under its temp name;
+        // the client stops before the reader goes away.
+        std::string err;
+        auto s3 = c->openTrack(3, &err);
+        CHECK(s3 != nullptr);
+        srv.removeTrack(3);
+        CHECK(syncOk(*c));
+        setName(3, "renaming--3", "band-record-t3");
+        c.reset();
+    }
+    {
+        auto c = open(cfg);
+        CHECK(c != nullptr);
+        if (!c) return;
+        CHECK(!c->cacheEntry(3));
+        CHECK(noTempNames(dir));
+        CHECK((listTracks(dir) == std::set<std::string>{"band-record-t1.mp3", "band-record-t2.mp3"}));
+    }
+    srv.stall = false;
+    fs::remove_all(dir);
+}
+
 // Regression: releasing an entry while a cap shrink is still pending must not evict at
 // once (released() used to trim to the current cap, bypassing capTrimDelayMs), so a
 // shrink undone within the delay evicts nothing.
@@ -1280,7 +1463,8 @@ int main(int argc, char **argv) {
         {"orphan", orphanedIdle},        {"novalidator", noValidator},      {"adopt", adoptFinal},
         {"pincap", pinCapOnInvalidation}, {"loopback", loopbackWarning},
         {"names", namesAndCollisions},   {"rename", renameOnSync},          {"migrate", migrateOldLayout},
-        {"renamecrash", renameCrash},
+        {"renamecrash", renameCrash},    {"remap", idRemap},                {"otherurl", restartOtherUrl},
+        {"cycle", interruptedCycle},
         {"hot", hotSettings},            {"trimrelease", trimOnRelease},            {"diskfloor", diskFloor},          {"defaultcap", defaultCap},
     };
     for (auto &[name, fn] : tests) {

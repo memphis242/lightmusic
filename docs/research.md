@@ -231,6 +231,27 @@ streamed tracks are completed in the background during idle periods.
   tracks swapping names) goes through `renaming--<id>`. Rows with `prev_name` set are
   finished on start; files are unlinked before their row is deleted, so a crash never
   leaves a named file without a row, and unknown files in `tracks/` are left alone.
+  Since a row always names its files before they exist, a file whose stem is a name we
+  want to give (generated names always contain `-`, never only digits) and that no row
+  claims is a leftover of ours: it is removed rather than pushing the entry to a
+  temporary name it might never leave. Row-less `renaming--*` and `*.part` files are
+  removed on start; so are entries of tracks deleted on the server while in use (the
+  client stopped before the entry was released). Switching servers (another URL, e.g.
+  lightmusicd restarted on another port) deletes the entries' files before their rows.
+- **Server ids remapped** (implemented). Ids are stable on one server database, but the
+  database can be deleted, reset or replaced: the same files come back under new ids,
+  possibly permuted (old 1 is now 3) and with a revision that may even be ahead of the
+  client's. lightmusicd gives each database a random `library` id; the client stores it
+  with the mirror and sends it on every sync, and another library always yields a full
+  dump (also checked on the answer: a mismatching incremental one is re-requested from
+  0). After any full sync, every entry nobody uses whose row no longer matches its id's
+  track (gone, or another ETag) is **adopted** by the one track that now has the same
+  strong ETag and size (the ETag is size + mtime of the file, so it identifies the same
+  file under its new id) when that track has no entry of its own: the row is re-keyed in
+  one transaction (through negative ids, so a permutation cannot collide), and the
+  normal name reconcile renames its files (cycle-safe). Entries with no unique match, a
+  weak ETag, or a target that is in use are dropped (files, then row) by the usual
+  invalidation; nothing is ever served under an id whose ETag differs from the mirror's.
 - Cost: one SQLite DB (`sqlite-devel`, already used server-side) plus plain files. No
   extra memory pressure: writes stream from the same buffers already in RAM.
 
