@@ -112,6 +112,18 @@ static void testKeys() {
     CHECK(lmtui::mapKey("x") == Command::None);
     CHECK(lmtui::mapKey("") == Command::None);
     CHECK(lmtui::mapKey("Q") == Command::None);
+    CHECK(lmtui::mapKey("r") == Command::CycleRepeat);
+    CHECK(lmtui::mapKey("s") == Command::ToggleShuffle);
+    CHECK(lmtui::mapKey("R") == Command::None);
+    CHECK_EQ(lmtui::nextRepeat(0), 1);
+    CHECK_EQ(lmtui::nextRepeat(1), 2);
+    CHECK_EQ(lmtui::nextRepeat(2), 0);
+    CHECK_EQ(lmtui::nextRepeat(7), 0);
+    CHECK(lmtui::modeLabel(0, false).empty());
+    CHECK(lmtui::modeLabel(1, false) == "repeat");
+    CHECK(lmtui::modeLabel(2, false) == "repeat one");
+    CHECK(lmtui::modeLabel(0, true) == "shuffle");
+    CHECK(lmtui::modeLabel(2, true) == "repeat one · shuffle");
 
     CHECK_NEAR(lmtui::stepVolume(1.0f, +1), 1.05, 1e-6);
     CHECK_NEAR(lmtui::stepVolume(1.0f, -1), 0.95, 1e-6);

@@ -27,6 +27,10 @@
 // is written. A job change (seek/skip/stop) drops the pending gap. The audio callback
 // is untouched: the silence is ordinary ring data.
 //
+// Play order: the decoder asks successor() (under dm) for the track after the one that
+// ended, so repeat and shuffle need no extra synchronisation; `order`/`pos` hold the shuffle
+// permutation. Repeat-one gives the same index again, with a new marker (TrackChanged).
+//
 // Seek/skip/stop flush: stop the device (callback no longer runs), retire the decoder
 // job (generation bump + ack), drop the ring contents, start a new job, wait for a short
 // prebuffer, restart the device. One device stays open throughout.
@@ -61,6 +65,7 @@
 #include <deque>
 #include <future>
 #include <mutex>
+#include <random>
 #include <set>
 #include <thread>
 
@@ -71,6 +76,15 @@ const char *statusName(Status s) {
     case Status::Stopped: return "stopped";
     case Status::Playing: return "playing";
     case Status::Paused: return "paused";
+    }
+    return "?";
+}
+
+const char *repeatName(Repeat r) {
+    switch (r) {
+    case Repeat::Off: return "off";
+    case Repeat::All: return "all";
+    case Repeat::One: return "one";
     }
     return "?";
 }
@@ -86,6 +100,7 @@ const char *eventName(EventType t) {
     case EventType::EndOfQueue: return "end";
     case EventType::Error: return "error";
     case EventType::Log: return "log";
+    case EventType::ModeChanged: return "mode";
     }
     return "?";
 }
@@ -130,7 +145,7 @@ TrackInfo infoFor(const std::string &path, const Decoder &d) {
 }
 
 struct Cmd {
-    enum Kind { Enqueue, Clear, Play, PlayIndex, Pause, Toggle, Stop, Next, Prev, Seek, Volume, Barrier } kind;
+    enum Kind { Enqueue, Clear, Play, PlayIndex, Pause, Toggle, Stop, Next, Prev, Seek, Volume, SetRepeat, SetShuffle, Barrier } kind;
     std::vector<std::string> paths{};
     int index = 0;
     double value = 0;
@@ -195,6 +210,15 @@ struct Player::Impl {
     bool decoderExhausted = false;
     bool dquit = false;
     bool consuming = false; // device running; while false a full ring parks the decoder
+    // Play order (see Player::setShuffle). With shuffle, `order` is a permutation of the
+    // queue indices and pos[order[k]] == k; both are empty without shuffle. modeGen
+    // counts changes that can give an exhausted decoder a next track (enqueue, repeat,
+    // shuffle).
+    Repeat repeat = Repeat::Off;
+    bool shuffle = false;
+    std::vector<int> order, pos;
+    std::mt19937_64 rng;
+    std::uint64_t modeGen = 0;
 
     // Published snapshot (guarded by sm).
     mutable std::mutex sm;
@@ -271,12 +295,20 @@ struct Player::Impl {
     }
 
     explicit Impl(PlayerConfig c)
-        : cfg(std::move(c)), ring(ringSamples(48000)) {
+        : cfg(std::move(c)), ring(ringSamples(48000)), repeat(cfg.repeat), shuffle(cfg.shuffle),
+          rng(shuffleSeed(cfg.shuffleSeed)) {
         out.tap = cfg.outputTap;
         out.tapUser = cfg.outputTapUser;
         gapSec.store(clampGap(cfg.gapSeconds));
         decoderThread = std::thread([this] { decoderMain(); });
         controlThread = std::thread([this] { controlMain(); });
+    }
+
+    // Fixed seed (tests), else 64 bits from the system's entropy source.
+    static std::uint64_t shuffleSeed(std::uint64_t fixed) {
+        if (fixed) return fixed;
+        std::random_device rd;
+        return (std::uint64_t{rd()} << 32) ^ std::uint64_t{rd()};
     }
 
     std::size_t ringSamples(std::uint32_t rate) const {
@@ -332,6 +364,76 @@ struct Player::Impl {
         ccv.notify_one();
     }
 
+    // ---------------------------------------------------------------- play order (dm held)
+    int queueCount() const { return static_cast<int>(queue.size()); }
+    void reindexOrder() {
+        pos.assign(queue.size(), -1);
+        for (std::size_t k = 0; k < order.size(); k++) pos[static_cast<std::size_t>(order[k])] = static_cast<int>(k);
+        LM_ASSERT(order.size() == queue.size(), "shuffle order is a permutation of the queue");
+    }
+    // New shuffle order: `prefix` (distinct valid indices, in this order) first, the rest
+    // of the queue in random order after it.
+    void buildShuffle(const std::vector<int> &prefix) {
+        order.clear();
+        if (!shuffle) {
+            pos.clear();
+            return;
+        }
+        std::vector<char> used(queue.size(), 0);
+        for (int i : prefix)
+            if (i >= 0 && i < queueCount() && !used[static_cast<std::size_t>(i)]) {
+                used[static_cast<std::size_t>(i)] = 1;
+                order.push_back(i);
+            }
+        const auto fixed = static_cast<std::ptrdiff_t>(order.size());
+        for (int i = 0; i < queueCount(); i++)
+            if (!used[static_cast<std::size_t>(i)]) order.push_back(i);
+        std::shuffle(order.begin() + fixed, order.end(), rng);
+        reindexOrder();
+    }
+    // Index played after `i`, or -1. `natural`: the track ended by itself (repeat-one
+    // replays it); otherwise (next(), a failed open) repeat-one moves on like repeat-all.
+    // `commit`: a wrap with shuffle draws the new permutation (the decoder and next());
+    // otherwise only the existence of a successor matters (hasNext).
+    int successor(int i, bool natural, bool commit) {
+        const int n = queueCount();
+        if (n == 0 || i < 0 || i >= n) return -1;
+        if (natural && repeat == Repeat::One) return i;
+        const bool wrap = repeat != Repeat::Off;
+        if (!shuffle) return i + 1 < n ? i + 1 : wrap ? 0 : -1;
+        LM_ASSERT(pos.size() == queue.size(), "shuffle order covers the queue");
+        const int p = pos[static_cast<std::size_t>(i)];
+        if (p + 1 < n) return order[static_cast<std::size_t>(p) + 1];
+        if (!wrap) return -1;
+        if (commit) {
+            buildShuffle({});
+            if (n > 1 && order.front() == i) { // never the same track twice in a row
+                std::swap(order.front(), order.back());
+                reindexOrder();
+            }
+        }
+        return order.front();
+    }
+    // Index played before `i` in the play order, or -1 (wraps with repeat).
+    int predecessor(int i) const {
+        const int n = queueCount();
+        if (n == 0 || i < 0 || i >= n) return -1;
+        const bool wrap = repeat != Repeat::Off;
+        if (!shuffle) return i > 0 ? i - 1 : wrap ? n - 1 : -1;
+        LM_ASSERT(pos.size() == queue.size(), "shuffle order covers the queue");
+        const int p = pos[static_cast<std::size_t>(i)];
+        if (p > 0) return order[static_cast<std::size_t>(p) - 1];
+        return wrap ? order.back() : -1;
+    }
+    int firstInOrder() const { return shuffle && !order.empty() ? order.front() : 0; }
+    // Audible track followed by the tracks already decoded after it (control thread).
+    std::vector<int> playedAhead() const {
+        std::vector<int> v;
+        if (index >= 0) v.push_back(index);
+        for (const auto &m : markers) v.push_back(m.index);
+        return v;
+    }
+
     // ---------------------------------------------------------------- snapshot/events
     PlayerState stateNow() const {
         std::lock_guard lk(sm);
@@ -350,11 +452,19 @@ struct Player::Impl {
 
     void publish() {
         std::size_t qsize;
+        Repeat rep;
+        bool shuf, hasNext;
         {
             std::lock_guard lk(dm);
             qsize = queue.size();
+            rep = repeat;
+            shuf = shuffle;
+            hasNext = successor(index, false, false) >= 0;
         }
         std::lock_guard lk(sm);
+        snap.repeat = rep;
+        snap.shuffle = shuf;
+        snap.hasNext = hasNext;
         snap.status = status;
         snap.index = index;
         snap.queueSize = qsize;
@@ -443,9 +553,12 @@ struct Player::Impl {
         flush();
         std::unique_ptr<Decoder> dec;
         std::string path;
-        for (;; i++, frame = 0) {
+        // A track that fails to open is skipped along the play order; each queue entry
+        // is tried at most once (repeat would otherwise loop over a broken queue).
+        for (std::size_t tries = 0;; tries++, frame = 0) {
             {
                 std::lock_guard lk(dm);
+                if (tries > 0) i = tries < queue.size() ? successor(i, false, true) : -1;
                 if (i < 0 || static_cast<std::size_t>(i) >= queue.size()) break;
                 path = queue[static_cast<std::size_t>(i)];
             }
@@ -549,6 +662,7 @@ struct Player::Impl {
     // Advances `cur` to the last marker the device has reached. Emits TrackChanged.
     void serviceMarkers() {
         const std::uint64_t audible = audibleFrame();
+        const std::uint64_t prevStart = cur.ringFrame;
         bool changed = false;
         std::vector<std::string> errs;
         {
@@ -562,7 +676,9 @@ struct Player::Impl {
         }
         for (auto &e : errs) emit(EventType::Error, e);
         if (!changed) return;
-        const bool newTrack = cur.index != index || snap.track.path != cur.info.path;
+        // A different ring start is a new play of the track (repeat-one) even with the
+        // same index; the decoder's own marker for a startAt() job repeats cur's start.
+        const bool newTrack = cur.index != index || snap.track.path != cur.info.path || cur.ringFrame != prevStart;
         index = cur.index;
         publish();
         if (newTrack) emit(EventType::TrackChanged);
@@ -574,7 +690,23 @@ struct Player::Impl {
         case Cmd::Enqueue: {
             {
                 std::lock_guard lk(dm);
+                const std::size_t before = queue.size();
                 for (auto &p : c.paths) queue.push_back(std::move(p));
+                if (shuffle && queue.size() > before) {
+                    if (before == 0 || index < 0) {
+                        buildShuffle(playedAhead());
+                    } else {
+                        // New tracks join the part of the order not yet played (after the
+                        // audible track and anything already decoded), which is reshuffled.
+                        const auto ahead = playedAhead();
+                        int from = 0;
+                        for (int i : ahead) from = std::max(from, pos[static_cast<std::size_t>(i)] + 1);
+                        for (std::size_t i = before; i < queue.size(); i++) order.push_back(static_cast<int>(i));
+                        std::shuffle(order.begin() + from, order.end(), rng);
+                        reindexOrder();
+                    }
+                }
+                modeGen++;
                 // An exhausted decoder resumes with the new tracks; make sure the end of
                 // queue is not declared in between (service() checks this flag).
                 if (!c.paths.empty() && decoderExhausted) {
@@ -593,6 +725,8 @@ struct Player::Impl {
             {
                 std::lock_guard lk(dm);
                 queue.clear();
+                order.clear();
+                pos.clear();
             }
             index = -1;
             cur = Marker{};
@@ -603,16 +737,22 @@ struct Player::Impl {
             break;
         case Cmd::Play:
             if (status == Status::Paused) resume();
-            else if (status == Status::Stopped) startAt(index >= 0 ? index : 0, 0, Status::Playing);
+            else if (status == Status::Stopped) startAt(startIndex(), 0, Status::Playing);
             break;
-        case Cmd::PlayIndex: startAt(c.index, 0, Status::Playing); break;
+        case Cmd::PlayIndex:
+            {
+                std::lock_guard lk(dm);
+                if (shuffle && c.index >= 0 && c.index < queueCount()) buildShuffle({c.index});
+            }
+            startAt(c.index, 0, Status::Playing);
+            break;
         case Cmd::Pause:
             if (status == Status::Playing) pauseNow();
             break;
         case Cmd::Toggle:
             if (status == Status::Playing) pauseNow();
             else if (status == Status::Paused) resume();
-            else startAt(index >= 0 ? index : 0, 0, Status::Playing);
+            else startAt(startIndex(), 0, Status::Playing);
             break;
         case Cmd::Stop:
             openPending = false;
@@ -623,8 +763,12 @@ struct Player::Impl {
             break;
         case Cmd::Next: {
             serviceMarkers();
-            const int n = index + 1;
-            if (index >= 0 && static_cast<std::size_t>(n) < queueSize())
+            int n;
+            {
+                std::lock_guard lk(dm);
+                n = successor(index, false, true);
+            }
+            if (n >= 0)
                 startAt(n, 0, status == Status::Paused ? Status::Paused : Status::Playing);
             else if (status != Status::Stopped) endOfQueue();
             break;
@@ -632,8 +776,13 @@ struct Player::Impl {
         case Cmd::Prev: {
             serviceMarkers();
             if (index < 0) break;
-            const bool restart = stateNow().position > 3.0 || index == 0;
-            startAt(restart ? index : index - 1, 0, status == Status::Paused ? Status::Paused : Status::Playing);
+            int p;
+            {
+                std::lock_guard lk(dm);
+                p = predecessor(index);
+            }
+            const bool restart = stateNow().position > 3.0 || p < 0;
+            startAt(restart ? index : p, 0, status == Status::Paused ? Status::Paused : Status::Playing);
             break;
         }
         case Cmd::Seek: {
@@ -657,8 +806,40 @@ struct Player::Impl {
             out.volume.store(static_cast<float>(std::clamp(c.value, 0.0, 2.0)));
             emit(EventType::VolumeChanged);
             break;
+        case Cmd::SetRepeat:
+        case Cmd::SetShuffle: {
+            bool changed;
+            {
+                std::lock_guard lk(dm);
+                if (c.kind == Cmd::SetRepeat) {
+                    const auto r = static_cast<Repeat>(c.index);
+                    changed = r != repeat;
+                    repeat = r;
+                } else {
+                    const bool on = c.index != 0;
+                    changed = on != shuffle;
+                    shuffle = on;
+                    if (changed) buildShuffle(playedAhead()); // clears the order when off
+                }
+                if (changed) modeGen++;
+            }
+            if (!changed) break;
+            dcv.notify_all(); // an exhausted decoder may have a next track now
+            publish();
+            emit(EventType::ModeChanged);
+            break;
+        }
         case Cmd::Barrier: c.barrier->set_value(); break;
         }
+    }
+
+    // Track that play() starts from when stopped: the current one, else the first in
+    // play order (a fresh shuffle permutation after the queue ended).
+    int startIndex() {
+        if (index >= 0) return index;
+        std::lock_guard lk(dm);
+        if (shuffle) buildShuffle({});
+        return firstInOrder();
     }
 
     void pauseNow() {
@@ -792,7 +973,10 @@ struct Player::Impl {
     void decoderMain() {
         std::unique_ptr<Decoder> dec;
         std::uint64_t seen = 0;
-        int idx = -1;
+        int idx = -1;     // track to open next (-1: none, the play order ended)
+        int lastIdx = -1; // track before idx (resume point when the order ended)
+        std::size_t fails = 0; // consecutive tracks that failed to open
+        std::uint64_t endGen = 0; // modeGen when the order ended
         std::uint64_t startFrame = 0;
         std::uint32_t devRate = 0;
         bool active = false, needOpen = false, exhausted = false, pokeControl = false;
@@ -829,6 +1013,8 @@ struct Player::Impl {
                         ackGen = gen;
                         active = job.active;
                         idx = job.index;
+                        lastIdx = -1;
+                        fails = 0;
                         startFrame = job.startFrame;
                         devRate = job.devRate;
                         dec = std::move(job.preopened);
@@ -842,7 +1028,13 @@ struct Player::Impl {
                         continue;
                     }
                     if (exhausted) {
-                        if (static_cast<std::size_t>(idx) < queue.size()) { // enqueued meanwhile
+                        // Enqueue/repeat/shuffle changed meanwhile: maybe there is a next track now.
+                        if (modeGen != endGen) {
+                            endGen = modeGen;
+                            fails = 0;
+                            idx = successor(lastIdx, true, true);
+                        }
+                        if (idx >= 0) {
                             exhausted = false;
                             decoderExhausted = false;
                             out.endOfStream.store(false, std::memory_order_release);
@@ -853,7 +1045,9 @@ struct Player::Impl {
                         continue;
                     }
                     if (needOpen && !dec) {
-                        if (static_cast<std::size_t>(idx) >= queue.size()) {
+                        if (idx < 0 || static_cast<std::size_t>(idx) >= queue.size()) {
+                            idx = -1;
+                            endGen = modeGen;
                             exhausted = true;
                             decoderExhausted = true;
                             out.endOfStream.store(true, std::memory_order_release);
@@ -894,7 +1088,8 @@ struct Player::Impl {
                 if (gen != seen) continue;
                 if (!dec) {
                     decoderErrors.push_back(err);
-                    idx++;
+                    lastIdx = idx;
+                    idx = ++fails < queue.size() ? successor(idx, false, true) : -1;
                     startFrame = 0;
                     continue; // a pending gap carries over to the next track that opens
                 }
@@ -921,6 +1116,7 @@ struct Player::Impl {
                 LM_ASSERT(markers.empty() || markers.back().ringFrame <= ring.totalWritten() / kCh,
                           "track markers are ordered by ring position");
                 markers.push_back(Marker{ring.totalWritten() / kCh, idx, startFrame, info});
+                fails = 0;
                 needOpen = false;
             }
             if (needOpen) continue;
@@ -965,7 +1161,12 @@ struct Player::Impl {
                 dec.reset();
                 dropConverter();
                 gapDue = static_cast<std::uint64_t>(std::llround(gapSec.load(std::memory_order_relaxed) * devRate));
-                idx++;
+                {
+                    std::lock_guard lk(dm);
+                    if (gen != seen) continue; // retired: the new job decides what plays
+                    lastIdx = idx;
+                    idx = successor(idx, true, true);
+                }
                 startFrame = 0;
                 needOpen = true;
             }
@@ -1033,6 +1234,8 @@ void Player::next() { impl_->push(Cmd{Cmd::Next}); }
 void Player::prev() { impl_->push(Cmd{Cmd::Prev}); }
 void Player::seek(double seconds) { impl_->push(Cmd{Cmd::Seek, {}, 0, seconds}); }
 void Player::setVolume(float v) { impl_->push(Cmd{Cmd::Volume, {}, 0, static_cast<double>(v)}); }
+void Player::setRepeat(Repeat r) { impl_->push(Cmd{Cmd::SetRepeat, {}, static_cast<int>(r)}); }
+void Player::setShuffle(bool on) { impl_->push(Cmd{Cmd::SetShuffle, {}, on ? 1 : 0}); }
 void Player::setGap(double seconds) {
     if (!std::isnan(seconds)) impl_->gapSec.store(clampGap(seconds), std::memory_order_relaxed);
 }

@@ -82,6 +82,15 @@ std::string baseName(const std::string &path) {
     return b;
 }
 
+const char *loopString(Repeat r) {
+    switch (r) {
+    case Repeat::One: return "Track";
+    case Repeat::All: return "Playlist";
+    case Repeat::Off: break;
+    }
+    return "None";
+}
+
 // Everything published as a property except Position (which is read live).
 struct Published {
     std::string status;
@@ -90,6 +99,8 @@ struct Published {
     int trackNo = 0, discNo = 0;
     std::int64_t lengthUs = 0;
     double volume = 1;
+    std::string loop = "None"; // LoopStatus
+    bool shuffle = false;
     bool canNext = false, canPrev = false, canPlay = false, canSeek = false;
 
     bool sameMetadata(const Published &o) const {
@@ -114,7 +125,9 @@ Published publish(const PlayerState &st) {
     }
     p.volume = static_cast<double>(st.volume);
     p.canPlay = st.queueSize > 0;
-    p.canNext = st.index >= 0 && static_cast<std::size_t>(st.index) + 1 < st.queueSize;
+    p.canNext = st.index >= 0 && st.hasNext; // repeat/shuffle aware
+    p.loop = loopString(st.repeat);
+    p.shuffle = st.shuffle;
     // Player::prev() restarts the current track when it is the first one (or more than 3 s
     // in), so "previous" always does something while a track is selected: like most
     // players, CanGoPrevious is true whenever there is a current index, including index 0.
@@ -283,6 +296,40 @@ struct Server::Impl {
         s.emitChanged(old);
         return 0;
     }
+    static int pLoop(sd_bus *, const char *, const char *, const char *, sd_bus_message *r, void *u, sd_bus_error *) {
+        return sd_bus_message_append(r, "s", self(u).pub.loop.c_str());
+    }
+    static int setLoop(sd_bus *, const char *, const char *, const char *, sd_bus_message *v, void *u, sd_bus_error *e) {
+        const char *str = nullptr;
+        int r = sd_bus_message_read(v, "s", &str);
+        if (r < 0) return r;
+        Repeat rep;
+        if (!std::strcmp(str, "None")) rep = Repeat::Off;
+        else if (!std::strcmp(str, "Track")) rep = Repeat::One;
+        else if (!std::strcmp(str, "Playlist")) rep = Repeat::All;
+        else return sd_bus_error_set(e, SD_BUS_ERROR_INVALID_ARGS, "LoopStatus must be None, Track or Playlist");
+        auto &s = self(u);
+        s.player.setRepeat(rep);
+        // Published now so an immediate Get sees it (ModeChanged confirms it later).
+        const Published old = s.pub;
+        s.pub.loop = loopString(rep);
+        s.emitChanged(old);
+        return 0;
+    }
+    static int pShuffle(sd_bus *, const char *, const char *, const char *, sd_bus_message *r, void *u, sd_bus_error *) {
+        return sd_bus_message_append(r, "b", static_cast<int>(self(u).pub.shuffle));
+    }
+    static int setShuffle(sd_bus *, const char *, const char *, const char *, sd_bus_message *v, void *u, sd_bus_error *) {
+        int b = 0;
+        int r = sd_bus_message_read(v, "b", &b);
+        if (r < 0) return r;
+        auto &s = self(u);
+        s.player.setShuffle(b != 0);
+        const Published old = s.pub;
+        s.pub.shuffle = b != 0;
+        s.emitChanged(old);
+        return 0;
+    }
     static int pRate(sd_bus *, const char *, const char *, const char *, sd_bus_message *r, void *, sd_bus_error *) {
         return sd_bus_message_append(r, "d", 1.0);
     }
@@ -313,6 +360,8 @@ struct Server::Impl {
         if (old.status != pub.status) names.push_back("PlaybackStatus");
         if (!old.sameMetadata(pub)) names.push_back("Metadata");
         if (old.volume != pub.volume) names.push_back("Volume");
+        if (old.loop != pub.loop) names.push_back("LoopStatus");
+        if (old.shuffle != pub.shuffle) names.push_back("Shuffle");
         if (old.canNext != pub.canNext) names.push_back("CanGoNext");
         if (old.canPrev != pub.canPrev) names.push_back("CanGoPrevious");
         if (old.canPlay != pub.canPlay) names.push_back("CanPlay");
@@ -439,6 +488,10 @@ const sd_bus_vtable kPlayerVtable[] = {
     SD_BUS_WRITABLE_PROPERTY("Rate", "d", I::pRate, I::setRate, 0, SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_PROPERTY("Metadata", "a{sv}", I::pMetadata, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
     SD_BUS_WRITABLE_PROPERTY("Volume", "d", I::pVolume, I::setVolume, 0,
+                             SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE | SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_WRITABLE_PROPERTY("LoopStatus", "s", I::pLoop, I::setLoop, 0,
+                             SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE | SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_WRITABLE_PROPERTY("Shuffle", "b", I::pShuffle, I::setShuffle, 0,
                              SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE | SD_BUS_VTABLE_UNPRIVILEGED),
     SD_BUS_PROPERTY("Position", "x", I::pPosition, 0, 0),
     SD_BUS_PROPERTY("MinimumRate", "d", I::pRate, 0, SD_BUS_VTABLE_PROPERTY_CONST),

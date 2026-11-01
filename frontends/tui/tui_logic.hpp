@@ -57,6 +57,8 @@ enum class Command {
     CloseHelp,
     Suspend,
     TogglePin, // remote tracks: keep offline (never evicted, filled in the background)
+    CycleRepeat,   // off -> all -> one -> off
+    ToggleShuffle,
 };
 
 // Maps a key name to a command. Printable keys are the character itself (" " for
@@ -97,6 +99,13 @@ bool readKeyFile(const std::string &path, std::string &key, std::string &err);
 // Cache-state marker for a queue row: "●" cached, "◐" partial, "○" remote only,
 // "" for a local file. `pinned` adds "*".
 std::string cacheGlyph(int state /* -1 local, 0 remote, 1 partial, 2 cached */, bool pinned);
+
+// Repeat mode as stored in the config and cycled by 'r': 0 off, 1 all, 2 one (the order
+// of lm::Repeat and lm::config::RepeatMode).
+int nextRepeat(int repeat);
+// Play-order indicator for the status line: "", "repeat", "repeat one", "shuffle",
+// "repeat · shuffle", ...
+std::string modeLabel(int repeat, bool shuffle);
 
 // Help text lines shown by '?'.
 const std::vector<std::string> &helpLines();
