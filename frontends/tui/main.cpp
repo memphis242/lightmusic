@@ -63,6 +63,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <concepts>
 #include <condition_variable>
 #include <deque>
 #include <unordered_map>
@@ -78,6 +79,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <type_traits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -246,7 +248,9 @@ private:
 
 // Starts a detached helper thread with the asynchronous signals blocked (they belong to
 // the UI thread; see the file header).
-template <class F> void spawnDetached(F &&fn) {
+template <class F>
+    requires std::invocable<std::decay_t<F>>
+void spawnDetached(F &&fn) {
     // pthread_sigmask() fails only for an invalid `how` (EINVAL).
     sigset_t old;
     (void)pthread_sigmask(SIG_BLOCK, &g_async, &old);

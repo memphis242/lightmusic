@@ -186,7 +186,7 @@ private:
 
 // httplib::Server with our own per-connection loop (same as the library's, plus a
 // per-peer connection cap and a deadline for receiving each request's headers).
-class LmServer : public httplib::Server {
+class LmServer final : public httplib::Server {
 public:
     explicit LmServer(HttpApi::Impl &impl) : impl_(impl) {}
 

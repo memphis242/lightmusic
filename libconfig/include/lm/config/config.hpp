@@ -14,6 +14,7 @@
 #pragma once
 
 #include <chrono>
+#include <concepts>
 #include <limits>
 #include <cstdint>
 #include <functional>
@@ -251,8 +252,19 @@ private:
 [[nodiscard]] bool parseFloat(const Value &v, double lo, double hi, double &out, std::string &err);
 [[nodiscard]] bool parseList(const Value &v, std::vector<std::string> &out, std::string &err);
 
+// ---- constraints on the builders' member types --------------------------------
+// A config member the schema can compare (diff) and copy (applyHot).
+template <class M>
+concept FieldValue = std::copyable<M> && std::equality_comparable<M>;
+// intField parses through long long, so the member must be an integer that fits it.
+// bool is excluded: it is integral, but boolField parses true/false, not numbers.
+template <class I>
+concept IntFieldValue = std::integral<I> && !std::same_as<I, bool> && sizeof(I) <= sizeof(long long);
+template <class E>
+concept EnumFieldValue = std::is_enum_v<E>;
+
 namespace detail {
-template <class T, class M> Field<T> base(std::string key, M T::*p, bool hot) {
+template <class T, FieldValue M> Field<T> base(std::string key, M T::*p, bool hot) {
     Field<T> f;
     f.key = std::move(key);
     f.hot = hot;
@@ -268,9 +280,7 @@ template <class T> Field<T> boolField(std::string key, bool T::*p, bool hot = fa
     return f;
 }
 
-template <class T, class I> Field<T> intField(std::string key, I T::*p, long long lo, long long hi, bool hot = false) {
-    static_assert(std::is_integral_v<I>);
-    static_assert(sizeof(I) <= sizeof(long long), "parsed through long long");
+template <class T, IntFieldValue I> Field<T> intField(std::string key, I T::*p, long long lo, long long hi, bool hot = false) {
     // Schema invariants (programmer error, not user input): a non-empty range that the
     // member type can hold, so the static_cast below never truncates.
     LM_ASSERT(lo <= hi, "intField: empty range");
@@ -324,9 +334,8 @@ template <class T> Field<T> pathField(std::string key, std::string T::*p, bool h
     return f;
 }
 
-template <class T, class E>
+template <class T, EnumFieldValue E>
 Field<T> enumField(std::string key, E T::*p, const std::vector<std::pair<std::string, E>> &names, bool hot = false) {
-    static_assert(std::is_enum_v<E>);
     LM_ASSERT(!names.empty(), "enumField: no accepted names");
     auto f = detail::base(std::move(key), p, hot);
     f.set = [p, names](T &t, const Value &v, std::string &err) {

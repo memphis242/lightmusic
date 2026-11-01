@@ -108,3 +108,24 @@ if(TARGET lm::mpris)
     set_tests_properties(test_tui_mpris PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 90)
   endif()
 endif()
+
+# Compile-fail tests: constraints (concepts, deleted copies) must reject misuse at compile
+# time. Each case is an EXCLUDE_FROM_ALL object library that the test builds; it passes
+# when the build fails with the expected diagnostic (a build that succeeds prints no
+# match). RESOURCE_LOCK: they drive the build tool on this build tree, one at a time.
+function(lm_compile_fail name src case regex)
+  add_library(${name} OBJECT EXCLUDE_FROM_ALL compile_fail/${src})
+  target_compile_definitions(${name} PRIVATE LM_CF_CASE=${case})
+  target_link_libraries(${name} PRIVATE lm_warnings_test ${ARGN})
+  add_test(NAME ${name} COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target ${name})
+  set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}" RESOURCE_LOCK lm_build_tree TIMEOUT 120
+                                          LABELS compile_fail)
+endfunction()
+lm_compile_fail(cf_int_field_bool config_fields.cpp 1 "IntFieldValue" lm::config)
+lm_compile_fail(cf_int_field_double config_fields.cpp 2 "IntFieldValue" lm::config)
+lm_compile_fail(cf_enum_field_int config_fields.cpp 3 "EnumFieldValue" lm::config)
+lm_compile_fail(cf_bytesource_copy interfaces.cpp 1 "deleted" lm::player)
+lm_compile_fail(cf_decoder_copy interfaces.cpp 2 "deleted" lm::player)
+if(TARGET lightmusicd)
+  lm_compile_fail(cf_json_kv_size_t interfaces.cpp 3 "JsonScalar" lm::player lm::server_core)
+endif()
