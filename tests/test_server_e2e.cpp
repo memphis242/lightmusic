@@ -364,7 +364,15 @@ int main(int argc, char **argv) {
                 httplib::Headers h = auth;
                 std::size_t from = std::size_t(i) * 100;
                 h.insert({"Range", "bytes=" + std::to_string(from) + "-"});
+                // The 12 connections closed above release their per-peer slots only when
+                // their workers see EOF; until then the cap may still close a new
+                // connection at once (no response). Retry only that, within a deadline.
+                const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
                 auto rr = c.Get("/api/v1/stream/" + id, h);
+                while (!rr && std::chrono::steady_clock::now() < end) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    rr = c.Get("/api/v1/stream/" + id, h);
+                }
                 if (rr && rr->status == 206 && rr->body == file.substr(from)) ++good;
             });
         for (auto &t : th) t.join();
