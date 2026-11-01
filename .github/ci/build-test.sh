@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
 # Install Fedora deps, configure, build and test lightmusic. Runs inside fedora:43.
-# Usage: build-test.sh <build-type> [extra cmake args...]
+# Usage: [LM_CC=gcc|clang] build-test.sh <build-type> [extra cmake args...]
 set -euo pipefail
 build_type=$1; shift
+cc=${LM_CC:-gcc}
+case "$cc" in
+  gcc)   extra_pkgs=(); export CC=gcc CXX=g++ ;;
+  clang) extra_pkgs=(clang compiler-rt); export CC=clang CXX=clang++ ;;
+  *) echo "unknown LM_CC: $cc" >&2; exit 2 ;;
+esac
 
 dnf -y -q install --setopt=install_weak_deps=False \
   gcc-c++ cmake ninja-build pkgconf-pkg-config git \
   libcurl-devel opusfile-devel libvorbis-devel libogg-devel flac-devel mpg123-devel \
   ncurses-devel ftxui-devel systemd-devel cpp-httplib-devel taglib-devel sqlite-devel \
   yaml-cpp-devel ffmpeg-free util-linux util-linux-script dbus-daemon dbus-tools \
-  playerctl procps-ng strace libasan libubsan libtsan
+  playerctl procps-ng strace libasan libubsan libtsan "${extra_pkgs[@]}"
 
 git config --global --add safe.directory '*'
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE="$build_type" -DLM_FETCH_FTXUI=OFF "$@"
+"$CXX" --version | head -1
 cmake --build build
 
 # Fail on any test failure; also fail if any test skipped (exit 77): every
