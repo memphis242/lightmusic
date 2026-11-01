@@ -62,7 +62,12 @@ struct PlayerState {
     std::string output; // backend/device description, once opened
     Repeat repeat = Repeat::Off;
     bool shuffle = false;
-    bool hasNext = false; // next() would move to another track (repeat/shuffle aware)
+    bool hasNext = false; // next() would move to another track (repeat/shuffle/user queue aware)
+    // The user queue ("up next"): queue entries that play before the context continues,
+    // in order. Entries already being decoded for a gapless transition are not listed.
+    std::vector<int> upNext;
+    bool fromUserQueue = false; // the audible track came from the user queue
+    int contextIndex = -1;      // context entry the context continues after (see Player)
 };
 
 enum class EventType {
@@ -122,8 +127,29 @@ public:
     Player &operator=(const Player &) = delete;
 
     // File paths, or URIs handled by PlayerConfig::openSource.
+    //
+    // Queue entries (PlayerState::index, playIndex()) are of two kinds. enqueue() adds
+    // *context* entries: the album/folder/list being played, in queue order or shuffled,
+    // repeated with Repeat::All. queueAdd() adds entries that only exist for the *user
+    // queue* (PlayerState::upNext), a list of entries (of either kind) played before the
+    // context continues: when a track ends, the user queue's first entry plays next (and
+    // leaves the list); once it is empty the context continues after the context track
+    // that played last, so a user-queue track is an interlude in the context. The user
+    // queue ignores shuffle and is played once (Repeat::All repeats only the context;
+    // Repeat::One repeats whatever track plays, a queued one too). prev() on a
+    // user-queue track goes back to the context track before it; playIndex() keeps the
+    // user queue. clearQueue() removes everything.
     void enqueue(std::vector<std::string> paths);
     void clearQueue();       // stops playback
+    // User queue. `next`: insert at the front (play next) instead of the end. Positions
+    // are indices into PlayerState::upNext; `entry` (optional, -1: unchecked) is the
+    // entry the caller saw there: if the list changed meanwhile (a track started), the
+    // command applies to that entry wherever it is now, or is dropped if it is gone.
+    void queueAdd(std::vector<std::string> paths, bool next = false); // new user-queue-only entries
+    void queueAddEntries(std::vector<int> entries, bool next = false); // existing entries
+    void queueMove(int position, int to, int entry = -1);
+    void queueRemove(int position, int entry = -1);
+    void queueClearUser();
     void play();             // resume, or start the current/first track
     void playIndex(int index);
     void pause();

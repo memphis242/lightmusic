@@ -7,6 +7,7 @@
 //  - command/state machine: pause/resume/seek/next/prev/stop/volume/end of queue/errors.
 //  - decode errors become Error events; sync() from an event handler does not deadlock.
 //  - play order: repeat all/one, shuffle (stable for prev, toggle keeps the track, enqueue).
+//  - user queue: before the context, play next, edits, prev, failed entries, gapless.
 #include "common.hpp"
 #include "lm/player.hpp"
 #include "lm/source.hpp"
@@ -927,6 +928,158 @@ void playOrder(const std::string &dir) {
         CHECK_EQ(mismatch, 0u);
     }
 }
+
+// User queue ("up next"): played before the context continues, once; play next, move,
+// remove, clear; prev from a queued track; repeat-all repeats only the context; gapless
+// into a queued track.
+void userQueue(const std::string &dir) {
+    std::vector<std::string> t;
+    for (int i = 0; i < 4; i++) {
+        t.push_back(dir + "/uq" + std::to_string(i) + ".flac");
+        CHECK(lmtest::makeTone(t.back(), 44100, 4410 + 441 * i, 330 + 40 * i, "-c:a flac -f flac"));
+    }
+    const std::string longT = dir + "/order_long.flac"; // from playOrder()
+    auto userFlags = [](Recorder &rec) {
+        std::lock_guard lk(rec.m);
+        std::vector<bool> v;
+        for (auto &e : rec.events)
+            if (e.type == lm::EventType::TrackChanged) v.push_back(e.state.fromUserQueue);
+        return v;
+    };
+    {
+        // Queued before play(): the user queue first (in order), then the context.
+        Recorder rec;
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.onEvent = std::ref(rec);
+        lm::Player p(cfg);
+        p.enqueue({t[0], t[1], t[2]});
+        p.queueAddEntries({2});
+        p.queueAdd({t[3]}); // entry 3, user queue only
+        p.sync();
+        CHECK((p.state().upNext == std::vector<int>{2, 3}));
+        CHECK_EQ(p.state().queueSize, 4u);
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s));
+        CHECK((rec.trackIndexes() == std::vector<int>{2, 3, 0, 1, 2}));
+        CHECK((userFlags(rec) == std::vector<bool>{true, true, false, false, false}));
+        CHECK(p.state().upNext.empty());
+    }
+    {
+        // Repeat all repeats the context only; the queued track plays once.
+        Recorder rec;
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.onEvent = std::ref(rec);
+        cfg.repeat = lm::Repeat::All;
+        lm::Player p(cfg);
+        p.enqueue({t[0], t[1]});
+        p.queueAdd({t[3]});
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::TrackChanged, 15s, 6));
+        p.stop();
+        p.sync();
+        auto v = rec.trackIndexes();
+        v.resize(6);
+        CHECK((v == std::vector<int>{2, 0, 1, 0, 1, 0}));
+    }
+    {
+        // Play next / skip / prev / edits on long tracks.
+        Recorder rec;
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.onEvent = std::ref(rec);
+        lm::Player p(cfg);
+        p.enqueue({longT, longT, longT, longT});
+        p.playIndex(0);
+        p.queueAddEntries({3});
+        p.queueAdd({longT}, true); // entry 4, in front of 3
+        p.sync();
+        CHECK((p.state().upNext == std::vector<int>{4, 3}));
+        CHECK(p.state().hasNext);
+        p.next();
+        p.sync();
+        auto st = p.state();
+        CHECK_EQ(st.index, 4);
+        CHECK(st.fromUserQueue);
+        CHECK_EQ(st.contextIndex, 0);
+        CHECK((st.upNext == std::vector<int>{3}));
+        p.prev(); // from a queued track: the context track before it
+        p.sync();
+        CHECK_EQ(p.state().index, 0);
+        CHECK((p.state().upNext == std::vector<int>{3}));
+        p.next();
+        p.sync();
+        CHECK_EQ(p.state().index, 3);
+        CHECK(p.state().upNext.empty());
+        p.next(); // the context continues after entry 0
+        p.sync();
+        CHECK_EQ(p.state().index, 1);
+        CHECK(!p.state().fromUserQueue);
+        // Edits.
+        p.queueAddEntries({0, 1, 2});
+        p.queueMove(2, 0);
+        p.sync();
+        CHECK((p.state().upNext == std::vector<int>{2, 0, 1}));
+        p.queueMove(0, 99); // clamped to the end
+        p.sync();
+        CHECK((p.state().upNext == std::vector<int>{0, 1, 2}));
+        p.queueRemove(1);
+        p.sync();
+        CHECK((p.state().upNext == std::vector<int>{0, 2}));
+        p.queueRemove(0, 3); // entry 3 is not queued: ignored
+        p.queueRemove(5, 2); // stale position: found by entry
+        p.sync();
+        CHECK((p.state().upNext == std::vector<int>{0}));
+        p.queueClearUser();
+        p.sync();
+        CHECK(p.state().upNext.empty());
+        CHECK(rec.count(lm::EventType::QueueChanged) >= 6);
+        p.clearQueue();
+        p.sync();
+        CHECK(p.state().upNext.empty() && p.state().queueSize == 0);
+    }
+    {
+        // A queued entry that fails to open is reported and dropped.
+        Recorder rec;
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.onEvent = std::ref(rec);
+        lm::Player p(cfg);
+        p.enqueue({t[0], t[1]});
+        p.queueAdd({dir + "/does-not-exist.flac"});
+        p.playIndex(0);
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s));
+        CHECK((rec.trackIndexes() == std::vector<int>{0, 1}));
+        CHECK(rec.count(lm::EventType::Error) >= 1);
+        CHECK(p.state().upNext.empty());
+    }
+    {
+        // Gapless into and out of a queued track: a | b (queued) | c, sample-exact.
+        const auto av = decodeAll(t[0]), bv = decodeAll(t[1]), cv = decodeAll(t[2]);
+        std::vector<float> expect = av;
+        expect.insert(expect.end(), bv.begin(), bv.end());
+        expect.insert(expect.end(), cv.begin(), cv.end());
+        Recorder rec;
+        Tap tap(200000);
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.onEvent = std::ref(rec);
+        cfg.outputTap = &Tap::fn;
+        cfg.outputTapUser = &tap;
+        lm::Player p(cfg);
+        p.enqueue({t[0], t[2]});
+        p.queueAdd({t[1]});
+        p.playIndex(0);
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s));
+        CHECK((rec.trackIndexes() == std::vector<int>{0, 2, 1}));
+        CHECK_EQ(tap.frames.load(), expect.size() / 2);
+        std::size_t mismatch = 0;
+        for (std::size_t i = 0; i < std::min(tap.frames.load() * 2, expect.size()); i++)
+            mismatch += tap.buf[i] != expect[i];
+        CHECK_EQ(mismatch, 0u);
+    }
+}
 } // namespace
 
 int main() {
@@ -946,5 +1099,6 @@ int main() {
     stalledOpen();
     interruptedOpenProceeds(dir);
     playOrder(dir);
+    userQueue(dir);
     return lmtest::finish("test_player");
 }
