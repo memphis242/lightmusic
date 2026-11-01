@@ -1,7 +1,7 @@
 // lightmusic: terminal UI on top of libplayer, drawn with FTXUI's DOM (no
 // ScreenInteractive).
 //
-//   lightmusic [--null] [--rg] FILE|DIR...
+//   lightmusic [--null] [--rg] [--gap SECONDS] FILE|DIR...
 //   lightmusic --server URL --key-file PATH [--album ID]... [--list] [FILE|DIR...]
 //
 // With --server, the library is synced into the local mirror (libnet) and the remote
@@ -361,10 +361,11 @@ Element render(const Ui &ui, int height) {
 }
 
 void usage(FILE *f) {
-    std::fputs("usage: lightmusic [--null] [--rg] FILE|DIR...\n"
+    std::fputs("usage: lightmusic [--null] [--rg] [--gap SECONDS] FILE|DIR...\n"
                "       lightmusic --server URL --key-file PATH [--album ID]... [--list]\n"
                "                  [--cache-dir DIR] [--cache-max-mb N] [--no-fill] [--pause-on-metered]\n"
-               "                  [--null] [--rg] [FILE|DIR...]\n"
+               "                  [--null] [--rg] [--gap SECONDS] [FILE|DIR...]\n"
+               "  --gap SECONDS  silence between tracks, 0..30 (playback.gap_seconds; default 0 = gapless)\n"
                "  --config PATH  settings file (default $XDG_CONFIG_HOME/lightmusic/cfg.yaml);\n"
                "                 command-line flags override it\n"
                "  --no-config    ignore the settings file\n"
@@ -443,6 +444,7 @@ int run(int argc, char **argv) {
         };
         if (!std::strcmp(argv[i], "--null")) cfg.nullBackend = true;
         else if (!std::strcmp(argv[i], "--rg")) live.cli.set("playback.replaygain", "track");
+        else if (!std::strcmp(argv[i], "--gap")) live.cli.set("playback.gap_seconds", value("--gap"));
         else if (!std::strcmp(argv[i], "--server")) live.cli.set("server.url", value("--server"));
         else if (!std::strcmp(argv[i], "--key-file")) live.cli.set("server.key_file", value("--key-file"));
         else if (!std::strcmp(argv[i], "--cache-dir")) live.cli.set("cache.dir", value("--cache-dir"));
@@ -479,6 +481,7 @@ int run(int argc, char **argv) {
     std::string server = noServer && live.cli.find("server.url") == nullptr ? std::string() : set.serverUrl;
     const std::string keyFile = set.keyFile, cacheDir = set.cacheDir;
     cfg.replayGain = set.replayGain != lm::config::ReplayGain::Off;
+    cfg.gapSeconds = set.gapSeconds;
     if (set.replayGain == lm::config::ReplayGain::Album)
         std::fputs("lightmusic: playback.replaygain: album gain is not supported yet; using track gain\n", stderr);
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;
@@ -709,7 +712,7 @@ int run(int argc, char **argv) {
             Tty::size(width, height);
             bool running = true, dirty = true;
             // Settings reload: inotify on the config directory, polled with the terminal
-            // and the self-pipe. Only cache cap/fill/metered and volume are hot.
+            // and the self-pipe. Only cache cap/fill/metered, volume and gap_seconds are hot.
             std::optional<lm::config::FileWatcher> watcher;
             if (!live.path.empty()) {
                 watcher.emplace(live.path);
@@ -775,6 +778,8 @@ int run(int argc, char **argv) {
                     if (k == "playback.volume") {
                         ui.volumeTarget = static_cast<float>(n.volume) / 100.0f;
                         player.setVolume(*ui.volumeTarget);
+                    } else if (k == "playback.gap_seconds") {
+                        player.setGap(n.gapSeconds); // from the next track transition
                     }
                 }
 #ifdef LM_TUI_NET

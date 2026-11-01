@@ -47,7 +47,8 @@ build/frontends/tui/lightmusic --null ~/Music/a.flac      # Null backend (no sou
 
 Directories are scanned recursively for `.mp3 .flac .opus .ogg .oga` and sorted
 naturally (`2` before `10`); files named explicitly are always queued (the core detects
-the format from the content). `--rg` applies ReplayGain track gain.
+the format from the content). `--rg` applies ReplayGain track gain; `--gap SECONDS`
+inserts that much silence between tracks (`playback.gap_seconds`).
 
 | key | action | key | action |
 |-----|--------|-----|--------|
@@ -77,7 +78,8 @@ build/tools/lightmusic-play --null a.flac b.opus     # Null backend (no sound ca
 
 Commands on stdin, one per line: `p` pause/resume, `n` next, `b` previous,
 `s 42` seek to 42 s, `v 0.5` volume, `i` state, `x` stop, `w 1.5` wait (scripts), `q` quit.
-`--rg` applies ReplayGain track gain when tagged, `--quiet` hides the 1 Hz position lines.
+`--rg` applies ReplayGain track gain when tagged, `--gap SECONDS` inserts silence between
+tracks (0..30, default 0 = gapless), `--quiet` hides the 1 Hz position lines.
 It is a development harness for the library, not the end-user UI.
 
 ## Test
@@ -516,6 +518,8 @@ playback:
   volume: 100                       # percent, 0..150  (hot; >100 = gain)
   replaygain: off                   # off | track | album (album falls back to track
                                     # gain for now, with a warning)
+  gap_seconds: 0                    # silence between tracks, 0..30 (hot, from the
+                                    # next track change); 0 = sample-exact gapless
 ui:
   show_cache_markers: true          # the ● ◐ ○ * column
   save_settings: true               # write volume changes made in the UI back here
@@ -532,6 +536,7 @@ ui:
 | `cache.dir` | `--cache-dir DIR` | `$XDG_CACHE_HOME/lightmusic` | restart |
 | `playback.volume` | – | 100 | yes |
 | `playback.replaygain` | `--rg` (= `track`) | off | restart |
+| `playback.gap_seconds` | `--gap SECONDS` | 0 (gapless) | yes (next transition) |
 | `ui.show_cache_markers` | – | true | restart |
 | `ui.save_settings` | – | true | yes |
 
@@ -540,7 +545,9 @@ leading zeros (`010` is an error, since YAML 1.1 reads it as octal), no `_`, `0x
 exponents or fractions, not quoted (`"7"` is a string), and untagged or tagged `!!int`.
 Booleans are `true`/`false`, `yes`/`no`, `on`/`off` (lower, Title or UPPER case),
 unquoted, untagged or tagged `!!bool`. Anything else (e.g. `!!float 5`, `'true'`, `y`)
-is an error with its line. On the command line, values are plain strings and use the
+is an error with its line. `playback.gap_seconds` is the one decimal number: plain
+decimal with an optional fraction or exponent (`0.5`, `2`, `1e-1`), unquoted, untagged or
+tagged `!!float`/`!!int`, finite (`.nan`/`.inf` are errors), in 0..30. On the command line, values are plain strings and use the
 same number/boolean syntax. A path starting with `~` needs `$HOME` set (`~/`) or an
 existing user (`~user/`); otherwise it is an error.
 
