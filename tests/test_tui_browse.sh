@@ -32,13 +32,15 @@ fail=0
 # has LOG TEXT: TEXT on the screen log with the colour/attribute escapes removed.
 ESC=$(printf '\033')
 has() { sed "s/$ESC\[[0-9;?]*[A-Za-z]//g" "$1" | grep -q -- "$2"; }
-# wait_in LOG TEXT: poll the pty log until TEXT appears (10 s).
-wait_in() { n=200; while [ $n -gt 0 ] && ! has "$1" "$2"; do sleep 0.05; n=$((n - 1)); done
+# wait_in LOG TEXT: poll the pty log until TEXT appears (30 s deadline, by the clock: a
+# loaded machine running the TUI under TSan can take well over 10 s for a step).
+wait_in() { end=$(( $(date +%s) + 30 ))
+            while [ "$(date +%s)" -lt $end ] && ! has "$1" "$2"; do sleep 0.05; done
             has "$1" "$2" || echo "timeout waiting for '$2'" >&2; }
 tui() { # LOG ARGS...: runs the TUI with keys from stdin
     log=$1; shift
     LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
-        timeout 40 script -qfec "$BIN --null $*" "$log" >/dev/null 2>&1
+        timeout 150 script -qfec "$BIN --null $*" "$log" >/dev/null 2>&1
 }
 expect() { # LOG TEXT WHAT
     has "$1" "$2" || { echo "FAIL: $3 ('$2' never shown)"; fail=1; }
