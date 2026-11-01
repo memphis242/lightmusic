@@ -19,6 +19,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
+#include <print>
 #include <filesystem>
 #include <limits>
 #include <fstream>
@@ -777,9 +778,7 @@ void everyTrackReported(const std::string &dir) {
     const std::vector<int> want{0, 1, 2, 3, 4, 5, 6, 7, 8};
     CHECK(v == want);
     if (v != want) {
-        std::fprintf(stderr, "  TrackChanged indexes:");
-        for (int x : v) std::fprintf(stderr, " %d", x);
-        std::fprintf(stderr, "\n");
+        std::println(stderr, "  TrackChanged indexes: {}", v);
     }
 }
 
@@ -813,9 +812,7 @@ void playOrder(const std::string &dir) {
         v.resize(7);
         CHECK((v == std::vector<int>{0, 1, 2, 0, 1, 2, 0}));
         if (v != std::vector<int>{0, 1, 2, 0, 1, 2, 0}) {
-            std::fprintf(stderr, "  TrackChanged indexes:");
-            for (int x : v) std::fprintf(stderr, " %d", x);
-            std::fprintf(stderr, "\n");
+            std::println(stderr, "  TrackChanged indexes: {}", v);
         }
         CHECK_EQ(rec.count(lm::EventType::EndOfQueue), 0u);
     }

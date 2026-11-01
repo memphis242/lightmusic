@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <format>
 #include <fstream>
 #include <regex>
 #include <sstream>
@@ -127,9 +128,8 @@ static bool server_drained(int port, int fd) {
     sockaddr_in me{};
     socklen_t len = sizeof me;
     if (getsockname(fd, reinterpret_cast<sockaddr *>(&me), &len) != 0) return false;
-    char want_local[32], want_remote[32];
-    (void)std::snprintf(want_local, sizeof want_local, "0100007F:%04X", unsigned(port));
-    (void)std::snprintf(want_remote, sizeof want_remote, "0100007F:%04X", unsigned(ntohs(me.sin_port)));
+    const std::string want_local = std::format("0100007F:{:04X}", unsigned(port));
+    const std::string want_remote = std::format("0100007F:{:04X}", unsigned(ntohs(me.sin_port)));
     std::ifstream f("/proc/net/tcp");
     std::string line;
     std::getline(f, line);  // header
