@@ -66,6 +66,9 @@ enum class Command {
     QueueMoveDown,
     QueueRemove,
     QueueClear,
+    SeekStart,   // Home: back to 0:00
+    SeekEnd,     // End: kEndSeek seconds before the end
+    SeekPercent, // 0..9: to 0%..90% (percentKey() gives the value)
 };
 
 // Maps a key name to a command. Printable keys are the character itself (" " for
@@ -78,6 +81,12 @@ Command mapKey(std::string_view key);
 Command mapQueueKey(std::string_view key);
 
 constexpr double kSeekStep = 5.0;
+constexpr double kEndSeek = 5.0; // End leaves this much of the track
+// 0..90 for the keys "0".."9" (SeekPercent), -1 otherwise.
+int percentKey(std::string_view key);
+// Target of SeekEnd for a track of `duration` seconds: duration - kEndSeek, at least 0;
+// -1 if the duration is unknown (<= 0).
+double endSeekTarget(double duration);
 constexpr float kVolumeStep = 0.05f;
 constexpr float kVolumeMax = 1.5f;
 // New linear volume after a step (+1/-1), rounded to the step grid and clamped.

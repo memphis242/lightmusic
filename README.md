@@ -54,7 +54,8 @@ inserts that much silence between tracks (`playback.gap_seconds`).
 |-----|--------|-----|--------|
 | space | play / pause | enter | play selected |
 | n / p | next / previous | j k ↑ ↓ | move selection |
-| ← / → | seek −5 s / +5 s | g G Home End PgUp PgDn | jump selection |
+| ← / → | seek −5 s / +5 s | g G PgUp PgDn | first / last row, page up / down |
+| Home / End | seek to the start / the last 5 s | 0 … 9 | seek to 0 % … 90 % |
 | + / - | volume ±5 % | ? / Esc | help / close help |
 | r | repeat: off → all → one | s | shuffle on / off |
 | a / A | queue selected / play it next | v | show the queue (up next) |
