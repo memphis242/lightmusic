@@ -37,6 +37,7 @@ const Schema<ClientSettings> &clientSchema() {
                          {{"off", RepeatMode::Off}, {"all", RepeatMode::All}, {"one", RepeatMode::One}}, true),
             boolField<S>("playback.shuffle", &S::shuffle, true),
             boolField<S>("ui.show_cache_markers", &S::showCacheMarkers),
+            pathField<S>("ui.music_dir", &S::musicDir, true),
             boolField<S>("ui.save_settings", &S::saveSettings, true),
         };
         const std::string keyMsg = "the API key must not be stored in the config file; put it in a file only you "

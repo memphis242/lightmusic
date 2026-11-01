@@ -26,6 +26,24 @@ namespace lmtui {
 // (with the system's message); an error in one subdirectory does not stop the scan.
 std::vector<std::string> collectTracks(const std::vector<std::string> &args, std::vector<std::string> *errors);
 
+// One directory level for the folder browser: subdirectories first, then files with an
+// audio extension, each group in natural order. Hidden entries (".name") are skipped;
+// symlinks are followed to decide dir/file (a broken one is skipped); only regular files
+// count as files (no FIFOs or devices). `err` gets the system's message on failure.
+struct DirEntry {
+    std::string name;
+    bool dir = false;
+};
+std::vector<DirEntry> listDir(const std::string &dir, std::string *err);
+
+// Parent of an absolute directory path ("/a/b" -> "/a", "/a" -> "/", "/" -> "/").
+std::string parentDir(std::string_view path);
+
+// The music folder: $XDG_MUSIC_DIR from the content of ~/.config/user-dirs.dirs (a line
+// XDG_MUSIC_DIR="$HOME/Music" or an absolute path; "$HOME" alone means none), else
+// <home>/Music.
+std::string defaultMusicDir(const std::string &home, std::string_view userDirs);
+
 // Name shown in the queue: the file name without directory and extension.
 std::string displayName(std::string_view path);
 
@@ -69,6 +87,9 @@ enum class Command {
     SeekStart,   // Home: back to 0:00
     SeekEnd,     // End: kEndSeek seconds before the end
     SeekPercent, // 0..9: to 0%..90% (percentKey() gives the value)
+    ToggleBrowser, // b: the library/folder browser, or back to the list
+    BrowseUp,      // browser: parent level (backspace, h)
+    BrowsePlay,    // browser: play the selected folder/album/artist now (o)
 };
 
 // Maps a key name to a command. Printable keys are the character itself (" " for
@@ -79,6 +100,9 @@ Command mapKey(std::string_view key);
 // it, c clears the queue, esc closes the pane; a/A do nothing; everything else as
 // mapKey() (j/k/enter/... act on the queue selection).
 Command mapQueueKey(std::string_view key);
+// Keys in the browser: enter opens (a track: plays its folder/album from it), l opens,
+// backspace/h go up, o plays the selection, a/A queue it, esc/b close; else mapKey().
+Command mapBrowserKey(std::string_view key);
 
 constexpr double kSeekStep = 5.0;
 constexpr double kEndSeek = 5.0; // End leaves this much of the track
