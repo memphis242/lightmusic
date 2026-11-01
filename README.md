@@ -183,14 +183,58 @@ ctest --test-dir build --output-on-failure
   sample for sample with a local decode, stops the server, and replays them offline from
   a fresh client (an uncached track is skipped with one Error event).
 
-Sanitizer builds (own code is built with `-Wall -Wextra -Werror`; `third_party/` is not):
+Sanitizer builds: see [Development](#development) below.
+
+## Development
+
+The coding principles behind these settings are in `CLAUDE.md`. Everything lives in
+`cmake/LmQuality.cmake` and applies to our own code only (`third_party/` is built with
+`-w` and included as a system directory).
+
+Build types and compilers: gcc is the primary compiler (Debug for development and unit
+tests, RelWithDebInfo/Release for shipping); clang is an additional checking build
+(`CC=clang CXX=clang++`). MSVC is planned with Windows support.
+
+| Option | Default | Effect |
+|---|---|---|
+| `LM_WERROR` | ON for Release/RelWithDebInfo/MinSizeRel, OFF for Debug | `-Werror` on our code (CI always sets ON) |
+| `LM_ASAN` | OFF | ASan + UBSan, incl. float-divide-by-zero, float-cast-overflow, `bounds-strict` (gcc) or implicit-conversion/local-bounds/nullability (clang); any finding aborts |
+| `LM_TSAN` | OFF | ThreadSanitizer (exclusive with `LM_ASAN`) |
+| `LM_ASSERTS` | OFF | keep `LM_ASSERT` checks in optimised builds (see Assertions) |
+| `LM_HARDENING` | ON | optimised builds: `_FORTIFY_SOURCE=3`, `-fstack-protector-strong`, `-fstack-clash-protection` |
+
+Debug builds always add `_GLIBCXX_ASSERTIONS` and `-ftrivial-auto-var-init=pattern`.
+Warnings: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion
+-Wdouble-promotion -Wcast-qual -Wcast-align -Wformat=2 -Wundef -Wimplicit-fallthrough
+-Wmissing-declarations -Wvla -Wold-style-cast -Wnon-virtual-dtor -Woverloaded-virtual
+-Wextra-semi -Wsuggest-override -Wzero-as-null-pointer-constant`, plus gcc's
+`-Wduplicated-cond -Wduplicated-branches -Wlogical-op -Wcast-align=strict -Wredundant-decls`
+and clang's `-Wshadow-all -Wcomma -Wunreachable-code-aggressive -Wloop-analysis
+-Wmissing-prototypes -Wmissing-variable-declarations -Wextra-semi-stmt -Wnull-dereference ...`.
 
 ```sh
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug                     # gcc, warnings not fatal
+CC=clang CXX=clang++ cmake -S . -B build-clang -G Ninja -DLM_WERROR=ON     # clang check build
 cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLM_ASAN=ON   # ASan + UBSan
 cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=Debug -DLM_TSAN=ON   # TSan
-ninja -C build-asan && ctest --test-dir build-asan
-ninja -C build-tsan && ctest --test-dir build-tsan
+ninja -C build-asan && ctest --test-dir build-asan --output-on-failure
 ```
+
+Static analysis (config in `.clang-tidy` and `.cppcheck-suppressions`; both need a
+compilation database, which every configure writes):
+
+```sh
+sudo dnf install clang-tools-extra cppcheck
+CC=clang CXX=clang++ cmake -S . -B build-analyze -G Ninja -DCMAKE_BUILD_TYPE=Debug
+run-clang-tidy -p build-analyze -quiet '^(?!.*(/third_party/|/_deps/)).*\.cpp$'
+cppcheck --project=build-analyze/compile_commands.json --enable=warning,performance,portability \
+  --std=c++20 --inline-suppr --suppressions-list=.cppcheck-suppressions -i third_party \
+  -i build-analyze/_deps --library=posix --check-level=exhaustive --error-exitcode=1 --quiet
+```
+
+CI runs each of these in a `fedora:43` container (`.github/ci/build-test.sh`,
+`.github/ci/analyze.sh`); `docker run --rm -v "$PWD:/src" -w /src fedora:43
+.github/ci/analyze.sh clang-tidy` reproduces a job locally.
 
 ### Assertions
 
