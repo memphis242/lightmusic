@@ -11,6 +11,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <csignal>
+#include <sys/wait.h>
+#include <map>
 
 #include <chrono>
 #include <fstream>
@@ -140,6 +143,173 @@ static std::int64_t tombstones(Db &db, std::int64_t id) {
     return s.i64(0);
 }
 
+
+// path -> track id of every indexed track.
+static std::map<std::string, std::int64_t> ids_of(Db &db) {
+    std::map<std::string, std::int64_t> m;
+    for (auto &[path, st] : db.file_states("")) m[path] = st.id;
+    return m;
+}
+
+static std::int64_t state_id(const std::string &dbp, const std::string &p) {
+    Db r(dbp, Db::Mode::Reader);
+    auto s = r.state_of(p);
+    return s ? s->id : -1;
+}
+
+static void set_mtime(const std::string &p, std::int64_t sec) {
+    timespec ts[2] = {{0, UTIME_OMIT}, {static_cast<time_t>(sec), 0}};
+    CHECK(::utimensat(AT_FDCWD, p.c_str(), ts, 0) == 0);
+}
+
+// Track ids survive restarts, a SIGKILL in the middle of a scan, and transient trouble
+// (a file being rewritten, an unavailable root); another database is another library.
+static void test_id_stability(const std::string &tmp) {
+    const std::string lib = tmp + "/stable", dbp = tmp + "/stable.db";
+    (void)fs::create_directories(lib + "/x");
+    (void)fs::create_directories(lib + "/y");
+    constexpr int kFiles = 600;  // > 2 commit batches of 256
+    for (int i = 0; i < kFiles; i++) {
+        const std::string p = lib + (i % 2 ? "/x/" : "/y/") + "t" + std::to_string(i) + ".mp3";
+        fs::copy_file(g_src + "/a.mp3", p);
+        set_mtime(p, 1600000000 + i);
+    }
+    std::map<std::string, std::int64_t> ids;
+    {
+        Db w(dbp);
+        Indexer ix(w, {lib});
+        CHECK_EQ(ix.full_scan().added, std::size_t(kFiles));
+        ids = ids_of(w);
+    }
+    // Restart: a new connection and indexer on the same database.
+    {
+        Db w(dbp);
+        Indexer ix(w, {lib});
+        CHECK_EQ(ix.full_scan().unchanged, std::size_t(kFiles));
+        CHECK(ids_of(w) == ids);
+    }
+    // Every file in x/ changes (re-read) and y/ is renamed to z/ (offline moves); the
+    // scanning process is SIGKILLed as soon as its first batch is committed, then
+    // restarted.
+    for (auto &[p, id] : ids)
+        if (p.compare(lib.size(), 3, "/x/") == 0) set_mtime(p, 1650000000 + id);
+    fs::rename(lib + "/y", lib + "/z");
+    std::int64_t rev0;
+    {
+        Db r(dbp, Db::Mode::Reader);
+        rev0 = r.revision();
+    }
+    const pid_t pid = ::fork();
+    if (pid == 0) {
+        try {
+            Db w(dbp);
+            Indexer ix(w, {lib});
+            (void)ix.full_scan();
+        } catch (...) {
+            _exit(2);
+        }
+        _exit(0);
+    }
+    CHECK(pid > 0);
+    bool killed_mid = false;
+    {
+        Db r(dbp, Db::Mode::Reader);
+        killed_mid = wait_for([&] { return r.revision() > rev0; }, 20000);
+    }
+    (void)::kill(pid, SIGKILL);
+    int wst = 0;
+    (void)::waitpid(pid, &wst, 0);
+    if (!killed_mid || !WIFSIGNALED(wst)) std::puts("  note: scan finished before it could be killed");
+    {
+        Db w(dbp);
+        Indexer ix(w, {lib});
+        (void)ix.full_scan();
+        auto now = ids_of(w);
+        CHECK_EQ(now.size(), ids.size());
+        std::size_t same = 0;
+        for (auto &[p, id] : ids) {
+            std::string q = p;
+            if (q.compare(lib.size(), 3, "/y/") == 0) q.replace(lib.size(), 3, "/z/");
+            auto it = now.find(q);
+            if (it != now.end() && it->second == id) ++same;
+        }
+        CHECK_EQ(same, ids.size());
+        ids = now;
+    }
+    // A file being rewritten (unparseable for now) keeps its id and is read again later.
+    // (FLAC: TagLib accepts almost anything named .mp3.)
+    const std::string victim = lib + "/x/v.flac";
+    {
+        Db w(dbp);
+        Indexer ix(w, {lib});
+        fs::copy_file(g_src + "/b.flac", victim);
+        CHECK_EQ(ix.full_scan().added, 1u);
+    }
+    const std::int64_t victim_id = state_id(dbp, victim);
+    {
+        Db w(dbp);
+        Indexer ix(w, {lib});
+        { std::ofstream(victim, std::ios::trunc) << ""; }
+        auto st = ix.full_scan();
+        CHECK_EQ(st.failed, 1u);
+        CHECK_EQ(st.removed, 0u);
+        CHECK(state(w, victim) && state(w, victim)->id == victim_id);
+        CHECK_EQ(tombstones(w, victim_id), 0);
+        fs::copy_file(g_src + "/b.flac", victim, fs::copy_options::overwrite_existing);
+        st = ix.full_scan();
+        CHECK_EQ(st.updated, 1u);
+        CHECK(state(w, victim) && state(w, victim)->id == victim_id);
+        // Same through the watcher's single-file path.
+        { std::ofstream(victim, std::ios::trunc) << " "; }
+        ix.begin();
+        ix.index_file(victim);
+        ix.commit();
+        CHECK(state(w, victim) && state(w, victim)->id == victim_id);
+        fs::copy_file(g_src + "/b.flac", victim, fs::copy_options::overwrite_existing);
+        ix.begin();
+        ix.index_file(victim);
+        ix.commit();
+        CHECK(state(w, victim) && state(w, victim)->id == victim_id);
+        ids = ids_of(w);
+    }
+    // A root with no audio files at all (unmounted disk) removes nothing; ids are the
+    // same once the files are back.
+    fs::rename(lib + "/x", tmp + "/stable-x");
+    fs::rename(lib + "/z", tmp + "/stable-z");
+    {
+        Db w(dbp);
+        Indexer ix(w, {lib});
+        std::string logged;
+        ix.log = [&](const std::string &m) { logged += m; };
+        auto st = ix.full_scan();
+        CHECK_EQ(st.removed, 0u);
+        CHECK(logged.find("unavailable") != std::string::npos);
+        fs::rename(tmp + "/stable-x", lib + "/x");
+        fs::rename(tmp + "/stable-z", lib + "/z");
+        st = ix.full_scan();
+        CHECK_EQ(st.unchanged, std::size_t(kFiles) + 1);
+        CHECK(ids_of(w) == ids);
+    }
+    // Library id: fixed per database; a client from another database gets a full dump.
+    {
+        Db w(dbp);
+        const std::string lib_id = w.library_id();
+        CHECK_EQ(lib_id.size(), 16u);
+        const std::int64_t rev = w.revision();
+        CHECK(w.json_changes(rev, lib_id).find("\"full\":false") != std::string::npos);
+        CHECK(w.json_changes(rev, lib_id).find("\"library\":\"" + lib_id + "\"") != std::string::npos);
+        CHECK(w.json_changes(rev).find("\"full\":false") != std::string::npos);
+        CHECK(w.json_changes(rev, "0123456789abcdef").find("\"full\":true") != std::string::npos);
+        Db other(tmp + "/stable2.db");
+        CHECK(other.library_id() != lib_id);
+    }
+    {
+        Db w(dbp);
+        CHECK(w.library_id() == Db(dbp).library_id());
+    }
+    fs::remove_all(lib);
+}
+
 int main() {
     if (!lmtest::haveFfmpeg()) {
         std::puts("ffmpeg missing: skipped");
@@ -164,6 +334,8 @@ int main() {
     for (auto n : {"a.mp3", "b.flac", "c.opus", "d.ogg"}) fs::copy_file(g_src + "/" + n, lib + "/A/" + n);
     std::ofstream(lib + "/A/notes.txt") << "not audio";
     fs::create_symlink(g_src + "/e.mp3", lib + "/A/link.mp3");  // never followed
+
+    test_id_stability(tmp);
 
     std::string dbp = tmp + "/s.db";
     Db w(dbp), r(dbp);

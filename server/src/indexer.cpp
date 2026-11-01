@@ -4,6 +4,7 @@
 
 #include <sys/stat.h>
 
+#include <cerrno>
 #include <cstdio>
 #include <filesystem>
 #include <map>
@@ -15,9 +16,18 @@ namespace lm::server {
 namespace fs = std::filesystem;
 
 namespace {
-bool lstat_file(const std::string &p, std::int64_t &size, std::int64_t &mtime_ns) {
+// `gone` (optional): set when the path no longer exists or is no longer a regular file,
+// as opposed to an lstat() failure for another reason.
+bool lstat_file(const std::string &p, std::int64_t &size, std::int64_t &mtime_ns, bool *gone = nullptr) {
     struct stat sb{};
-    if (::lstat(p.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode)) return false;
+    if (::lstat(p.c_str(), &sb) != 0) {
+        if (gone) *gone = errno == ENOENT || errno == ENOTDIR;
+        return false;
+    }
+    if (!S_ISREG(sb.st_mode)) {
+        if (gone) *gone = true;
+        return false;
+    }
     size = sb.st_size;
     mtime_ns = std::int64_t(sb.st_mtim.tv_sec) * 1000000000 + sb.st_mtim.tv_nsec;
     return true;
@@ -34,21 +44,28 @@ bool has_prefix_dir(const std::string &path, const std::string &dir) {
 }
 
 // Walks `dir` without following symlinks, collecting audio regular files. Returns false
-// if the walk failed or was cut short (e.g. the directory was moved meanwhile).
+// if anything could not be read (an unreadable subdirectory, a failed stat, the directory
+// moved meanwhile): the walk goes on, but the caller must not take a file it did not see
+// for deleted (its id would be gone, and a new one handed out when it is seen again).
 bool walk(const std::string &dir, std::vector<std::string> &out) {
     std::error_code ec;
-    fs::recursive_directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec), end;
+    fs::directory_iterator it(dir, ec), end;
     if (ec) return false;
+    bool ok = true;
     for (; it != end; it.increment(ec)) {
         if (ec) return false;
         const auto &e = *it;
         std::error_code ec2;
         auto st = e.symlink_status(ec2);
-        if (ec2 || !fs::is_regular_file(st)) continue;  // dirs are recursed; links skipped
+        if (ec2) {
+            ok = false;
+            continue;
+        }
         std::string p = e.path().string();
-        if (is_audio_path(p)) out.push_back(std::move(p));
+        if (fs::is_directory(st)) ok = walk(p, out) && ok;  // links are not followed
+        else if (fs::is_regular_file(st) && is_audio_path(p)) out.push_back(std::move(p));
     }
-    return !ec;
+    return ok && !ec;
 }
 }  // namespace
 
@@ -72,7 +89,18 @@ ScanStats Indexer::scan(const std::vector<std::string> &dirs, const std::string 
     // If a walk fails (directory gone or moved while scanning), nothing is deleted: the
     // watcher sees the move/delete events and handles them.
     bool complete = true;
-    for (auto &d : dirs) complete = walk(d, files) && complete;
+    for (auto &d : dirs) {
+        const std::size_t before = files.size();
+        complete = walk(d, files) && complete;
+        // A root without a single audio file while the index has tracks under it is
+        // taken for unavailable (an unmounted disk, a directory being replaced), not for
+        // emptied: deleting would renumber every track once it is back.
+        if (files.size() == before && prefix.empty() && !db_.file_states(d).empty()) {
+            if (log) log("scan: " + d + " has no audio files but the index has tracks there; "
+                         "treating it as unavailable (nothing removed)");
+            complete = false;
+        }
+    }
     st.files = files.size();
 
     struct Item {
@@ -83,7 +111,11 @@ ScanStats Indexer::scan(const std::vector<std::string> &dirs, const std::string 
     std::unordered_set<std::string> seen;
     for (auto &p : files) {
         std::int64_t size, mtime;
-        if (!lstat_file(p, size, mtime)) continue;
+        bool gone = false;
+        if (!lstat_file(p, size, mtime, &gone)) {
+            if (!gone) complete = false;  // not seen, but maybe not gone either
+            continue;
+        }
         seen.insert(p);
         auto it = known.find(p);
         if (it != known.end() && it->second.size == size && it->second.mtime_ns == mtime) {
@@ -118,11 +150,9 @@ ScanStats Indexer::scan(const std::vector<std::string> &dirs, const std::string 
             m.size = w.size;
             m.mtime_ns = w.mtime;
             if (!read_track_meta(m)) {
+                // A known track keeps its row (and id) with its old size/mtime, so it is
+                // read again next time: an unreadable file is mostly one being written.
                 ++st.failed;
-                if (auto it = known.find(w.path); it != known.end()) {
-                    db_.delete_track(it->second.id);  // no longer parseable
-                    ++st.removed;
-                }
                 continue;
             }
             bool existed = known.count(w.path) != 0;
@@ -168,7 +198,7 @@ void Indexer::index_file(const std::string &path, ScanStats *st) {
     m.size = size;
     m.mtime_ns = mtime;
     if (!read_track_meta(m)) {
-        if (old) db_.delete_track(old->id);
+        // Kept as is (id included) and retried on the next change: see scan().
         if (st) ++st->failed;
         return;
     }

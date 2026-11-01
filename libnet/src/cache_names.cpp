@@ -145,6 +145,6 @@ std::string cacheBaseName(std::string_view artist, std::string_view album, std::
 
 std::string collisionName(const std::string &base, std::int64_t id) { return base + "--" + std::to_string(id); }
 
-std::string tempCacheName(std::int64_t id) { return "renaming--" + std::to_string(id); }
+std::string tempCacheName(std::int64_t id) { return std::string(kTempNamePrefix) + std::to_string(id); }
 
 } // namespace lm::net

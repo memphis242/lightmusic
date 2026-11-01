@@ -368,9 +368,20 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         if (auto t = db.track(id)) return t->suffix;
         return std::nullopt;
     }
-    // May `name` be given to entry `id`: no other row uses it and no file has it.
+    // May `name` be given to entry `id`: no other row uses it and no file has it. Every
+    // file of ours gets its row (name) before it exists, so files of a generated name
+    // (never all digits, never a user's "notes.txt") that no row claims are leftovers
+    // (a wiped cache, a crash of an older version): they are removed instead of making
+    // the entry fall back to a temporary name it could never leave.
     bool nameFreeLocked(const std::string &name, std::int64_t id) {
-        return !db.nameTaken(name, id) && filesOf(name, suffixOf(id)).empty();
+        if (db.nameTaken(name, id)) return false;
+        const auto suffix = suffixOf(id);
+        const auto files = filesOf(name, suffix);
+        for (const auto &f : files) {
+            log("cache: removing leftover file " + f);
+            (void)::unlink((tracksDir + "/" + f).c_str()); // best effort: checked just below
+        }
+        return files.empty() || filesOf(name, suffix).empty();
     }
 
     // Step 2 of a rename: moves every "from.*" file to "to.*". link() never replaces a
@@ -475,6 +486,55 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
                 if (!moved) return; // e.g. a foreign file holds a name: retried next time
             }
         }
+    }
+
+    // Rows of tracks gone from the mirror (deleted on the server while in use, then the
+    // client stopped before the entry was released). Run on open, when nothing is live.
+    void dropVanishedLocked() {
+        for (const auto &r : db.entries())
+            if (!isLiveLocked(r.trackId) && !db.track(r.trackId)) {
+                log("cache: track " + std::to_string(r.trackId) + " is gone; dropping its cached copy");
+                removeEntryLocked(r.trackId);
+            }
+    }
+
+    // After a full sync: the server may have renumbered its tracks (its database was
+    // reset or replaced: the same files under new ids). A row that no longer matches its
+    // id's track (gone, or another ETag) is adopted by the one track that now has the
+    // same strong ETag and size, if that track has no row of its own and nothing uses
+    // either id; its name is fixed by the next reconcile. The ETag is derived from the
+    // file's size and mtime, so it identifies the same file under its new id. Rows that
+    // find no such track are left to the usual invalidation (dropped).
+    void adoptRemappedLocked() {
+        std::map<std::pair<std::string, std::int64_t>, std::vector<std::int64_t>> byValidator;
+        for (const auto &t : db.allTracks())
+            if (strongEtag(t.etag)) byValidator[{t.etag, t.size}].push_back(t.id);
+        std::set<std::int64_t> keep; // ids whose row stays where it is
+        std::vector<EntryRow> stale;
+        for (auto &r : db.entries()) {
+            auto t = db.track(r.trackId);
+            if (isLiveLocked(r.trackId) || (t && t->etag == r.etag)) keep.insert(r.trackId);
+            else stale.push_back(std::move(r));
+        }
+        std::vector<std::pair<std::int64_t, std::int64_t>> moves;
+        std::set<std::int64_t> taken;
+        for (const auto &r : stale) {
+            if (!strongEtag(r.etag)) continue;
+            auto it = byValidator.find({r.etag, r.size});
+            if (it == byValidator.end() || it->second.size() != 1) continue;
+            const std::int64_t to = it->second.front();
+            if (keep.count(to) || isLiveLocked(to) || !taken.insert(to).second) continue;
+            moves.emplace_back(r.trackId, to);
+        }
+        // A stale row that stays at an id another row moves to would collide: drop it.
+        std::set<std::int64_t> moving;
+        for (auto &[from, to] : moves) moving.insert(from);
+        for (const auto &r : stale)
+            if (!moving.count(r.trackId) && taken.count(r.trackId)) removeEntryLocked(r.trackId);
+        if (moves.empty()) return;
+        db.rekeyEntries(moves);
+        for (auto &[from, to] : moves)
+            log("cache: track " + std::to_string(from) + " is now track " + std::to_string(to) + " on the server; keeping its cached copy");
     }
 
     bool isLiveLocked(std::int64_t id) {
@@ -1485,17 +1545,23 @@ std::unique_ptr<Client> Client::open(ClientConfig cfg, std::string *err) {
     core->tracksDir = cfg.cacheDir + "/tracks";
     if (!core->db.open(cfg.cacheDir + "/client.db", err)) return nullptr;
     if (core->db.meta("server") != base) {
-        // Another server: its ids mean nothing here.
+        // Another server: its ids mean nothing here. Files first, then rows (a crash in
+        // between leaves files that the name checks and the sweep below remove).
+        for (const auto &r : core->db.entries())
+            for (const auto &b : Core::basesOf(r))
+                for (const auto &f : core->filesOf(b)) (void)::unlink((core->tracksDir + "/" + f).c_str()); // best effort: see above
         core->db.wipe();
         core->db.setMeta("server", base);
     }
     {
         std::lock_guard lk(core->cm);
-        // Finish interrupted renames, migrate "<id>.<ext>" files, apply tag changes.
+        // Finish interrupted renames, drop entries of tracks deleted while in use,
+        // migrate "<id>.<ext>" files, apply tag changes.
+        core->dropVanishedLocked();
         core->reconcileNamesLocked();
-        // Drop "*.part" files without a row (certainly ours: a crash of an older
-        // version between row deletion and unlink). Anything else in tracks/ is left
-        // alone.
+        // Drop "*.part" and "renaming--*" files without a row (certainly ours: a crash
+        // of an older version between row deletion and unlink, or a wiped cache).
+        // Anything else in tracks/ is left alone.
         std::set<std::string> known;
         for (const auto &r : core->db.entries())
             for (const auto &b : Core::basesOf(r)) known.insert(b);
@@ -1505,7 +1571,8 @@ std::unique_ptr<Client> Client::open(ClientConfig cfg, std::string *err) {
                 const std::string n = de->d_name;
                 const auto dot = n.find('.');
                 if (dot == 0 || dot == std::string::npos || known.count(n.substr(0, dot))) continue;
-                if (n.size() > 5 && n.compare(n.size() - 5, 5, ".part") == 0) orphans.push_back(n);
+                if ((n.size() > 5 && n.compare(n.size() - 5, 5, ".part") == 0) || n.rfind(kTempNamePrefix, 0) == 0)
+                    orphans.push_back(n);
             }
             ::closedir(d);
         }
@@ -1529,58 +1596,89 @@ std::unique_ptr<Client> Client::open(ClientConfig cfg, std::string *err) {
     return std::unique_ptr<Client>(new Client(std::move(core)));
 }
 
+namespace {
+// A server library id as it may appear in a query string; anything else is ignored.
+bool plainLibraryId(const std::string &s) {
+    if (s.empty() || s.size() > 64) return false;
+    for (char ch : s)
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '-')) return false;
+    return true;
+}
+} // namespace
+
 bool Client::sync(std::string *err) {
     auto &c = *core_;
-    const std::int64_t since = c.db.revision();
-    struct Result {
-        long status = 0;
-        std::string body;
-        bool ok = false;
-        std::string err;
-    };
-    auto res = std::make_shared<Result>();
-    auto done = std::make_shared<std::promise<void>>();
-    auto fut = done->get_future();
-    HttpRequest req;
-    req.url = c.base + "/api/v1/library/changes?since=" + std::to_string(since);
-    req.totalTimeoutSec = 120;
-    req.onHead = [res](const HttpResponseHead &h) {
-        res->status = h.status;
-        return true;
-    };
-    req.onData = [res](const char *p, std::size_t n) {
-        if (res->body.size() + n > (512u << 20)) return false;
-        res->body.append(p, n);
-        return true;
-    };
-    req.onDone = [res, done](bool ok, const std::string &e) {
-        res->ok = ok;
-        res->err = e;
-        done->set_value();
-    };
-    c.net->start(std::move(req));
-    fut.wait();
-    if (!res->ok) {
-        if (err) *err = "sync failed: " + res->err;
-        return false;
-    }
-    if (res->status != 200) {
-        if (err) *err = res->status == 401 ? "sync failed: server refused the API key (401)"
-                                           : "sync failed: HTTP " + std::to_string(res->status);
-        return false;
-    }
-    std::string perr;
-    auto v = json::parse(res->body, &perr);
-    if (!v) {
-        if (err) *err = "sync failed: bad JSON: " + perr;
-        return false;
+    std::int64_t since = c.db.revision();
+    // The server's library id: a new one means its database was reset or replaced, so
+    // our revision and ids mean nothing there. Sent so the server answers with a full
+    // dump; checked again on the answer (a server that ignores the parameter).
+    std::string library = c.db.meta("library");
+    std::optional<json::Value> v;
+    for (int attempt = 0;; attempt++) {
+        struct Result {
+            long status = 0;
+            std::string body;
+            bool ok = false;
+            std::string err;
+        };
+        auto res = std::make_shared<Result>();
+        auto done = std::make_shared<std::promise<void>>();
+        auto fut = done->get_future();
+        HttpRequest req;
+        req.url = c.base + "/api/v1/library/changes?since=" + std::to_string(since);
+        if (plainLibraryId(library)) req.url += "&library=" + library;
+        req.totalTimeoutSec = 120;
+        req.onHead = [res](const HttpResponseHead &h) {
+            res->status = h.status;
+            return true;
+        };
+        req.onData = [res](const char *p, std::size_t n) {
+            if (res->body.size() + n > (512u << 20)) return false;
+            res->body.append(p, n);
+            return true;
+        };
+        req.onDone = [res, done](bool ok, const std::string &e) {
+            res->ok = ok;
+            res->err = e;
+            done->set_value();
+        };
+        c.net->start(std::move(req));
+        fut.wait();
+        if (!res->ok) {
+            if (err) *err = "sync failed: " + res->err;
+            return false;
+        }
+        if (res->status != 200) {
+            if (err) *err = res->status == 401 ? "sync failed: server refused the API key (401)"
+                                               : "sync failed: HTTP " + std::to_string(res->status);
+            return false;
+        }
+        std::string perr;
+        v = json::parse(res->body, &perr);
+        if (!v) {
+            if (err) *err = "sync failed: bad JSON: " + perr;
+            return false;
+        }
+        const std::string got = v->type == json::Value::Type::Object ? v->s("library") : std::string();
+        if (got.empty() || library.empty() || got == library || v->boolean("full") || attempt > 0) {
+            if (!got.empty() && got != library) {
+                if (!library.empty()) c.log("sync: the server's library changed (database reset?); full resync");
+                library = got;
+            }
+            break;
+        }
+        c.log("sync: the server's library changed (database reset?); full resync");
+        since = 0;
+        library.clear();
     }
     SyncResult sr;
     if (!c.db.applyChanges(*v, sr, err)) return false;
+    if (plainLibraryId(library) && library != c.db.meta("library")) c.db.setMeta("library", library);
     // Proactive invalidation of entries nobody uses (in-use ones are checked on release
     // and protected by If-Range meanwhile).
     {
         std::lock_guard lk(c.cm);
+        if (sr.full) c.adoptRemappedLocked();
         for (auto id : sr.etagChanged) {
             if (c.isLiveLocked(id)) continue;
             auto row = c.db.entry(id);

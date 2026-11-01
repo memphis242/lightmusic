@@ -270,7 +270,7 @@ bool ClientDb::applyChanges(const json::Value &v, SyncResult &out, std::string *
 void ClientDb::wipe() {
     std::lock_guard lk(m_);
     exec("BEGIN; DELETE FROM artist; DELETE FROM album; DELETE FROM track; DELETE FROM cache_entry; "
-         "DELETE FROM meta WHERE k='revision'; COMMIT;");
+         "DELETE FROM meta WHERE k IN ('revision','library'); COMMIT;");
 }
 
 std::optional<Track> ClientDb::track(std::int64_t id) {
@@ -371,6 +371,23 @@ void ClientDb::setPinned(std::int64_t trackId, bool pinned) {
 void ClientDb::deleteEntry(std::int64_t trackId) {
     std::lock_guard lk(m_);
     Stmt(db_, "DELETE FROM cache_entry WHERE track_id=?").bind(1, trackId).run();
+}
+
+void ClientDb::rekeyEntries(const std::vector<std::pair<std::int64_t, std::int64_t>> &moves) {
+    if (moves.empty()) return;
+    std::lock_guard lk(m_);
+    exec("BEGIN IMMEDIATE");
+    try {
+        // Through negative ids (never used by the server) so a permutation never collides.
+        Stmt park(db_, "UPDATE cache_entry SET track_id=? WHERE track_id=?");
+        for (const auto &[from, to] : moves) park.bind(1, -from).bind(2, from).run();
+        Stmt place(db_, "UPDATE cache_entry SET track_id=? WHERE track_id=?");
+        for (const auto &[from, to] : moves) place.bind(1, to).bind(2, -from).run();
+        exec("COMMIT");
+    } catch (...) {
+        (void)sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); // already failing; the error propagates
+        throw;
+    }
 }
 
 void ClientDb::setEntryName(std::int64_t trackId, const std::string &name, const std::string &prevName,

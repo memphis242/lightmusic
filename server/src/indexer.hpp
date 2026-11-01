@@ -12,6 +12,12 @@
 //    vanished file and one new file with the same size, mtime and file name (`mv`
 //    keeps mtime). A rename that also changes the file name while the server is down
 //    gives the track a new id (old id is reported deleted).
+//  - restarts, crashes and SIGKILL mid-scan (rows are only ever updated in place or
+//    deleted; AUTOINCREMENT never hands out an id twice; the database is synchronous=FULL),
+//  - transient trouble: a file that cannot be parsed (being written) keeps its row and is
+//    retried; nothing is deleted by a scan that could not read everything (unreadable
+//    subdirectory, failed stat) or that finds a root with no audio files at all while the
+//    index has tracks there (unmounted disk).
 //
 // Not thread-safe: all calls come from one thread (the watcher thread, or main for
 // --scan-only).
@@ -20,6 +26,7 @@
 #include "db.hpp"
 
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -45,11 +52,15 @@ public:
     void commit() { db_.commit(); }
     void rollback() { db_.rollback(); }
     // (Re)index one file if it is an audio regular file and changed; removes it from the
-    // index if it no longer exists / is no longer indexable.
+    // index if it no longer exists / is no longer an audio path. One that cannot be
+    // parsed keeps its row.
     void index_file(const std::string &path, ScanStats *st = nullptr);
     void remove(const std::string &path);  // file or directory prefix
     // Rename/move of a file or directory inside the roots; keeps ids.
     void rename(const std::string &from, const std::string &to);
+
+    // Diagnostics (e.g. a root taken for unavailable); may be empty.
+    std::function<void(const std::string &)> log;
 
     [[nodiscard]] bool under_roots(const std::string &path) const;
     const std::vector<std::string> &roots() const { return roots_; }

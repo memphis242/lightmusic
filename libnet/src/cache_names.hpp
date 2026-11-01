@@ -34,7 +34,9 @@ std::string slugComponent(std::string_view s, std::size_t maxBytes = kComponentM
 std::string cacheBaseName(std::string_view artist, std::string_view album, std::string_view title, std::int64_t id);
 // Base for a track that lost the tie for `base` (see above).
 std::string collisionName(const std::string &base, std::int64_t id);
-// Temporary name used to break a rename cycle (two tracks swapping names).
+// Temporary name used to break a rename cycle (two tracks swapping names):
+// kTempNamePrefix + id. Such a file without a row is always a leftover of ours.
+constexpr std::string_view kTempNamePrefix = "renaming--";
 std::string tempCacheName(std::int64_t id);
 
 } // namespace lm::net

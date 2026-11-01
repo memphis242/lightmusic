@@ -73,6 +73,9 @@ namespace {
 const char *kSchema = R"SQL(
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 INSERT OR IGNORE INTO meta(key, value) VALUES('schema', 1), ('revision', 0);
+-- Identifies this database: a client whose mirror came from another one (the database
+-- was deleted, reset or replaced: same files, new ids) gets a full dump.
+INSERT OR IGNORE INTO meta(key, value) VALUES('library', random() & 0x7fffffffffffffff);
 CREATE TABLE IF NOT EXISTS artist(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
@@ -140,7 +143,10 @@ Db::Db(const std::string &path, Mode mode) {
             // SQLite creates -wal/-shm with the database file's permissions.
             if (::chmod(path.c_str(), 0600) != 0) // holds API key hashes: must be private
                 throw std::runtime_error("cannot chmod 0600 " + path + ": " + std::strerror(errno));
-            exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;");
+            // synchronous=FULL: a committed id may already be in a client's mirror, so it
+            // must survive a power loss too (NORMAL can lose the last commits, and the
+            // lost ids would be handed out again for other files).
+            exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;");
             exec(kSchema);
         }
     } catch (...) {
@@ -447,14 +453,25 @@ std::string like_pattern(const std::string &q) {
 
 }  // namespace
 
-std::string Db::json_changes(std::int64_t since) {
+std::string Db::library_id() {
+    Stmt s(db_, "SELECT value FROM meta WHERE key='library'");
+    if (!s.step()) return {};
+    char b[24];
+    (void)std::snprintf(b, sizeof b, "%016llx", static_cast<unsigned long long>(s.i64(0)));
+    return b;
+}
+
+std::string Db::json_changes(std::int64_t since, const std::string &library) {
     exec("BEGIN");  // one consistent snapshot
     try {
         std::int64_t rev = revision();
-        bool full = since <= 0 || since > rev;
+        const std::string lib = library_id();
+        // Another library (database reset or replaced): the client's revision and ids
+        // mean nothing here.
+        bool full = since <= 0 || since > rev || (!library.empty() && library != lib);
         if (full) since = 0;
         Json j;
-        j.begin_object().kv("revision", rev).kv("since", since).kv("full", full);
+        j.begin_object().kv("revision", rev).kv("since", since).kv("full", full).kv("library", lib);
         j.key("artists").begin_array();
         {
             Stmt s(db_, (std::string(kArtistSelect) + "WHERE r.rev > ? ORDER BY r.id").c_str());

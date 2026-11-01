@@ -535,7 +535,8 @@ struct HttpApi::Impl {
             json(res, j.take());
         }));
         get("/api/v1/library/changes", guarded(true, false, [this](auto &req, auto &res) {
-            json(res, pool.get()->json_changes(param_i64(req, "since", 0, 0, INT64_MAX)));
+            json(res, pool.get()->json_changes(param_i64(req, "since", 0, 0, INT64_MAX),
+                                               req.has_param("library") ? req.get_param_value("library") : std::string()));
         }));
         get("/api/v1/artists", guarded(true, false, [this](auto &, auto &res) {
             json(res, pool.get()->json_artists());

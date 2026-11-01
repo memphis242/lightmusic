@@ -89,6 +89,7 @@ int main(int argc, char **argv) try {
     // The writer creates the database, its schema and WAL mode once, before any reader.
     Db writer(cfg->db_path);
     Indexer ix(writer, roots);
+    ix.log = [](const std::string &m) { (void)std::fprintf(stderr, "lightmusicd: %s\n", m.c_str()); };
     if (cfg->scan_only) {
         auto st = ix.full_scan();
         std::printf("files=%zu added=%zu updated=%zu renamed=%zu removed=%zu unchanged=%zu "
@@ -113,6 +114,7 @@ int main(int argc, char **argv) try {
     Watcher watcher(ix, Watcher::Options{std::chrono::milliseconds(250),
                                          std::chrono::milliseconds(2000), cfg->watch});
     watcher.log = log_line;
+    ix.log = log_line;
     DbPool pool(cfg->db_path, std::size_t(cfg->threads));
     HttpApi api(*cfg, pool);
     api.log = log_line;
