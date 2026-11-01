@@ -143,7 +143,7 @@ CC=clang CXX=clang++ cmake -S . -B build-casan -G Ninja -DCMAKE_BUILD_TYPE=Debug
 
 # Static analysis (same scripts CI runs; inside fedora:43 they also install the tools)
 CC=clang CXX=clang++ cmake -S . -B build-analyze -G Ninja -DCMAKE_BUILD_TYPE=Debug
-run-clang-tidy -p build-analyze -quiet '^(?!.*(/third_party/|/_deps/)).*\.cpp$'
+run-clang-tidy -p build-analyze -quiet '^(?!.*(/third_party/|/_deps/|/compile_fail/)).*\.cpp$'
 cppcheck --project=build-analyze/compile_commands.json --enable=warning,performance,portability \
   --std=c++23 --inline-suppr --suppressions-list=.cppcheck-suppressions -i third_party \
   -i build-analyze/_deps --library=posix --check-level=exhaustive --error-exitcode=1 --quiet

@@ -16,7 +16,7 @@ CC=clang CXX=clang++ cmake -S . -B build-analyze -G Ninja -DCMAKE_BUILD_TYPE=Deb
   -DLM_FETCH_FTXUI=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
 # Our translation units: everything in the compilation database outside third_party/_deps.
-src_regex='^(?!.*(/third_party/|/_deps/)).*\.cpp$'
+src_regex='^(?!.*(/third_party/|/_deps/|/compile_fail/)).*\.cpp$'
 
 case "$tool" in
   clang-tidy)
