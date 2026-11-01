@@ -13,6 +13,7 @@ add_library(net STATIC
   src/range_set.cpp
   src/json.cpp
   src/http.cpp
+  src/cache_names.cpp
   src/client_db.cpp
   src/metered.cpp
   src/client.cpp

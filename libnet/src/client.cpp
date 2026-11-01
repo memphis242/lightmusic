@@ -3,8 +3,19 @@
 //
 // Cache layout ($cacheDir, 0700):
 //   client.db                 SQLite (WAL): mirror + cache_entry rows
-//   tracks/<id>.part          sparse file pre-sized to the track size while incomplete
-//   tracks/<id>.<suffix>      after completion (renamed from .part)
+//   tracks/<name>.part        sparse file pre-sized to the track size while incomplete
+//   tracks/<name>.<suffix>    after completion (renamed from .part)
+// <name> is a readable "<artist>-<album>-<song>" slug (cache_names.hpp) stored in the
+// entry's row; lookups stay by track id. Renames (a sync changed the tags, or the
+// migration from the old "<id>.<ext>" layout on open) are crash-consistent:
+//   1. commit name=new, prev_name=old (synchronous=FULL);
+//   2. link() every "old.*" file to "new.*" (fails rather than replaces), unlink the old
+//      name, fsync the directory;
+//   3. commit prev_name=''.
+// A row with prev_name set is finished on open (and by acquire()); steps 2-3 are
+// idempotent. Renames of entries in use run on the network thread (the only thread that
+// uses an entry's paths after creation); open fds are unaffected. Files are unlinked
+// before their row is deleted, so a crash never leaves a named file without a row.
 //
 // Entry (one object per track while anything uses it; `live` map of weak_ptrs):
 //   guarded by Entry::m: etag, size, complete, written (bytes on disk, readable),
@@ -52,6 +63,7 @@
 // max(minFreeBytes, 5% of the filesystem).
 #include "lm/net/client.hpp"
 
+#include "cache_names.hpp"
 #include "client_db.hpp"
 #include "http.hpp"
 #include "json.hpp"
@@ -276,20 +288,189 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     }
 
     // ------------------------------------------------------------------ entries
-    std::string partPath(std::int64_t id) const { return tracksDir + "/" + std::to_string(id) + ".part"; }
-    std::string finalPath(std::int64_t id, const std::string &suffix) const {
-        return tracksDir + "/" + std::to_string(id) + "." + safeSuffix(suffix);
+    std::string partPath(const std::string &name) const { return tracksDir + "/" + name + ".part"; }
+    std::string finalPath(const std::string &name, const std::string &suffix) const {
+        return tracksDir + "/" + name + "." + safeSuffix(suffix);
     }
 
-    // Deletes a cache entry's row and files. cm held; the entry must not be live.
-    void removeEntryLocked(std::int64_t id) {
-        db.deleteEntry(id);
-        const std::string prefix = std::to_string(id) + ".";
+    // Names of the files in tracks/ that belong to base name `base` ("base.*"). A base
+    // never contains '.', so another entry's files never match. With the track's suffix
+    // only "base.part" and "base.<suffix>" are looked at (two lstat()s instead of a
+    // directory scan, which matters when a whole cache is renamed).
+    std::vector<std::string> filesOf(const std::string &base, const std::optional<std::string> &suffix = {}) {
+        std::vector<std::string> out;
+        if (base.empty()) return out;
+        if (suffix) {
+            for (const std::string &f : {base + ".part", base + "." + safeSuffix(*suffix)}) {
+                struct stat st{};
+                if (::lstat((tracksDir + "/" + f).c_str(), &st) == 0) out.push_back(f);
+            }
+            return out;
+        }
+        const std::string prefix = base + ".";
         if (DIR *d = ::opendir(tracksDir.c_str())) {
             while (dirent *de = ::readdir(d))
-                if (std::strncmp(de->d_name, prefix.c_str(), prefix.size()) == 0)
-                    ::unlink((tracksDir + "/" + de->d_name).c_str());
+                if (std::strncmp(de->d_name, prefix.c_str(), prefix.size()) == 0) out.emplace_back(de->d_name);
             ::closedir(d);
+        }
+        return out;
+    }
+    void syncDir() {
+        if (int dfd = ::open(tracksDir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC); dfd >= 0) {
+            ::fsync(dfd);
+            ::close(dfd);
+        }
+    }
+    // Base names a row's files may have: name, prevName, and "<id>" for a row from the
+    // old layout that was never named.
+    static std::vector<std::string> basesOf(const EntryRow &r) {
+        std::vector<std::string> b;
+        if (!r.name.empty()) b.push_back(r.name);
+        if (!r.prevName.empty()) b.push_back(r.prevName);
+        if (r.name.empty()) b.push_back(std::to_string(r.trackId));
+        return b;
+    }
+
+    // Deletes a cache entry's files, then its row. cm held; the entry must not be live.
+    void removeEntryLocked(std::int64_t id) {
+        if (auto row = db.entry(id))
+            for (const auto &b : basesOf(*row))
+                for (const auto &f : filesOf(b)) ::unlink((tracksDir + "/" + f).c_str());
+        db.deleteEntry(id);
+    }
+
+    // ------------------------------------------------------------------ file names
+    // Guarded by cm: plain base name of every track in the mirror, and the lowest track
+    // id per base (that track keeps the plain name; the others get "--<id>").
+    std::unordered_map<std::int64_t, std::string> plainName;
+    std::unordered_map<std::string, std::int64_t> nameOwner;
+
+    void rebuildNamesLocked() {
+        plainName.clear();
+        nameOwner.clear();
+        for (const auto &t : db.allTracks()) {
+            auto base = cacheBaseName(t.artist.empty() ? t.albumArtist : t.artist, t.album, t.title, t.id);
+            auto [it, fresh] = nameOwner.emplace(base, t.id);
+            if (!fresh && t.id < it->second) it->second = t.id;
+            plainName[t.id] = std::move(base);
+        }
+    }
+    // The name a track's files should have (deterministic: a function of the mirror).
+    std::string desiredNameLocked(std::int64_t id) {
+        auto it = plainName.find(id);
+        if (it == plainName.end()) return cacheBaseName("", "", "", id);
+        return nameOwner[it->second] == id ? it->second : collisionName(it->second, id);
+    }
+    std::optional<std::string> suffixOf(std::int64_t id) {
+        if (auto t = db.track(id)) return t->suffix;
+        return std::nullopt;
+    }
+    // May `name` be given to entry `id`: no other row uses it and no file has it.
+    bool nameFreeLocked(const std::string &name, std::int64_t id) {
+        return !db.nameTaken(name, id) && filesOf(name, suffixOf(id)).empty();
+    }
+
+    // Step 2 of a rename: moves every "from.*" file to "to.*". link() never replaces a
+    // file; a target that already is the same inode is a retry after a crash. Returns
+    // false (nothing more moved) if a target is a different file or I/O fails.
+    bool moveFilesLocked(std::int64_t id, const std::string &from, const std::string &to) {
+        if (from == to) return true;
+        bool ok = true;
+        for (const auto &f : filesOf(from, suffixOf(id))) {
+            const std::string src = tracksDir + "/" + f, dst = tracksDir + "/" + to + f.substr(from.size());
+            if (::link(src.c_str(), dst.c_str()) != 0) {
+                struct stat a{}, b{};
+                if (errno != EEXIST || ::lstat(src.c_str(), &a) != 0 || ::lstat(dst.c_str(), &b) != 0 ||
+                    a.st_ino != b.st_ino || a.st_dev != b.st_dev) {
+                    log("cache: cannot rename " + src + " to " + dst + ": " + std::strerror(errno == EEXIST ? EEXIST : errno));
+                    ok = false;
+                    break;
+                }
+            }
+            ::unlink(src.c_str());
+        }
+        syncDir();
+        return ok;
+    }
+
+    // Live entry of `id` (cm held), if any.
+    std::shared_ptr<Entry> liveLocked(std::int64_t id) {
+        auto it = live.find(id);
+        return it == live.end() ? nullptr : it->second.lock();
+    }
+
+    // Points a live entry's paths at its new name. Only the network thread uses an
+    // entry's paths after creation, so a live entry is only renamed there (or before
+    // the network thread starts).
+    void retarget(const std::shared_ptr<Entry> &e, const std::string &name) {
+        if (!e) return;
+        const std::string suffix = e->finalPath.substr(e->finalPath.rfind('.') + 1);
+        e->partPath = partPath(name);
+        e->finalPath = finalPath(name, suffix);
+    }
+
+    // Finishes an interrupted rename (row.prevName set). cm held.
+    bool finishRenameLocked(EntryRow &row) {
+        if (row.prevName.empty()) return true;
+        if (!moveFilesLocked(row.trackId, row.prevName, row.name)) return false;
+        db.setEntryName(row.trackId, row.name, "", false);
+        row.prevName.clear();
+        retarget(liveLocked(row.trackId), row.name);
+        return true;
+    }
+
+    // Renames entry `row` (and its files) to `to`, which must be free. cm held.
+    bool renameEntryLocked(EntryRow &row, const std::string &to) {
+        if (!finishRenameLocked(row)) return false;
+        const std::string from = row.name.empty() ? std::to_string(row.trackId) : row.name;
+        if (from == to) {
+            if (row.name != to) db.setEntryName(row.trackId, to, "", false);
+            row.name = to;
+            return true;
+        }
+        if (!nameFreeLocked(to, row.trackId)) return false;
+        db.setEntryName(row.trackId, to, from, true); // 1
+        row.name = to;
+        row.prevName = from;
+        if (!moveFilesLocked(row.trackId, from, to)) return false; // 2 (finished later)
+        db.setEntryName(row.trackId, to, "", false);  // 3
+        row.prevName.clear();
+        retarget(liveLocked(row.trackId), to);
+        log("cache: track " + std::to_string(row.trackId) + ": " + from + " -> " + to);
+        return true;
+    }
+
+    // Brings every entry's file name in line with the mirror: finishes interrupted
+    // renames, migrates the old "<id>.<ext>" layout, renames after tag changes. A rename
+    // whose target is still used by another entry waits for that one to move; a cycle
+    // (tracks swapping names) is broken through tempCacheName(). cm held; on the network
+    // thread when live entries may exist.
+    void reconcileNamesLocked() {
+        rebuildNamesLocked();
+        auto rows = db.entries();
+        for (std::size_t pass = 0; pass <= rows.size() + 1; pass++) {
+            bool progress = false;
+            std::vector<EntryRow *> blocked;
+            for (auto &r : rows) {
+                if (!r.prevName.empty() && finishRenameLocked(r)) progress = true;
+                // A track gone from the mirror keeps its name until its entry is removed.
+                if (!r.name.empty() && !plainName.count(r.trackId)) continue;
+                const std::string want = desiredNameLocked(r.trackId);
+                if (r.name == want && r.prevName.empty()) continue;
+                if (renameEntryLocked(r, want)) progress = true;
+                else blocked.push_back(&r);
+            }
+            if (blocked.empty()) return;
+            if (!progress) {
+                // Every remaining target is held by another blocked entry: move one aside.
+                bool moved = false;
+                for (auto *r : blocked)
+                    if (r->prevName.empty() && renameEntryLocked(*r, tempCacheName(r->trackId))) {
+                        moved = true;
+                        break;
+                    }
+                if (!moved) return; // e.g. a foreign file holds a name: retried next time
+            }
         }
     }
 
@@ -339,17 +520,21 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             removeEntryLocked(id);
             row.reset();
             if (pinned && repinAllowedLocked(id, t->etag)) {
-                EntryRow r{id, t->etag, t->size, false, "", 0, true, wallNow()};
+                EntryRow r{id, t->etag, t->size, false, "", 0, true, wallNow(), "", ""};
                 db.putEntry(r);
                 row = r;
             }
+        }
+        if (row && !row->prevName.empty() && !finishRenameLocked(*row)) {
+            if (err) *err = "cache entry of track " + std::to_string(id) + " is being renamed";
+            return nullptr;
         }
         if (!row) {
             if (!makeRoomLocked(t->size, id) && purpose == Purpose::Fill) {
                 if (err) *err = "cache full";
                 return nullptr;
             }
-            EntryRow r{id, t->etag, t->size, false, "", 0, false, wallNow()};
+            EntryRow r{id, t->etag, t->size, false, "", 0, false, wallNow(), "", ""};
             db.putEntry(r);
             row = r;
         }
@@ -358,8 +543,17 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             delete p;
             if (auto c = w.lock()) c->released(eid);
         });
-        e->partPath = partPath(id);
-        e->finalPath = finalPath(id, t->suffix);
+        if (row->name.empty()) { // new (or pinned, or old-layout) entry: give it its name
+            if (!plainName.count(id)) rebuildNamesLocked(); // added since the last reconcile
+            std::string want = desiredNameLocked(id);
+            if (!nameFreeLocked(want, id)) want = tempCacheName(id); // fixed by the next reconcile
+            if (!renameEntryLocked(*row, want)) {
+                if (err) *err = "cannot name the cache file of track " + std::to_string(id);
+                return nullptr;
+            }
+        }
+        e->partPath = partPath(row->name);
+        e->finalPath = finalPath(row->name, t->suffix);
         e->etag = row->etag;
         e->ephemeral = !strongEtag(row->etag);
         e->size = static_cast<std::uint64_t>(std::max<std::int64_t>(0, row->size));
@@ -554,7 +748,8 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         {
             std::lock_guard lk(cm);
             auto row = db.entry(e->id);
-            EntryRow r{e->id, etag, static_cast<std::int64_t>(size), false, "", 0, row && row->pinned, wallNow()};
+            EntryRow r{e->id, etag, static_cast<std::int64_t>(size), false, "", 0, row && row->pinned, wallNow(), "", ""};
+            if (row) r.name = row->name, r.prevName = row->prevName;
             db.putEntry(r);
             db.setTrackValidator(e->id, etag, static_cast<std::int64_t>(size));
         }
@@ -587,10 +782,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             log("cache: rename failed for " + e->partPath);
             return;
         }
-        if (int dfd = ::open(tracksDir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC); dfd >= 0) {
-            ::fsync(dfd);
-            ::close(dfd);
-        }
+        syncDir();
         db.updateRanges(e->id, "0-" + std::to_string(size), static_cast<std::int64_t>(size), true);
         {
             std::lock_guard lk(e->m);
@@ -1279,15 +1471,26 @@ std::unique_ptr<Client> Client::open(ClientConfig cfg, std::string *err) {
         core->db.wipe();
         core->db.setMeta("server", base);
     }
-    // Drop files without a row (a crash between row deletion and unlink).
-    if (DIR *d = ::opendir(core->tracksDir.c_str())) {
+    {
+        std::lock_guard lk(core->cm);
+        // Finish interrupted renames, migrate "<id>.<ext>" files, apply tag changes.
+        core->reconcileNamesLocked();
+        // Drop "*.part" files without a row (certainly ours: a crash of an older
+        // version between row deletion and unlink). Anything else in tracks/ is left
+        // alone.
+        std::set<std::string> known;
+        for (const auto &r : core->db.entries())
+            for (const auto &b : Core::basesOf(r)) known.insert(b);
         std::vector<std::string> orphans;
-        while (dirent *de = ::readdir(d)) {
-            if (de->d_name[0] == '.') continue;
-            const std::int64_t id = std::strtoll(de->d_name, nullptr, 10);
-            if (id <= 0 || !core->db.entry(id)) orphans.push_back(de->d_name);
+        if (DIR *d = ::opendir(core->tracksDir.c_str())) {
+            while (dirent *de = ::readdir(d)) {
+                const std::string n = de->d_name;
+                const auto dot = n.find('.');
+                if (dot == 0 || dot == std::string::npos || known.count(n.substr(0, dot))) continue;
+                if (n.size() > 5 && n.compare(n.size() - 5, 5, ".part") == 0) orphans.push_back(n);
+            }
+            ::closedir(d);
         }
-        ::closedir(d);
         for (auto &o : orphans) ::unlink((core->tracksDir + "/" + o).c_str());
     }
     NetConfig nc;
@@ -1368,9 +1571,24 @@ bool Client::sync(std::string *err) {
                 c.log("cache: invalidating track " + std::to_string(id));
                 const bool pinned = row->pinned;
                 c.removeEntryLocked(id);
-                if (pinned && t && c.repinAllowedLocked(id, t->etag)) c.db.putEntry(EntryRow{id, t->etag, t->size, false, "", 0, true, wallNow()});
+                if (pinned && t && c.repinAllowedLocked(id, t->etag)) c.db.putEntry(EntryRow{id, t->etag, t->size, false, "", 0, true, wallNow(), "", ""});
             }
         }
+    }
+    // File names follow the new tags. Entries in use are renamed on the network thread
+    // (the only one that touches their paths); wait so callers see the new names.
+    {
+        auto renamed = std::make_shared<std::promise<void>>();
+        auto rf = renamed->get_future();
+        c.net->post([&c, renamed] {
+            {
+                std::lock_guard lk(c.cm);
+                c.reconcileNamesLocked();
+            }
+            renamed->set_value();
+        });
+        // A post dropped at shutdown abandons the promise, which also readies the future.
+        while (rf.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready && !c.stopping) {}
     }
     c.log("sync: revision " + std::to_string(sr.revision) + (sr.full ? " (full)" : "") + ", " +
           std::to_string(sr.tracks) + " tracks updated, " + std::to_string(sr.deleted) + " deleted");
@@ -1406,7 +1624,8 @@ std::optional<CacheEntryInfo> Client::cacheEntry(std::int64_t id) {
     e.ranges = row->ranges;
     e.pinned = row->pinned;
     auto t = core_->db.track(id);
-    e.file = row->complete ? core_->finalPath(id, t ? t->suffix : "") : core_->partPath(id);
+    const std::string &name = row->prevName.empty() ? row->name : row->prevName; // mid-rename: old name
+    e.file = name.empty() ? std::string() : row->complete ? core_->finalPath(name, t ? t->suffix : "") : core_->partPath(name);
     return e;
 }
 
@@ -1451,7 +1670,7 @@ bool Client::pin(std::int64_t id, bool pinned, std::string *err) {
                 return false;
             }
             if (!row) {
-                c.db.putEntry(EntryRow{id, t->etag, t->size, false, "", 0, true, wallNow()});
+                c.db.putEntry(EntryRow{id, t->etag, t->size, false, "", 0, true, wallNow(), "", ""});
             } else {
                 c.db.setPinned(id, true);
             }

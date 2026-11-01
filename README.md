@@ -177,7 +177,15 @@ ctest --test-dir build --output-on-failure
   401, offline; concurrent seek/read/interrupt on two sources (meant for TSan);
   `setCacheSettings` (reload): fill off/on, a cap shrink evicts only after
   `capTrimDelayMs` (and not at all if the cap is raised again first), fill off stops a
-  running idle fetch.
+  running idle fetch. Readable names: collisions (`--<id>` to all but the lowest id,
+  dropped when the clash goes away, stable across restarts), renames on a tag change
+  with a reader open on the complete file and while a download is in progress, two
+  tracks swapping names, offline playback and eviction after renames, migration from the
+  `<id>.<ext>` layout (old schema, idempotent, unknown files untouched, nothing
+  downloaded again), and every crash window of the rename protocol.
+- `test_cache_names`: the slug rule (ASCII, transliteration, Cyrillic/Greek/CJK, invalid
+  UTF-8, reserved names such as `.`, `..`, leading `-`/`.`, empty tags, length caps on
+  UTF-8 boundaries).
 - `test_stream_e2e`: starts `lightmusicd --port 0` on generated FLAC/MP3, syncs, plays two
   tracks through `lm::Player` (Null backend) via `lm://` URIs and compares the output
   sample for sample with a local decode, stops the server, and replays them offline from
@@ -488,12 +496,33 @@ Design (`libnet/`, see `libnet/include/lm/net/client.hpp` and the top of
   callback never touches it. Other threads only do short SQLite queries.
 - **Mirror.** `/library/changes?since=REV` into `client.db` (SQLite, WAL): artists, albums,
   tracks with size and ETag; browsing works offline.
-- **Files.** `tracks/<id>.part` is a sparse file pre-sized to the track (Content-Range
+- **Files.** `tracks/<name>.part` is a sparse file pre-sized to the track (Content-Range
   total or the mirror's size); the range set of bytes present lives in memory and in
   `cache_entry`. Bytes are `pwrite`n, then `fdatasync`ed, then the range set is committed
   to SQLite — batched every 256 KiB or 1 s — so a crash never records bytes that are not
   on disk. When ranges cover the file, size and ETag are checked and it is renamed to
-  `tracks/<id>.<suffix>`.
+  `tracks/<name>.<suffix>`.
+- **Readable names.** `<name>` is `<artist>-<album>-<song>`, e.g.
+  `pink-floyd-the-dark-side-of-the-moon-money.flac`, `ac-dc-back-in-black-hells-bells.mp3`,
+  `sigur-ros-agaetis-byrjun-svefn-g-englar.mp3`, `кино-группа-крови-кукушка.flac`. Rules: ASCII letters and digits are kept
+  lower-cased; Latin-1 / Latin Extended-A letters are transliterated (é→e, ß→ss, æ→ae, ł→l,
+  œ→oe); Greek and Cyrillic capitals are lower-cased; other non-ASCII letters (CJK, emoji)
+  are kept as-is; any run of anything else (spaces, punctuation, `/ \ : * ? " < > | .`,
+  control characters, invalid UTF-8) becomes one `-`, trimmed at both ends — so a name
+  never starts with `-` or `.` and never contains `.` or `--`. Empty parts become
+  `unknown-artist`, `unknown-album`, `track-<id>`; each part is capped at 60 bytes and the
+  whole base at 165 (cut on a UTF-8 boundary), so a file name is at most 200 bytes. The
+  artist is the track artist (the album artist if empty). When two tracks get the same
+  name, the lowest track id keeps it and the others get `--<id>`
+  (`band-record-same-song--3.mp3`): deterministic from the library, independent of what
+  was cached first. The entry's name is stored in `cache_entry` (lookups stay by track
+  id). A sync that changes the tags renames the files (complete or partial, even while
+  playing or downloading — open file descriptors are unaffected) in three steps: commit
+  `name=new, prev_name=old` (`synchronous=FULL`), `link()` each file to the new name and
+  unlink the old one (never replacing a file), commit `prev_name=''`; a start finishes any
+  interrupted rename. Caches from older versions (`<id>.<ext>`) are renamed on the first
+  start; files in `tracks/` that the cache does not know are left alone (only stray
+  `*.part` files are deleted).
 - **Validation.** Every range request carries `If-Range: <etag>`; a 200 with another
   ETag means the file changed: the entry is cleared (committed first) and the 200 body
   becomes the new download. A 200 with the same ETag (a server ignoring `Range`) keeps the
