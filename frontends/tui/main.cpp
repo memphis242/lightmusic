@@ -78,6 +78,7 @@ namespace {
 
 int g_wakeWrite = -1;
 static_assert(std::atomic<int>::is_always_lock_free, "signal flags must be lock-free");
+static_assert(std::atomic<bool>::is_always_lock_free, "uiActive is shared with the network thread");
 std::atomic<int> g_resized{0};
 std::atomic<int> g_continued{0};
 std::atomic<int> g_quitSignal{0}; // signal number that asked us to quit, 0 if none

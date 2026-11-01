@@ -5,6 +5,7 @@
 #include "decoders.hpp"
 
 #include <algorithm>
+#include <climits>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -105,12 +106,20 @@ std::string id3Text(int enc, const unsigned char *&p, const unsigned char *end) 
     return s;
 }
 
-std::uint32_t syncsafe(const unsigned char *b) {
+// The byte-order helpers assemble integers from octets explicitly (host endianness
+// does not matter), which relies on 8-bit bytes and a 32-bit result type.
+static_assert(CHAR_BIT == 8, "tag parsers read octets");
+static_assert(sizeof(std::uint32_t) == 4);
+
+constexpr std::uint32_t syncsafe(const unsigned char *b) {
     return static_cast<std::uint32_t>((b[0] & 0x7F) << 21 | (b[1] & 0x7F) << 14 | (b[2] & 0x7F) << 7 | (b[3] & 0x7F));
 }
-std::uint32_t be32(const unsigned char *b) {
+constexpr std::uint32_t be32(const unsigned char *b) {
     return static_cast<std::uint32_t>(b[0]) << 24 | static_cast<std::uint32_t>(b[1]) << 16 | static_cast<std::uint32_t>(b[2]) << 8 | b[3];
 }
+constexpr unsigned char kOrderProbe[4] = {0x01, 0x02, 0x03, 0x84};
+static_assert(be32(kOrderProbe) == 0x01020384u, "be32 is big-endian");
+static_assert(syncsafe(kOrderProbe) == ((1u << 21) | (2u << 14) | (3u << 7) | 4u), "syncsafe drops bit 7 of each byte");
 
 // Removes unsynchronisation (0xFF 0x00 -> 0xFF).
 std::vector<unsigned char> deunsync(const unsigned char *p, const unsigned char *end) {
@@ -290,10 +299,11 @@ constexpr std::size_t kMaxOggScan = 2u << 20;      // Ogg bytes read outside the
 constexpr int kMaxOggPages = 1 << 16;              // pages walked (skipped ones included)
 
 bool readFully(ByteSource &src, void *dst, std::size_t n) { return src.read(dst, n) == n; }
-std::uint32_t le32(const unsigned char *b) {
+constexpr std::uint32_t le32(const unsigned char *b) {
     return static_cast<std::uint32_t>(b[0]) | static_cast<std::uint32_t>(b[1]) << 8 |
            static_cast<std::uint32_t>(b[2]) << 16 | static_cast<std::uint32_t>(b[3]) << 24;
 }
+static_assert(le32(kOrderProbe) == 0x84030201u, "le32 is little-endian");
 
 // A Vorbis comment block as a byte stream that can be read or skipped forward.
 struct CommentStream {

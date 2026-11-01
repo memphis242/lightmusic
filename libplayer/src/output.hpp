@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <type_traits>
 
 namespace lm::detail {
 
@@ -46,6 +47,11 @@ public:
     std::string describe() const; // backend, device, sink, period/latency for logs
 
     // Realtime-shared state ------------------------------------------------------------
+    // Read or written by the audio callback / miniaudio notification thread: a hidden
+    // lock here would be a priority inversion on the realtime thread.
+    static_assert(std::atomic<float>::is_always_lock_free && std::atomic<bool>::is_always_lock_free &&
+                      std::atomic<std::uint64_t>::is_always_lock_free,
+                  "realtime-shared atomics must be lock-free");
     std::atomic<float> volume{1.0f};
     std::atomic<bool> endOfStream{false}; // decoder: no more data will be written
     std::atomic<bool> drained{false};     // callback: ring empty after endOfStream

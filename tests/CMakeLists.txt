@@ -11,6 +11,14 @@ function(lm_test name)
 endfunction()
 
 lm_test(test_ring)
+# Assertion facility death tests: header-only (no lm::player, so forcing assertions on
+# here cannot give inline functions two definitions), on in every build type.
+add_executable(test_assert test_assert.cpp)
+target_link_libraries(test_assert PRIVATE lm_warnings)
+target_include_directories(test_assert PRIVATE ${PROJECT_SOURCE_DIR}/libplayer/include)
+target_compile_definitions(test_assert PRIVATE LM_ENABLE_ASSERTS)
+add_test(NAME test_assert COMMAND test_assert)
+set_tests_properties(test_assert PROPERTIES TIMEOUT 60)
 lm_test(test_decoders)
 lm_test(test_player)
 lm_test(test_tags)
