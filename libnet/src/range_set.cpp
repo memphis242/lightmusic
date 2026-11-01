@@ -1,9 +1,20 @@
 #include "lm/net/range_set.hpp"
 
+#include "lm/assert.hpp"
+
 #include <algorithm>
 #include <charconv>
 
 namespace lm::net {
+
+void RangeSet::checkInvariants() const {
+#if LM_ASSERTS_ENABLED
+    for (std::size_t i = 0; i < r_.size(); i++) {
+        LM_ASSERT(r_[i].first < r_[i].second, "RangeSet: empty or inverted range");
+        if (i) LM_ASSERT(r_[i - 1].second < r_[i].first, "RangeSet: ranges unsorted, overlapping or not merged");
+    }
+#endif
+}
 
 void RangeSet::add(std::uint64_t b, std::uint64_t e) {
     if (b >= e) return;
@@ -17,6 +28,7 @@ void RangeSet::add(std::uint64_t b, std::uint64_t e) {
     }
     it = r_.erase(it, last);
     r_.insert(it, Range{b, e});
+    checkInvariants();
 }
 
 void RangeSet::remove(std::uint64_t b, std::uint64_t e) {
@@ -32,6 +44,7 @@ void RangeSet::remove(std::uint64_t b, std::uint64_t e) {
         if (r.second > e) out.emplace_back(e, r.second);
     }
     r_ = std::move(out);
+    checkInvariants();
 }
 
 bool RangeSet::contains(std::uint64_t b, std::uint64_t e) const {
@@ -62,6 +75,8 @@ std::vector<RangeSet::Range> RangeSet::holes(std::uint64_t size) const {
         at = std::max(at, r.second);
     }
     if (at < size) h.emplace_back(at, size);
+    LM_ASSERT(std::all_of(h.begin(), h.end(), [&](const Range &x) { return x.first < x.second && x.second <= size; }),
+              "RangeSet::holes: holes are non-empty and within [0, size)");
     return h;
 }
 
@@ -70,6 +85,7 @@ std::optional<RangeSet::Range> RangeSet::holeFrom(std::uint64_t off, std::uint64
     if (at >= size) return std::nullopt;
     auto it = std::upper_bound(r_.begin(), r_.end(), at, [](std::uint64_t v, const Range &r) { return v < r.first; });
     const std::uint64_t end = it == r_.end() ? size : std::min(size, it->first);
+    LM_ASSERT(off <= at && at < end && end <= size, "RangeSet::holeFrom: hole within [off, size)");
     return Range{at, end};
 }
 
@@ -92,13 +108,14 @@ std::optional<RangeSet> RangeSet::parse(const std::string &s) {
         r = std::from_chars(r.ptr + 1, end, e);
         if (r.ec != std::errc() || b >= e) return std::nullopt;
         if (!out.r_.empty() && b <= out.r_.back().second) return std::nullopt;
-        out.r_.emplace_back(b, e);
+        out.r_.emplace_back(b, e); // untrusted DB text: validated above, never asserted
         p = r.ptr;
         if (p < end) {
             if (*p != ',' || p + 1 == end) return std::nullopt;
             ++p;
         }
     }
+    out.checkInvariants();
     return out;
 }
 

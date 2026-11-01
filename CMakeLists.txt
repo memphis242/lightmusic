@@ -19,6 +19,7 @@ option(LM_BUILD_NET "Build libnet: server client, streaming and offline cache (n
 option(LM_BUILD_SERVER "Build the lightmusicd server (needs TagLib, SQLite)" ON)
 option(LM_BUILD_MPRIS "Build MPRIS (media keys / desktop integration) for the TUI (needs libsystemd)" ON)
 option(LM_FETCH_FTXUI "Fetch FTXUI v6.1.9 with FetchContent if no system package" OFF)
+option(LM_ASSERTS "Force LM_ASSERT checks on in optimised builds (they are always on without NDEBUG)" OFF)
 option(LM_GC_SECTIONS "Link the shipped executables with --gc-sections in optimised builds (drops unused code)" ON)
 
 if(LM_ASAN AND LM_TSAN)
@@ -45,6 +46,15 @@ endfunction()
 # Warnings for our own code only (third_party gets none of these).
 add_library(lm_warnings INTERFACE)
 target_compile_options(lm_warnings INTERFACE -Wall -Wextra -Werror)
+
+# Project assertions (include/lm/assert.hpp); every target gets them through lm_warnings
+# or lm::player.
+add_library(lm_assert INTERFACE)
+target_include_directories(lm_assert INTERFACE ${PROJECT_SOURCE_DIR}/include)
+if(LM_ASSERTS)
+  target_compile_definitions(lm_assert INTERFACE LM_ENABLE_ASSERTS)
+endif()
+target_link_libraries(lm_warnings INTERFACE lm_assert)
 
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)

@@ -1,6 +1,8 @@
 #include "range.hpp"
 
 #include <charconv>
+
+#include "lm/assert.hpp"
 #include <optional>
 
 namespace lm::server {
@@ -78,6 +80,8 @@ ByteRange parse_range(std::string_view header, std::uint64_t size) {
         if (comma == std::string_view::npos) break;
         set = set.substr(comma + 1);
     }
+    LM_ASSERT(r.kind != ByteRange::Kind::Satisfiable || (r.first <= r.last && r.last < size),
+              "parse_range: satisfiable range lies inside the file");
     return r;
 }
 

@@ -192,6 +192,27 @@ ninja -C build-asan && ctest --test-dir build-asan
 ninja -C build-tsan && ctest --test-dir build-tsan
 ```
 
+### Assertions
+
+`include/lm/assert.hpp` is the project's assertion facility:
+
+- `static_assert` for anything knowable at compile time: lock-freedom of every atomic
+  shared with the audio callback or a signal handler, ring sample type trivially
+  copyable, 64-bit frame counters, byte-order helpers in the tag parsers, pipeline limit
+  consistency.
+- `LM_ASSERT(cond, msg)` for programmer invariants (preconditions, postconditions,
+  internal consistency such as `RangeSet` being sorted/disjoint/merged, the ring's
+  capacity and positions, server range math, config schema ranges). On failure it writes
+  `file:line: assertion ... failed: msg` with `write(2)` and aborts: no allocation, no
+  locks, safe from any thread or signal handler.
+- `LM_ASSERT_RT(cond)` in the realtime audio path: traps (`__builtin_trap`), no I/O.
+  Debug builds also check the SPSC contract (one producer, one consumer at a time).
+- Active without `NDEBUG` (Debug, so the ASan and TSan builds) or with `-DLM_ASSERTS=ON`;
+  compiled out of Release/RelWithDebInfo (conditions are not evaluated: keep them free
+  of side effects). A failure aborts the process, so the test fails.
+- Never assert on untrusted input (audio files and tags, HTTP requests and replies, the
+  cache database, YAML config): those are errors handled in every build.
+
 ## Server (`lightmusicd`)
 
 A small private server for one user and up to ~10 devices. It indexes music folders
