@@ -244,6 +244,8 @@ private:
 bool parseBool(const Value &v, bool &out, std::string &err);
 bool parseInt(const Value &v, long long lo, long long hi, long long &out, std::string &err);
 bool parseString(const Value &v, std::string &out, std::string &err);
+// A finite decimal number in [lo, hi] (whole numbers accepted; nan/inf refused).
+bool parseFloat(const Value &v, double lo, double hi, double &out, std::string &err);
 bool parseList(const Value &v, std::vector<std::string> &out, std::string &err);
 
 namespace detail {
@@ -272,6 +274,12 @@ template <class T, class I> Field<T> intField(std::string key, I T::*p, long lon
         t.*p = static_cast<I>(n);
         return true;
     };
+    return f;
+}
+
+template <class T> Field<T> floatField(std::string key, double T::*p, double lo, double hi, bool hot = false) {
+    auto f = detail::base(std::move(key), p, hot);
+    f.set = [p, lo, hi](T &t, const Value &v, std::string &err) { return parseFloat(v, lo, hi, t.*p, err); };
     return f;
 }
 
