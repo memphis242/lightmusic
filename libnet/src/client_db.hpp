@@ -72,6 +72,11 @@ public:
     void touch(std::int64_t trackId, std::int64_t when);
     void setPinned(std::int64_t trackId, bool pinned);
     void deleteEntry(std::int64_t trackId);
+    // Moves cache rows to other track ids (old -> new) in one transaction; the new ids
+    // must be free or themselves moved away in the same call (a permutation is fine).
+    // Used when the server's ids were remapped (database reset) and a row is adopted by
+    // the track that now has its file.
+    void rekeyEntries(const std::vector<std::pair<std::int64_t, std::int64_t>> &moves);
     // Records the entry's file base name (and the one its files are moving from, or "").
     // durable: committed with synchronous=FULL (the step before files are renamed).
     void setEntryName(std::int64_t trackId, const std::string &name, const std::string &prevName, bool durable);

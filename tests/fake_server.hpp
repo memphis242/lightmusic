@@ -64,6 +64,14 @@ public:
         t.title = std::move(title);
         rev_++;
     }
+    // Server database reset/replaced: every track is gone (re-added under new ids by the
+    // caller) and the library id changes.
+    void resetLibrary(std::string newLibrary) {
+        std::lock_guard lk(m_);
+        tracks_.clear();
+        library_ = std::move(newLibrary);
+        rev_ = 1;
+    }
     void removeTrack(std::int64_t id) {
         std::lock_guard lk(m_);
         tracks_.erase(id);
@@ -103,6 +111,7 @@ private:
         std::lock_guard lk(m_);
         // Always a full dump (allowed by the protocol: "full":true).
         std::string j = "{\"revision\":" + std::to_string(rev_) + ",\"since\":0,\"full\":true,";
+        if (!library_.empty()) j += "\"library\":\"" + library_ + "\",";
         j += "\"artists\":[{\"id\":1,\"name\":\"Band\",\"albumCount\":1,\"rev\":1}],";
         j += "\"albums\":[{\"id\":1,\"title\":\"Record\",\"artistId\":1,\"artist\":\"Band\",\"year\":2001,\"trackCount\":" +
              std::to_string(tracks_.size()) + ",\"durationMs\":0,\"rev\":1}],\"tracks\":[";
@@ -216,6 +225,7 @@ private:
     httplib::Server srv_;
     std::thread th_;
     int port_ = 0;
+    std::string library_; // "" = an older server without a library id
     std::mutex m_;
     std::map<std::int64_t, FakeTrack> tracks_;
     std::int64_t rev_ = 1;

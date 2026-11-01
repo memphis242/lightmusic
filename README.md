@@ -191,7 +191,8 @@ ctest --test-dir build --output-on-failure
   failed-auth limiter (injected clock, eviction keeps blocks, IPv6 /64, threads), client
   address / X-Forwarded-For rules, `--listen` checks, JSON UTF-8 sanitising, key storage,
   database permissions, read-only readers and the bounded pool.
-- `test_server_index`: scan, unchanged rescan, mtime change, offline rename, delete, then
+- `test_server_index`: id stability (restart, SIGKILL in the middle of a scan with offline
+  moves, an unparseable file being rewritten, a root with no files, library id), scan, unchanged rescan, mtime change, offline rename, delete, then
   the inotify watcher: rename keeps ids, new nested directory, directory rename, in-place
   rewrite, atomic save, move out/in, hard link (IN_CREATE only), `touch -m` (IN_ATTRIB);
   symlink-safe opens (openat2 and the fallback walk); embedded cover read from an fd.
@@ -236,7 +237,10 @@ ctest --test-dir build --output-on-failure
   with a reader open on the complete file and while a download is in progress, two
   tracks swapping names, offline playback and eviction after renames, migration from the
   `<id>.<ext>` layout (old schema, idempotent, unknown files untouched, nothing
-  downloaded again), and every crash window of the rename protocol.
+  downloaded again), every crash window of the rename protocol, an interrupted swap
+  with an entry parked under `renaming--<id>`, a server restarted on other ports (no
+  leftover files, no "cannot name"), and a server database reset with permuted ids
+  (cached files adopted by ETag and size, nothing downloaded again).
 - `test_cache_names`: the slug rule (ASCII, transliteration, Cyrillic/Greek/CJK, invalid
   UTF-8, reserved names such as `.`, `..`, leading `-`/`.`, empty tags, length caps on
   UTF-8 boundaries).
@@ -439,7 +443,7 @@ limit; the server warns at startup when it listens on loopback without one.
 | Endpoint | Notes |
 |---|---|
 | `GET /ping` | no auth: `{"status":"ok","server":"lightmusicd","version":"0.1.0","apiVersion":1}` |
-| `GET /library/changes?since=REV` | everything changed after revision `REV` (0 or unknown = full dump, `"full":true`) |
+| `GET /library/changes?since=REV&library=ID` | everything changed after revision `REV` (0, unknown, or a `library` other than this database's = full dump, `"full":true`) |
 | `GET /artists` · `/artists/{id}` | album artists; `/artists/{id}` adds `albums` |
 | `GET /albums?sort=title\|artist\|year\|newest&offset=0&limit=100` | `limit` ≤ 500; `{total,offset,limit,albums}` |
 | `GET /albums/{id}` | album + `tracks` (disc/track order) |
@@ -462,7 +466,7 @@ Shapes:
  "bitrate":320,"sampleRate":44100,"channels":2,"codec":"mp3","suffix":"mp3",
  "size":9640123,"mtime":1793271148,"etag":"\"931a3b-18e2fa9bdb36946a\"","rev":7}
 // /library/changes
-{"revision":9,"since":7,"full":false,"artists":[…],"albums":[…],"tracks":[…],
+{"revision":9,"since":7,"full":false,"library":"5f0c2e9a41d7b3c8","artists":[…],"albums":[…],"tracks":[…],
  "deleted":{"artists":[],"albums":[5],"tracks":[40,41]}}
 // errors
 {"error":"unauthorized"}
@@ -473,7 +477,14 @@ Shapes:
   library while the server runs (inotify move pair; directory moves included). A move
   made while the server was down keeps the id if exactly one vanished file and one new
   file share size, mtime and file name (`mv` keeps mtime); otherwise the old id is
-  reported deleted and the file gets a new id.
+  reported deleted and the file gets a new id. Restarts, crashes (also SIGKILL in the
+  middle of a scan) and power loss (`synchronous=FULL`) never renumber. A file that cannot
+  be parsed (still being written) keeps its id, and a scan deletes nothing when it could
+  not read every directory or when a root has no audio files at all while the index has
+  tracks there (an unmounted disk).
+- **Library id**: a random id fixed when the database is created, sent as `library` in
+  `/library/changes`. A client passes back the one its mirror came from; if the database
+  was deleted or replaced (same files, new ids) it gets a full dump and remaps its cache.
 - **Revisions**: every index transaction that changes something gets the next number;
   changed rows carry it in `rev` and deletions leave tombstones, so a client mirrors the
   library with `changes?since=<last revision>`. An album's `rev` also moves when its

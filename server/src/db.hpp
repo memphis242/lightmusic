@@ -120,7 +120,11 @@ public:
     [[nodiscard]] std::optional<TrackFile> track_file(std::int64_t id);
     std::vector<std::string> album_track_paths(std::int64_t album_id);  // by disc/track
     [[nodiscard]] std::optional<std::int64_t> album_rev(std::int64_t album_id);
-    std::string json_changes(std::int64_t since);
+    // `library`: the library id the client's mirror came from ("" = unknown); another
+    // one than library_id() gets a full dump.
+    std::string json_changes(std::int64_t since, const std::string &library = {});
+    // This database's random id (16 hex digits), fixed when it was created.
+    std::string library_id();
     std::string json_artists();
     [[nodiscard]] std::optional<std::string> json_artist(std::int64_t id);
     std::string json_albums(const std::string &sort, std::int64_t offset, std::int64_t limit);
