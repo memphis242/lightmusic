@@ -37,7 +37,7 @@ int main() {
     if (tmp) {
         CHECK(lm::outln(tmp, "{}-{:02}", "a", 7));
         CHECK(lm::flushOut(tmp));
-        std::rewind(tmp);
+        CHECK(std::fseek(tmp, 0, SEEK_SET) == 0);
         char buf[16] = {};
         CHECK(std::fgets(buf, sizeof buf, tmp) != nullptr);
         CHECK(std::string(buf) == "a-07\n");
