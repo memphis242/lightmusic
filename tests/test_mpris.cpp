@@ -67,7 +67,7 @@ struct Loop {
                 logs.push_back(msg);
             });
             if (!srv) {
-                (void)std::fprintf(stderr, "%s\n", err.c_str());
+                std::println(stderr, "{}", err);
                 ready = true;
                 return;
             }
@@ -252,11 +252,11 @@ std::string run(const std::string &cmd) {
 
 int main() {
     if (!std::getenv("DBUS_SESSION_BUS_ADDRESS")) {
-        std::puts("skip: no session bus (run under dbus-run-session)");
+        std::println("skip: no session bus (run under dbus-run-session)");
         return lmtest::kSkip;
     }
     if (!lmtest::haveFfmpeg()) {
-        std::puts("skip: no ffmpeg");
+        std::println("skip: no ffmpeg");
         return lmtest::kSkip;
     }
     const std::string dir = lmtest::fixtureDir("mpris");
@@ -441,7 +441,7 @@ int main() {
         run(pc + "stop");
         CHECK(c.waitFor([&] { return c.status() == "Stopped"; }));
     } else {
-        std::puts("note: playerctl not installed; skipping playerctl checks");
+        std::println("note: playerctl not installed; skipping playerctl checks");
     }
 
     // A file with a non-UTF-8 name and no tags: the title falls back to the file name, which
@@ -505,7 +505,7 @@ int main() {
         const int w0 = l2.wakeups;
         std::this_thread::sleep_for(2s); // daemon down: only backoff wakeups
         const int w1 = l2.wakeups;
-        std::printf("reconnect: %d wakeups in 2 s while the bus was down\n", w1 - w0);
+        std::println("reconnect: {} wakeups in 2 s while the bus was down", w1 - w0);
         CHECK(w1 - w0 < 20);
         dpid = startDaemon();
         CHECK(dpid > 0);
@@ -524,7 +524,7 @@ int main() {
         (void)kill(dpid, SIGTERM);
         (void)unlink(sock.c_str());
         (void)rmdir(sockDir.c_str());
-        (void)std::fputs(l2.logText().c_str(), stdout);
+        std::print("{}", l2.logText());
     }
     return lmtest::finish("test_mpris");
 }

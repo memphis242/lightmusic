@@ -10,9 +10,12 @@
 //   compile to nothing; the condition is not evaluated (keep it side-effect free).
 // - LM_ASSERT(cond, msg): on failure writes "file:line: assertion `cond' failed: msg"
 //   to stderr with write(2) and calls abort(). No allocation, no locks, no stdio, so it
-//   is usable from any thread and from signal handlers.
+//   is usable from any thread and from signal handlers. This is deliberately NOT
+//   std::print/std::format (lm/print.hpp): those allocate, take the FILE lock and can
+//   throw, none of which is allowed in a signal handler or after a broken invariant.
 // - LM_ASSERT_RT(cond): for the realtime audio callback. On failure it traps
-//   immediately (__builtin_trap): no I/O at all, nothing that could block.
+//   immediately (__builtin_trap): no I/O at all, nothing that could block (no
+//   formatting either: std::format allocates).
 // - LM_DEBUG_ONLY(x): expands to x only when assertions are active (for debug-only
 //   bookkeeping such as owner thread ids).
 #pragma once

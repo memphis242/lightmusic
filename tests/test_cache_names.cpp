@@ -13,7 +13,7 @@ using lm::net::slugComponent;
 #define CHECK_STR(a, b)                                                                                                \
     do {                                                                                                               \
         const std::string sa_ = (a), sb_ = (b);                                                                        \
-        if (sa_ != sb_) (void)std::fprintf(stderr, "  got \"%s\", want \"%s\"\n", sa_.c_str(), sb_.c_str());                 \
+        if (sa_ != sb_) std::println(stderr, "  got \"{}\", want \"{}\"", sa_, sb_);                 \
         CHECK(sa_ == sb_);                                                                                             \
     } while (0)
 

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <format>
 #include <stdexcept>
 
 namespace lm::server {
@@ -162,10 +163,9 @@ void Db::exec(const char *sql) {
 }
 
 std::string make_etag(std::int64_t size, std::int64_t mtime_ns) {
-    char b[64];
-    (void)std::snprintf(b, sizeof b, "\"%llx-%llx\"", static_cast<unsigned long long>(size),
-                  static_cast<unsigned long long>(mtime_ns));
-    return b;
+    // Unsigned: a (corrupt) negative value keeps the historical two's-complement hex.
+    return std::format("\"{:x}-{:x}\"", static_cast<unsigned long long>(size),
+                       static_cast<unsigned long long>(mtime_ns));
 }
 
 // ---------------------------------------------------------------- keys

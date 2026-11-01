@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <system_error>
 
 namespace fs = std::filesystem;
@@ -207,10 +208,8 @@ std::string displayName(std::string_view path) {
 std::string formatTime(double seconds) {
     if (!(seconds > 0)) seconds = 0;
     const long t = static_cast<long>(seconds);
-    char buf[32];
-    if (t >= 3600) (void)std::snprintf(buf, sizeof buf, "%ld:%02ld:%02ld", t / 3600, (t / 60) % 60, t % 60);
-    else (void)std::snprintf(buf, sizeof buf, "%ld:%02ld", t / 60, t % 60);
-    return buf;
+    if (t >= 3600) return std::format("{}:{:02}:{:02}", t / 3600, (t / 60) % 60, t % 60);
+    return std::format("{}:{:02}", t / 60, t % 60);
 }
 
 Command mapKey(std::string_view k) {
@@ -392,9 +391,7 @@ bool readKeyFile(const std::string &path, std::string &key, std::string &err) {
         err = "key file " + path + " is not owned by the current user";
         ok = false;
     } else if ((st.st_mode & 077) != 0) {
-        char mode[8];
-        (void)std::snprintf(mode, sizeof mode, "%04o", static_cast<unsigned>(st.st_mode & 07777));
-        err = "key file " + path + " has mode " + mode + "; refusing (chmod 600 " + path + ")";
+        err = std::format("key file {} has mode {:04o}; refusing (chmod 600 {})", path, st.st_mode & 07777, path);
         ok = false;
     } else {
         char buf[512];

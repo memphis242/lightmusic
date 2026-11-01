@@ -111,7 +111,7 @@ int main(int argc, char **argv) {
     if (argc < 2) return 2;
     std::string bin = argv[1];
     if (!lmtest::haveFfmpeg()) {
-        std::puts("ffmpeg missing: skipped");
+        std::println("ffmpeg missing: skipped");
         return lmtest::kSkip;
     }
     char tmpl[] = "/tmp/lm_e2e_XXXXXX";
@@ -126,7 +126,7 @@ int main(int argc, char **argv) {
               sh(ff + "-f lavfi -i color=c=red:s=16x16 -frames:v 1 \"" + lib + "/Album/cover.jpg\"");
     if (!ok) {
         fs::remove_all(tmp);
-        std::puts("ffmpeg could not create fixtures: skipped");
+        std::println("ffmpeg could not create fixtures: skipped");
         return lmtest::kSkip;
     }
 
@@ -248,7 +248,7 @@ int main(int argc, char **argv) {
     for (const char *bad : {"bytes=20-10", "bytes=abc", "bytes=-", "bytes 0-1", "items=0-5", "bytes=0-9,x"}) {
         r = get("/api/v1/stream/" + id, {{"Range", bad}});
         CHECK(r && r->status == 200 && r->body == file);
-        if (!r || r->status != 200) (void)std::fprintf(stderr, "  Range: %s -> %d\n", bad, r ? r->status : 0);
+        if (!r || r->status != 200) std::println(stderr, "  Range: {} -> {}", bad, r ? r->status : 0);
     }
     r = get("/api/v1/stream/" + id, {{"Range", "bytes= 10-19"}});  // httplib rejects; ours accepts
     CHECK(r && r->status == 206 && r->body == file.substr(10, 10));

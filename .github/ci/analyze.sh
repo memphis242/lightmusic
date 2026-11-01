@@ -26,7 +26,7 @@ case "$tool" in
   cppcheck)
     cppcheck --version
     cppcheck --project=build-analyze/compile_commands.json \
-      --enable=warning,performance,portability --std=c++20 \
+      --enable=warning,performance,portability --std=c++23 \
       --inline-suppr --suppressions-list=.cppcheck-suppressions \
       -i third_party -i build-analyze/_deps --library=posix \
       --check-level=exhaustive --error-exitcode=1 -j "$(nproc)" --quiet

@@ -1,9 +1,12 @@
 // Minimal test support: CHECK macros and ffmpeg fixture generation. No framework.
 #pragma once
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <print>
 #include <string>
 
 namespace lmtest {
@@ -13,7 +16,7 @@ namespace lmtest {
 inline std::string makeTempDir(char *tmpl) {
     const char *d = ::mkdtemp(tmpl);
     if (!d) {
-        std::perror("mkdtemp");
+        std::println(stderr, "mkdtemp: {}", std::strerror(errno));
         std::abort();
     }
     return d;
@@ -25,7 +28,7 @@ inline int g_failures = 0;
 #define CHECK(cond)                                                                                                    \
     do {                                                                                                               \
         if (!(cond)) {                                                                                                 \
-            (void)std::fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond);                              \
+            std::println(stderr, "{}:{}: CHECK failed: {}", __FILE__, __LINE__, #cond);                              \
             ++lmtest::g_failures;                                                                                      \
         }                                                                                                              \
     } while (0)
@@ -35,7 +38,7 @@ inline int g_failures = 0;
         const auto va_ = (a);                                                                                          \
         const auto vb_ = (b);                                                                                          \
         if (!(va_ == vb_)) {                                                                                           \
-            (void)std::fprintf(stderr, "%s:%d: CHECK_EQ failed: %s == %s (%lld vs %lld)\n", __FILE__, __LINE__, #a, #b,      \
+            std::println(stderr, "{}:{}: CHECK_EQ failed: {} == {} ({} vs {})", __FILE__, __LINE__, #a, #b,             \
                          static_cast<long long>(va_), static_cast<long long>(vb_));                                    \
             ++lmtest::g_failures;                                                                                      \
         }                                                                                                              \
@@ -45,15 +48,15 @@ inline int g_failures = 0;
     do {                                                                                                               \
         const double va_ = static_cast<double>(a), vb_ = static_cast<double>(b);                                                                      \
         if (!(va_ - vb_ <= (tol) && vb_ - va_ <= (tol))) {                                                             \
-            (void)std::fprintf(stderr, "%s:%d: CHECK_NEAR failed: %s ~ %s (%f vs %f, tol %f)\n", __FILE__, __LINE__, #a, #b, \
+            std::println(stderr, "{}:{}: CHECK_NEAR failed: {} ~ {} ({:f} vs {:f}, tol {:f})", __FILE__, __LINE__, #a, #b, \
                          va_, vb_, static_cast<double>(tol));                                                          \
             ++lmtest::g_failures;                                                                                      \
         }                                                                                                              \
     } while (0)
 
 inline int finish(const char *name) {
-    if (g_failures) (void)std::fprintf(stderr, "%s: %d check(s) failed\n", name, g_failures);
-    else std::printf("%s: OK\n", name);
+    if (g_failures) std::println(stderr, "{}: {} check(s) failed", name, g_failures);
+    else std::println("{}: OK", name);
     return g_failures ? 1 : 0;
 }
 

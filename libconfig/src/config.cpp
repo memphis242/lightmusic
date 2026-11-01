@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 
 namespace lm::config {
 
@@ -168,9 +169,7 @@ bool parseFloat(const Value &v, double lo, double hi, double &out, std::string &
         return false;
     }
     if (d < lo || d > hi) {
-        char buf[96];
-        (void)std::snprintf(buf, sizeof buf, "%g is out of range (%g..%g)", d, lo, hi);
-        err = buf;
+        err = std::format("{:g} is out of range ({:g}..{:g})", d, lo, hi);
         return false;
     }
     out = d;
@@ -257,8 +256,7 @@ bool checkConfigDir(const std::string &dir, std::string &err) {
         return false;
     }
     if ((st.st_mode & 022) && !(st.st_mode & S_ISVTX)) {
-        char mode[8];
-        (void)std::snprintf(mode, sizeof mode, "%04o", static_cast<unsigned>(st.st_mode & 07777));
+        const std::string mode = std::format("{:04o}", st.st_mode & 07777);
         err = "is in directory " + dir + ", which is group/world-writable (mode " + mode +
               ") without the sticky bit; refusing to use it (chmod go-w " + dir + ")";
         return false;
@@ -309,10 +307,9 @@ bool readConfigFile(const std::string &path, const FilePolicy &policy, std::stri
     if (!S_ISREG(st.st_mode)) return err("not a regular file");
     if (st.st_uid != ::geteuid() && !(policy.allowRootOwned && st.st_uid == 0))
         return err("not owned by the current user; refusing to read it");
-    char mode[8];
-    (void)std::snprintf(mode, sizeof mode, "%04o", static_cast<unsigned>(st.st_mode & 07777));
+    const std::string mode = std::format("{:04o}", st.st_mode & 07777);
     if (st.st_mode & 022)
-        return err(std::string("is group/world-writable (mode ") + mode + "); refusing to read it (chmod go-w " + path +
+        return err("is group/world-writable (mode " + mode + "); refusing to read it (chmod go-w " + path +
                    ")");
     if (policy.warnReadable && (st.st_mode & 044)) {
         Diag d;

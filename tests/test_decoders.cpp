@@ -28,7 +28,7 @@ static void decodeCase(const std::string &dir, const Case &c) {
     // Deliberately misleading extension: detection must use magic bytes.
     const std::string path = dir + "/" + c.name + ".bin";
     if (!lmtest::makeTone(path, c.rate, c.samples, 440, c.args)) {
-        (void)std::fprintf(stderr, "ffmpeg could not make %s (encoder missing?)\n", path.c_str());
+        std::println(stderr, "ffmpeg could not make {} (encoder missing?)", path);
         ++lmtest::g_failures;
         return;
     }
@@ -36,15 +36,14 @@ static void decodeCase(const std::string &dir, const Case &c) {
     auto d = lm::openDecoderForFile(path, &err);
     CHECK(d != nullptr);
     if (!d) {
-        (void)std::fprintf(stderr, "%s: %s\n", c.name, err.c_str());
+        std::println(stderr, "{}: {}", c.name, err);
         return;
     }
     CHECK(d->format() == c.fmt);
     CHECK_EQ(d->sampleRate(), static_cast<std::uint32_t>(c.rate));
     CHECK_EQ(d->channels(), 2u);
     const std::uint64_t n = countFrames(*d);
-    std::printf("  %-6s frames=%llu expected=%ld total=%llu\n", c.name, static_cast<unsigned long long>(n), c.samples,
-                static_cast<unsigned long long>(d->totalFrames()));
+    std::println("  {:<6} frames={} expected={} total={}", c.name, n, c.samples, d->totalFrames());
     CHECK_EQ(n, static_cast<std::uint64_t>(c.samples)); // gapless: delay/padding trimmed
     CHECK_EQ(d->totalFrames(), static_cast<std::uint64_t>(c.samples));
 
@@ -173,7 +172,7 @@ static void parsers() {
 int main() {
     parsers();
     if (!lmtest::haveFfmpeg()) {
-        std::puts("test_decoders: ffmpeg not found, skipping fixture tests");
+        std::println("test_decoders: ffmpeg not found, skipping fixture tests");
         return lmtest::g_failures ? 1 : lmtest::kSkip;
     }
     const std::string dir = lmtest::fixtureDir("decoders");

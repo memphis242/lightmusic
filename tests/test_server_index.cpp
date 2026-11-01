@@ -83,7 +83,7 @@ static void test_safe_open(const std::string &tmp) {
                                 "dir/../dir/sub/f.mp3", "/etc/passwd", "dir//sub/f.mp3", "", "dir/sub/./f.mp3"}) {
             int f = open_beneath(rfd, bad, walk);
             if (f >= 0) {
-                (void)std::fprintf(stderr, "opened %s (walk=%d)\n", bad, int(walk));
+                std::println(stderr, "opened {} (walk={})", bad, int(walk));
                 (void)::close(f);
             }
             CHECK(f < 0);
@@ -142,7 +142,7 @@ static std::int64_t tombstones(Db &db, std::int64_t id) {
 
 int main() {
     if (!lmtest::haveFfmpeg()) {
-        std::puts("ffmpeg missing: skipped");
+        std::println("ffmpeg missing: skipped");
         return lmtest::kSkip;
     }
     char tmpl[] = "/tmp/lm_index_XXXXXX";
@@ -157,7 +157,7 @@ int main() {
               gen("d.ogg", "Delta", "Second", "-c:a libvorbis -f ogg") &&
               gen("e.mp3", "Echo", "Third", "-c:a libmp3lame -f mp3");
     if (!ok) {
-        std::puts("ffmpeg could not encode fixtures: skipped");
+        std::println("ffmpeg could not encode fixtures: skipped");
         fs::remove_all(tmp);
         return lmtest::kSkip;
     }
@@ -257,7 +257,7 @@ int main() {
 
     // 6. watcher
     Watcher wat(ix, Watcher::Options{std::chrono::milliseconds(50), std::chrono::milliseconds(500), true});
-    wat.log = [](const std::string &s) { (void)std::fprintf(stderr, "watcher: %s\n", s.c_str()); };
+    wat.log = [](const std::string &s) { std::println(stderr, "watcher: {}", s); };
     wat.start();
     CHECK(wait_for([&] { return wat.ready(); }));
     CHECK(wat.watch_count() >= 3u);  // lib, A, B

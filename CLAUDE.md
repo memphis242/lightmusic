@@ -1,6 +1,6 @@
 # lightmusic: working notes for Claude
 
-C++20 music player (libplayer, libconfig, libnet, lightmusicd server, FTXUI TUI). Target
+C++23 music player (libplayer, libconfig, libnet, lightmusicd server, FTXUI TUI). Target
 platform: Fedora 43 (gcc 15, clang 21). See README.md for the user-facing docs.
 
 ## Coding principles
@@ -37,8 +37,7 @@ platform: Fedora 43 (gcc 15, clang 21). See README.md for the user-facing docs.
    hits inside libstdc++ headers), with that reason written next to it. -Werror (CI)
    applies to both sets.
 7. **Check every return value**, especially of system calls: handle the error, or, where
-   ignoring it is truly correct (diagnostic printf/fprintf, best-effort cleanup close or
-   unlink), discard it explicitly with `(void)` plus a brief comment when not obvious.
+   ignoring it is truly correct (best-effort cleanup close or unlink), discard it explicitly with `(void)` plus a brief comment when not obvious.
    Our own functions whose result matters are `[[nodiscard]]`. Enforced by cert-err33-c,
    bugprone-unused-return-value (CheckedFunctions widened to POSIX/sqlite/curl calls in
    `.clang-tidy`) and `-Wunused-result`, in app and test code.
@@ -71,15 +70,25 @@ platform: Fedora 43 (gcc 15, clang 21). See README.md for the user-facing docs.
    (no I/O, traps). Active without `NDEBUG` or with `-DLM_ASSERTS=ON`; keep conditions
    side-effect free. Never assert on untrusted input: audio files/tags, network data and
    config get proper error handling in every build.
-10. **Behaviour stays unchanged when fixing warnings**: run the full test suite after each
+10. **Output** (`include/lm/print.hpp`, README "Output"): C++23 `std::format` /
+   `std::print`, never printf/snprintf/puts/fputs/perror or iostreams in app code
+   (clang-tidy: modernize-use-std-print, bugprone-unsafe-functions.CustomFunctions).
+   `std::print` throws on a failed write, so: best-effort diagnostics use
+   `lm::diag`/`lm::diagln` (failure swallowed and counted, noexcept); output that matters
+   (keys, listings for scripts) uses `[[nodiscard]] lm::out`/`lm::outln` + `lm::flushOut`
+   and fails loudly. Use `std::format_to`/`std::format_to_n` into an existing
+   string/buffer to avoid extra allocations. Signal handlers, LM_ASSERT/LM_ASSERT_RT and
+   the realtime audio callback keep `write(2)` or no I/O (formatting allocates, stdio
+   locks). Tests may use `std::println` directly.
+11. **Behaviour stays unchanged when fixing warnings**: run the full test suite after each
    batch of fixes.
-11. Do not modify `third_party/` (vendored; see third_party/VERSIONS.md).
+12. Do not modify `third_party/` (vendored; see third_party/VERSIONS.md).
 
 Decisions recorded:
-- `-Wuseless-cast` (gcc) is off for app and tests: re-evaluated for app code, all 21 hits
+- `-Wuseless-cast` (gcc) is off for app and tests: re-evaluated for app code, all hits
   are casts between types identical only on LP64 glibc (uint64_t ring positions ->
-  size_t, time_t/off_t -> int64_t, off_t -> long for vorbisfile, mode_t -> unsigned for
-  printf); they are required for 32-bit and Windows (planned) under -Wconversion.
+  size_t, time_t/off_t -> int64_t, off_t -> long for vorbisfile; the mode_t -> unsigned
+  printf casts went away with std::format); they are required for 32-bit and Windows (planned) under -Wconversion.
 - gcc's `-Wnull-dereference` is ON for app code (no hits) and off for tests only: there
   gcc reports paths inlined from libstdc++ (`streambuf::gptr/egptr` via
   istreambuf_iterator in test file readers). clang's is on for both.
@@ -120,7 +129,7 @@ CC=clang CXX=clang++ cmake -S . -B build-casan -G Ninja -DCMAKE_BUILD_TYPE=Debug
 CC=clang CXX=clang++ cmake -S . -B build-analyze -G Ninja -DCMAKE_BUILD_TYPE=Debug
 run-clang-tidy -p build-analyze -quiet '^(?!.*(/third_party/|/_deps/)).*\.cpp$'
 cppcheck --project=build-analyze/compile_commands.json --enable=warning,performance,portability \
-  --std=c++20 --inline-suppr --suppressions-list=.cppcheck-suppressions -i third_party \
+  --std=c++23 --inline-suppr --suppressions-list=.cppcheck-suppressions -i third_party \
   -i build-analyze/_deps --library=posix --check-level=exhaustive --error-exitcode=1 --quiet
 
 # Reproduce a CI job exactly

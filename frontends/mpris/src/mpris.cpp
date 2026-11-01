@@ -1,6 +1,8 @@
 // MPRIS 2 server over plain sd-bus. See lm/mpris.hpp for the threading contract.
 #include "lm/mpris.hpp"
 
+#include "lm/print.hpp"
+
 #include <systemd/sd-bus.h>
 
 #include <algorithm>
@@ -377,7 +379,7 @@ struct Server::Impl {
     // ---- connection lifecycle ----
     void log(const std::string &msg) {
         if (logger) logger(msg);
-        else (void)std::fprintf(stderr, "%s\n", msg.c_str());
+        else lm::diagln(stderr, "{}", msg);
     }
     void logOnce(bool &flag, const char *what, int r) {
         if (flag) return;

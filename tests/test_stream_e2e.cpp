@@ -143,11 +143,11 @@ std::size_t mismatches(const std::vector<float> &a, const std::vector<float> &b)
 int main() {
     const char *bin = std::getenv("LM_SERVER_BIN");
     if (!bin) {
-        std::puts("LM_SERVER_BIN not set: skipped");
+        std::println("LM_SERVER_BIN not set: skipped");
         return lmtest::kSkip;
     }
     if (!lmtest::haveFfmpeg()) {
-        std::puts("ffmpeg missing: skipped");
+        std::println("ffmpeg missing: skipped");
         return lmtest::kSkip;
     }
     char tmpl[] = "/tmp/lm_stream_e2e_XXXXXX";
@@ -167,7 +167,7 @@ int main() {
                       "album=Record -metadata artist=Band -metadata track=3 -c:a flac \"" + c + "\"");
     if (!ok) {
         fs::remove_all(tmp);
-        std::puts("ffmpeg could not create fixtures: skipped");
+        std::println("ffmpeg could not create fixtures: skipped");
         return lmtest::kSkip;
     }
     std::string key;
@@ -186,7 +186,7 @@ int main() {
     cc.serverUrl = "http://127.0.0.1:" + std::to_string(srv.port);
     cc.apiKey = key;
     cc.cacheDir = cache;
-    if (std::getenv("LM_TEST_VERBOSE")) cc.log = [](const std::string &s) { (void)std::fprintf(stderr, "  [client] %s\n", s.c_str()); };
+    if (std::getenv("LM_TEST_VERBOSE")) cc.log = [](const std::string &s) { std::println(stderr, "  [client] {}", s); };
 
     std::vector<std::int64_t> ids;
     const auto expect = [&] {
@@ -217,8 +217,7 @@ int main() {
         Recorder rec;
         lm::PlayerState st;
         const auto got = play(*client, {lm::net::Client::trackUri(ids[0]), lm::net::Client::trackUri(ids[1])}, rec, &st);
-        std::printf("  streamed: %zu frames (expected %zu), underruns %llu\n", got.size() / 2, expect.size() / 2,
-                    static_cast<unsigned long long>(st.underruns));
+        std::println("  streamed: {} frames (expected {}), underruns {}", got.size() / 2, expect.size() / 2, st.underruns);
         CHECK_EQ(mismatches(got, expect), 0u);
         CHECK_EQ(rec.count(lm::EventType::Error), 0u);
         CHECK(st.track.path.empty() || st.track.path.rfind("lm://", 0) == 0);
@@ -228,7 +227,7 @@ int main() {
         // The cached files are the server's bytes.
         auto e0 = client->cacheEntry(ids[0]);
         CHECK(e0 && fs::file_size(e0->file) == fs::file_size(a));
-        std::printf("  downloaded %llu bytes\n", static_cast<unsigned long long>(client->stats().downloaded));
+        std::println("  downloaded {} bytes", client->stats().downloaded);
     }
     stopServer(srv);
     {
@@ -246,8 +245,7 @@ int main() {
                                lm::net::Client::trackUri(ids[1])},
                               rec);
         const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        std::printf("  offline: %zu frames, %zu error(s), %.1f s\n", got.size() / 2,
-                    rec.count(lm::EventType::Error), sec);
+        std::println("  offline: {} frames, {} error(s), {:.1f} s", got.size() / 2, rec.count(lm::EventType::Error), sec);
         CHECK_EQ(mismatches(got, expect), 0u); // the uncached track is skipped
         CHECK_EQ(rec.count(lm::EventType::Error), 1u);
         CHECK_EQ(client->stats().downloaded, 0u);

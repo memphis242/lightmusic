@@ -11,6 +11,7 @@ function(lm_test name)
 endfunction()
 
 lm_test(test_ring)
+lm_test(test_print)
 # Assertion facility death tests: header-only (no lm::player, so forcing assertions on
 # here cannot give inline functions two definitions), on in every build type.
 add_executable(test_assert test_assert.cpp)

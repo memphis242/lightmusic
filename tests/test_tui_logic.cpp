@@ -60,7 +60,7 @@ static void testCollect() {
                                            l + "/cd2/1 one.opus", l + "/cd10/1 one.ogg"};
     CHECK(got == want);
     if (got != want)
-        for (auto &g : got) (void)std::fprintf(stderr, "  got %s\n", g.c_str());
+        for (auto &g : got) std::println(stderr, "  got {}", g);
     CHECK_EQ(errors.size(), 1u);
     if (!errors.empty()) CHECK(errors[0].find("No such file") != std::string::npos);
 

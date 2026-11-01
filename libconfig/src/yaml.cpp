@@ -16,7 +16,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
+#include <format>
+#include <iterator>
 #include <map>
 #include <set>
 #include <sstream>
@@ -381,9 +382,7 @@ std::string doubleQuoted(const std::string &v) {
         else if (ch == '\n') r += "\\n";
         else if (ch == '\t') r += "\\t";
         else if (c < 0x20 || c == 0x7f) {
-            char b[8];
-            (void)std::snprintf(b, sizeof b, "\\x%02x", c);
-            r += b;
+            std::format_to(std::back_inserter(r), "\\x{:02x}", c);
         } else r += ch;
     }
     return r + "\"";

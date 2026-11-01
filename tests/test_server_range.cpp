@@ -11,9 +11,7 @@ static void expect(const char *h, std::uint64_t size, K kind, std::uint64_t firs
     ByteRange r = parse_range(h, size);
     bool ok = r.kind == kind && (kind != K::Satisfiable || (r.first == first && r.last == last));
     if (!ok) {
-        (void)std::fprintf(stderr, "line %d: '%s' size %llu -> kind %d %llu-%llu\n", line, h,
-                     static_cast<unsigned long long>(size), int(r.kind), static_cast<unsigned long long>(r.first),
-                     static_cast<unsigned long long>(r.last));
+        std::println(stderr, "line {}: '{}' size {} -> kind {} {}-{}", line, h, size, int(r.kind), r.first, r.last);
         ++lmtest::g_failures;
     }
 }
