@@ -901,7 +901,7 @@ void playOrder(const std::string &dir) {
     }
     {
         // Gapless across a repeat-all wrap: a b a b ..., sample-exact.
-        const std::string a = shortTracks[0], b = shortTracks[1];
+        const std::string &a = shortTracks[0], &b = shortTracks[1];
         const auto av = decodeAll(a), bv = decodeAll(b);
         std::vector<float> expect;
         for (int r = 0; r < 2; r++) {
