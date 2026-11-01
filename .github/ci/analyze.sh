@@ -22,6 +22,20 @@ case "$tool" in
   clang-tidy)
     clang-tidy --version
     run-clang-tidy -p build-analyze -j "$(nproc)" -quiet "$src_regex"
+    # Canary: prove the printf-family ban (bugprone-unsafe-functions.CustomFunctions in
+    # .clang-tidy) is really applied. An unknown/ignored option would otherwise pass silently.
+    canary=build-analyze/lm_tidy_canary.cpp
+    printf '#include <cstdio>\nvoid lm_canary(char *b, unsigned long n) { (void)std::snprintf(b, n, "%%d", 1); (void)std::puts("x"); }\n' > "$canary"
+    out=$(clang-tidy --config-file=.clang-tidy --checks='-*,bugprone-unsafe-functions' "$canary" -- -std=c++23 2>&1 || true)
+    # (the check's default list has neither function, so a hit proves CustomFunctions works)
+    for fn in snprintf puts; do
+      if ! grep -q "'$fn'.*\[bugprone-unsafe-functions\]" <<<"$out"; then
+        echo "clang-tidy did not flag $fn: bugprone-unsafe-functions.CustomFunctions is not applied" >&2
+        echo "$out" >&2
+        exit 1
+      fi
+    done
+    echo "clang-tidy canary: printf-family ban is active"
     ;;
   cppcheck)
     cppcheck --version
