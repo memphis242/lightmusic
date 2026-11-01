@@ -211,8 +211,18 @@ void ifRangeRestart() {
     srv.setTrack(1, v2, "\"v2\"");
     {
         std::string err;
+        // Opening a reader starts a read-ahead fetch for the hole at once. Hold the
+        // server's answer until this reader has taken bytes from the cached v1 prefix:
+        // otherwise (e.g. under CPU load) the 200 for v2 can restart the entry before the
+        // first read, and the reader then correctly serves v2 whole instead.
+        srv.hold = true;
         auto s = c->openTrack(1, &err);
-        const std::string got = readAll(*s);
+        std::string got(1000, '\0');
+        const std::size_t first = s->read(got.data(), got.size());
+        srv.hold = false;
+        CHECK_EQ(first, got.size());
+        got.resize(first);
+        got += readAll(*s);
         // Cached v1 bytes were delivered before the server answered 200 for the hole:
         // this reader must fail rather than splice v2 onto v1.
         CHECK(got.size() < v1.size());
@@ -444,7 +454,9 @@ void hotSettings() {
     auto cfg = baseCfg(srv.url(), dir);
     cfg.cacheMaxBytes = 1000000;
     cfg.backgroundFill = false;
-    cfg.capTrimDelayMs = 300;
+    // Generous: the transient shrink below is undone by the very next call, which must
+    // land within this delay even on a loaded machine under TSan.
+    cfg.capTrimDelayMs = 2000;
     auto c = open(cfg);
     CHECK(c && syncOk(*c));
     if (!c) return;
@@ -461,12 +473,12 @@ void hotSettings() {
     CHECK(c->stats().cap == 400000);
     CHECK(c->stats().usage == 600000); // not at once
     c->setCacheSettings(1000000, false, false);
-    std::this_thread::sleep_for(600ms);
+    std::this_thread::sleep_for(2500ms); // past the trim delay: the raise cancelled it
     CHECK(c->stats().usage == 600000);
     CHECK(state(1) == CacheState::Cached && state(2) == CacheState::Cached);
     c->setCacheSettings(400000, false, false); // a real shrink: evicts after the delay
     CHECK(c->stats().cap == 400000);
-    CHECK(waitUntil([&] { return c->stats().usage <= 400000; }, 3s));
+    CHECK(waitUntil([&] { return c->stats().usage <= 400000; }, 15s));
     CHECK(state(1) == CacheState::Remote || state(2) == CacheState::Remote);
     // Turning the fill off stops a running idle fetch.
     srv.bytesPerSec = 100000;
@@ -1178,6 +1190,47 @@ void renameCrash() {
     fs::remove_all(dir);
 }
 
+// Regression: releasing an entry while a cap shrink is still pending must not evict at
+// once (released() used to trim to the current cap, bypassing capTrimDelayMs), so a
+// shrink undone within the delay evicts nothing.
+void trimOnRelease() {
+    FakeServer srv;
+    const std::string a = FakeServer::randomBytes(300000, 61), b = FakeServer::randomBytes(300000, 62);
+    srv.setTrack(1, a, "\"r1\"");
+    srv.setTrack(2, b, "\"r2\"");
+    const std::string dir = tempDir("trimrelease");
+    auto cfg = baseCfg(srv.url(), dir);
+    cfg.cacheMaxBytes = 1000000;
+    cfg.backgroundFill = false;
+    cfg.capTrimDelayMs = 2000;
+    auto c = open(cfg);
+    CHECK(c && syncOk(*c));
+    if (!c) return;
+    for (int id : {1, 2}) {
+        std::string err;
+        auto s = c->openTrack(id, &err);
+        CHECK(s && readAll(*s).size() == 300000);
+    }
+    CHECK(waitUntil([&] {
+        return c->cacheInfo(1).state == CacheState::Cached && c->cacheInfo(2).state == CacheState::Cached;
+    }, 10s));
+    {
+        std::string err;
+        auto s = c->openTrack(1, &err); // holds track 1 across the shrink
+        CHECK(s != nullptr);
+        c->setCacheSettings(400000, false, false);
+    } // last reference dropped while the trim is pending
+    // Let the release be handled on the network thread (still well inside the delay).
+    std::this_thread::sleep_for(500ms);
+    CHECK_EQ(c->stats().usage, 600000u); // nothing evicted before the delay
+    c->setCacheSettings(1000000, false, false); // undone within the delay
+    std::this_thread::sleep_for(2500ms);       // past the delay
+    CHECK_EQ(c->stats().usage, 600000u);
+    CHECK(c->cacheInfo(1).state == CacheState::Cached && c->cacheInfo(2).state == CacheState::Cached);
+    c.reset();
+    fs::remove_all(dir);
+}
+
 // Default cap is 1 GB.
 void defaultCap() {
     lm::net::ClientConfig c;
@@ -1228,7 +1281,7 @@ int main(int argc, char **argv) {
         {"pincap", pinCapOnInvalidation}, {"loopback", loopbackWarning},
         {"names", namesAndCollisions},   {"rename", renameOnSync},          {"migrate", migrateOldLayout},
         {"renamecrash", renameCrash},
-        {"hot", hotSettings},            {"diskfloor", diskFloor},          {"defaultcap", defaultCap},
+        {"hot", hotSettings},            {"trimrelease", trimOnRelease},            {"diskfloor", diskFloor},          {"defaultcap", defaultCap},
     };
     for (auto &[name, fn] : tests) {
         if (!only.empty() && only != name) continue;

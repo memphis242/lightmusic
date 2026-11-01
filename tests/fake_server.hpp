@@ -80,6 +80,7 @@ public:
 
     std::atomic<std::size_t> bytesPerSec{0}; // 0 = unthrottled
     std::atomic<bool> stall{false};          // stream handlers send nothing while set
+    std::atomic<bool> hold{false};           // stream handlers do not answer at all (no head) while set
     std::atomic<int> streams{0};
     std::atomic<int> activeStreams{0};       // stream responses still being sent
     std::atomic<std::uint64_t> sent{0};
@@ -134,6 +135,7 @@ private:
         // the provider's output a second time.
         const_cast<httplib::Request &>(q).ranges.clear();
         if (!authorized(q, r)) return;
+        while (hold) std::this_thread::sleep_for(std::chrono::milliseconds(5));
         const std::int64_t id = std::stoll(q.matches[1].str());
         FakeTrack t;
         {

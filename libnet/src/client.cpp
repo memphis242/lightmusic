@@ -278,6 +278,9 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     std::optional<bool> metered;
     Clock::time_point meteredAt{};
     std::optional<Clock::time_point> trimAt; // pending lazy eviction after a cap shrink
+    // Cap shrinks announced by setCacheSettings() whose trimAt is not set yet (the cap
+    // itself changes at once, on the caller's thread).
+    std::atomic<int> shrinksInFlight{0};
     bool meteredLogged = false;
 
     void log(const std::string &s) {
@@ -670,7 +673,9 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             auto row = db.entry(id);
             auto t = db.track(id);
             if (row && (!t || t->etag != row->etag || !strongEtag(row->etag))) removeEntryLocked(id);
-            makeRoomLocked(0, -1);
+            // A cap shrink still waiting out capTrimDelayMs is trimmed by the loop when the
+            // delay ends (or never, if the cap is raised first): do not evict early here.
+            if (!trimAt && shrinksInFlight.load() == 0) makeRoomLocked(0, -1);
         });
     }
 
@@ -1690,7 +1695,11 @@ bool Client::pin(std::int64_t id, bool pinned, std::string *err) {
 void Client::setCacheSettings(std::uint64_t capBytes, bool backgroundFill, bool pauseOnMetered) {
     auto &c = *core_;
     if (c.stopping) return;
+    // Announce a possible shrink before the cap changes, so released() never sees the
+    // lower cap without a pending trim; undone below if it was not a shrink.
+    c.shrinksInFlight++;
     const bool shrink = capBytes < c.capBytes.exchange(capBytes);
+    if (!shrink) c.shrinksInFlight--;
     c.fillOn = backgroundFill;
     c.pauseMetered = pauseOnMetered;
     // NetThread::post() is a no-op once the loop is stopping (checked under its lock), and
@@ -1698,7 +1707,10 @@ void Client::setCacheSettings(std::uint64_t capBytes, bool backgroundFill, bool 
     c.net->post([w = std::weak_ptr<Core>(core_), shrink] {
         auto core = w.lock();
         if (!core || core->stopping) return;
-        if (shrink) core->trimAt = Clock::now() + std::chrono::milliseconds(core->cfg.capTrimDelayMs);
+        if (shrink) {
+            core->trimAt = Clock::now() + std::chrono::milliseconds(core->cfg.capTrimDelayMs);
+            core->shrinksInFlight--;
+        }
         if (!core->fillOn.load() && core->idleEntry && !core->reading.count(core->idleEntry->id)) core->cancelIdle();
         core->schedule();
     });
