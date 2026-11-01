@@ -57,7 +57,24 @@ inserts that much silence between tracks (`playback.gap_seconds`).
 | ← / → | seek −5 s / +5 s | g G Home End PgUp PgDn | jump selection |
 | + / - | volume ±5 % | ? / Esc | help / close help |
 | r | repeat: off → all → one | s | shuffle on / off |
+| a / A | queue selected / play it next | v | show the queue (up next) |
 | P | save offline (remote tracks) | q | quit (also Ctrl-C) |
+
+In the queue pane (`v`): `j`/`k` select, `J`/`K` move the entry down/up, `d` or Delete
+removes it, `c` clears the queue, `enter` plays it now, `Esc`/`v` returns to the list.
+
+**User queue ("up next")** (`a`, `A`, `v`). The list you started (the folder, album or
+library: the *context*) and your own queue are kept apart. Queued tracks play before
+the context continues, in queue order, each once: a track leaves the queue when it
+starts. When the queue is empty the context carries on after the context track that
+played last, so queued tracks are an interlude, not a jump. `a` adds the selected row
+at the end, `A` puts it first ("play next"); rows in the queue show their place
+(`+1` plays next) and the status line counts them (`up next 2`). Shuffle and repeat-all
+apply to the context only (the queue is never shuffled or repeated); repeat-one repeats
+whatever track is playing, a queued one too. `p` on a queued track goes back to the
+context track before it; `enter` on a list row plays it without clearing the queue.
+Remote queued tracks are prefetched first. (`Player::queueAdd()` also takes tracks that
+are not in the context; the browser uses that.)
 
 **Repeat and shuffle** (`r`, `s`, `playback.repeat`, `playback.shuffle`, MPRIS
 `LoopStatus`/`Shuffle`; the status line shows `repeat`, `repeat one`, `shuffle`). Repeat
@@ -476,7 +493,7 @@ busctl --user introspect org.mpris.MediaPlayer2.lightmusic /org/mpris/MediaPlaye
 
 Supported: `org.mpris.MediaPlayer2` (Identity, Quit — exits the TUI cleanly, Raise is a
 no-op with CanRaise=false, no TrackList) and `org.mpris.MediaPlayer2.Player` (Play, Pause,
-PlayPause, Stop, Next, Previous, Seek, SetPosition, PlaybackStatus, Metadata, Position,
+PlayPause, Stop, Next (the user queue first), Previous, Seek, SetPosition, PlaybackStatus, Metadata, Position,
 Volume, LoopStatus (`None`/`Track`/`Playlist` = repeat off/one/all) and Shuffle, both
 writable, Rate fixed at 1.0, Can*; CanGoNext follows repeat/shuffle). `OpenUri` is not
 supported. PropertiesChanged is sent for status, track, volume, loop and shuffle changes (not Position, per the spec) and `Seeked` after seeks.

@@ -170,6 +170,27 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (repeat/shuffle run)"; cat "$f"; fail=1
 done
+# User queue: a queues the selected row (shown as +1 and "up next 1"), v opens the
+# queue pane, J/K/d edit it, enter plays a queued track now, esc goes back.
+: > "$TMP/log7"
+wl() { n=200; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log7"; do sleep 0.05; n=$((n - 1)); done; }
+{ wl Playing
+  printf j; sleep 0.1; printf j; sleep 0.1; printf a; wl "queued: 10 Tenth"
+  printf k; sleep 0.1; printf A; wl "plays next: 2 Second"
+  printf v; wl "Up next: 2 tracks"
+  printf J; sleep 0.2; printf d; wl "Up next: 1 track"
+  printf '\r'; wl "Up next: 0 tracks"
+  printf '\033'; sleep 0.3; printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+    timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log7" >/dev/null 2>&1
+rc=$?
+[ $rc -eq 0 ] || { echo "FAIL: queue run exit status $rc"; tail -c 1000 "$TMP/log7" | cat -v; fail=1; }
+for want in "queued: 10 Tenth" "+1 " "up next 1" "plays next: 2 Second" "Up next: 2 tracks" "Up next: 1 track" "Up next: 0 tracks"; do
+    grep -q -- "$want" "$TMP/log7" || { echo "FAIL: queue run: '$want' never shown"; fail=1; }
+done
+for f in "$TMP"/san*; do
+    [ -e "$f" ] || continue
+    echo "FAIL: sanitizer report $f (queue run)"; cat "$f"; fail=1
+done
 # A group-writable cfg.yaml is refused before the terminal is touched.
 chmod 620 "$CFG"
 out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?

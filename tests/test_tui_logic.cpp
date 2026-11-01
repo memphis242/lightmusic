@@ -115,6 +115,22 @@ static void testKeys() {
     CHECK(lmtui::mapKey("r") == Command::CycleRepeat);
     CHECK(lmtui::mapKey("s") == Command::ToggleShuffle);
     CHECK(lmtui::mapKey("R") == Command::None);
+    CHECK(lmtui::mapKey("a") == Command::QueueAdd);
+    CHECK(lmtui::mapKey("A") == Command::QueuePlayNext);
+    CHECK(lmtui::mapKey("v") == Command::ToggleQueueView);
+    CHECK(lmtui::mapKey("J") == Command::None);
+    CHECK(lmtui::mapKey("d") == Command::None);
+    CHECK(lmtui::mapQueueKey("J") == Command::QueueMoveDown);
+    CHECK(lmtui::mapQueueKey("K") == Command::QueueMoveUp);
+    CHECK(lmtui::mapQueueKey("d") == Command::QueueRemove);
+    CHECK(lmtui::mapQueueKey("delete") == Command::QueueRemove);
+    CHECK(lmtui::mapQueueKey("c") == Command::QueueClear);
+    CHECK(lmtui::mapQueueKey("escape") == Command::ToggleQueueView);
+    CHECK(lmtui::mapQueueKey("v") == Command::ToggleQueueView);
+    CHECK(lmtui::mapQueueKey("a") == Command::None);
+    CHECK(lmtui::mapQueueKey("j") == Command::SelectDown);
+    CHECK(lmtui::mapQueueKey("enter") == Command::PlaySelected);
+    CHECK(lmtui::mapQueueKey(" ") == Command::TogglePause);
     CHECK_EQ(lmtui::nextRepeat(0), 1);
     CHECK_EQ(lmtui::nextRepeat(1), 2);
     CHECK_EQ(lmtui::nextRepeat(2), 0);
@@ -142,6 +158,7 @@ static void testKeyParser() {
     CHECK(p.feed("\x1b[A\x1b[B\x1b[C\x1b[D") == (V{"up", "down", "right", "left"}));
     CHECK(p.feed("\x1bOA\x1bOH\x1b[F") == (V{"up", "home", "end"}));
     CHECK(p.feed("\x1b[5~\x1b[6~\x1b[1~\x1b[4~") == (V{"pageup", "pagedown", "home", "end"}));
+    CHECK(p.feed("\x1b[3~") == (V{"delete"}));
     CHECK(p.feed("\x1b[1;5C") == (V{"right"}));   // Ctrl-Right -> right
     CHECK(p.feed("\x1b[200~x").size() == 1);     // unknown sequence dropped, x kept
     CHECK(p.feed("\r\n\x03") == (V{"enter", "enter", "ctrl-c"}));

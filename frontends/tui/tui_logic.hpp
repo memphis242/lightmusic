@@ -59,12 +59,23 @@ enum class Command {
     TogglePin, // remote tracks: keep offline (never evicted, filled in the background)
     CycleRepeat,   // off -> all -> one -> off
     ToggleShuffle,
+    QueueAdd,        // selected row -> end of the user queue
+    QueuePlayNext,   // selected row -> front of the user queue
+    ToggleQueueView, // show/focus the user queue pane, or back to the list
+    QueueMoveUp,     // queue pane only (mapQueueKey)
+    QueueMoveDown,
+    QueueRemove,
+    QueueClear,
 };
 
 // Maps a key name to a command. Printable keys are the character itself (" " for
 // space); special keys use: left right up down enter escape home end pageup pagedown
-// ctrl-c ctrl-z.
+// delete ctrl-c ctrl-z.
 Command mapKey(std::string_view key);
+// Keys while the queue pane has the focus: J/K move the selected entry, d/delete remove
+// it, c clears the queue, esc closes the pane; a/A do nothing; everything else as
+// mapKey() (j/k/enter/... act on the queue selection).
+Command mapQueueKey(std::string_view key);
 
 constexpr double kSeekStep = 5.0;
 constexpr float kVolumeStep = 0.05f;

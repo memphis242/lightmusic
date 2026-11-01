@@ -130,6 +130,19 @@ struct Marker {
     int index = -1;
     std::uint64_t startFrame = 0; // track frame at ringFrame (non-zero after a seek)
     TrackInfo info;
+    int ctx = -1;          // context entry this play belongs to (see Pick)
+    bool user = false;     // played from the user queue
+    bool consumes = false; // leaves the user queue (upNext.front()) once audible
+};
+
+// A choice of what to play: queue entry `idx` (-1: none), the context entry `ctx` the
+// context continues after (== idx for a context track; the context track played before
+// it for a user-queue track), and whether it comes from (and is taken off) the user queue.
+struct Pick {
+    int idx = -1;
+    int ctx = -1;
+    bool user = false;
+    bool consumes = false;
 };
 
 TrackInfo infoFor(const std::string &path, const Decoder &d) {
@@ -145,11 +158,15 @@ TrackInfo infoFor(const std::string &path, const Decoder &d) {
 }
 
 struct Cmd {
-    enum Kind { Enqueue, Clear, Play, PlayIndex, Pause, Toggle, Stop, Next, Prev, Seek, Volume, SetRepeat, SetShuffle, Barrier } kind;
+    enum Kind {
+        Enqueue, Clear, Play, PlayIndex, Pause, Toggle, Stop, Next, Prev, Seek, Volume, SetRepeat, SetShuffle,
+        QueueAdd, QueueAddEntries, QueueMove, QueueRemove, QueueClear, Barrier
+    } kind;
     std::vector<std::string> paths{};
     int index = 0;
     double value = 0;
     std::promise<void> *barrier = nullptr;
+    std::vector<int> ints{}; // QueueAddEntries: entries; QueueMove/QueueRemove: {entry, to}
     std::uint64_t seq = 0; // Impl::cmdSeq right after this command was queued
 };
 
@@ -196,6 +213,8 @@ struct Player::Impl {
     struct Job {
         bool active = false;
         int index = 0;
+        int ctx = -1;
+        bool user = false, consumes = false;
         std::uint64_t startFrame = 0;
         std::uint32_t devRate = 0;
         std::unique_ptr<Decoder> preopened; // opened by the control thread to learn the rate
@@ -210,13 +229,20 @@ struct Player::Impl {
     bool decoderExhausted = false;
     bool dquit = false;
     bool consuming = false; // device running; while false a full ring parks the decoder
-    // Play order (see Player::setShuffle). With shuffle, `order` is a permutation of the
-    // queue indices and pos[order[k]] == k; both are empty without shuffle. modeGen
-    // counts changes that can give an exhausted decoder a next track (enqueue, repeat,
-    // shuffle).
+    // Play order (see Player::setShuffle). Queue entries are context entries (enqueue())
+    // or user-queue-only ones (queueAdd()); inContext tells them apart. With shuffle,
+    // `order` is a permutation of the context entries and pos[order[k]] == k (-1 for the
+    // others); both are empty without shuffle. upNext is the user queue (entries); its
+    // first upNextTaken entries have been picked by the decoder (or a skip) and leave it
+    // when they become audible, or return to the visible list when the pipeline is
+    // flushed first. modeGen counts changes that can give an exhausted decoder a next
+    // track (enqueue, user queue, repeat, shuffle).
     Repeat repeat = Repeat::Off;
     bool shuffle = false;
+    std::vector<char> inContext;
     std::vector<int> order, pos;
+    std::deque<int> upNext;
+    std::size_t upNextTaken = 0;
     std::mt19937_64 rng;
     std::uint64_t modeGen = 0;
 
@@ -366,13 +392,16 @@ struct Player::Impl {
 
     // ---------------------------------------------------------------- play order (dm held)
     int queueCount() const { return static_cast<int>(queue.size()); }
+    bool validIndex(int i) const { return i >= 0 && i < queueCount(); }
+    bool isContext(int i) const { return validIndex(i) && inContext[static_cast<std::size_t>(i)]; }
     void reindexOrder() {
         pos.assign(queue.size(), -1);
         for (std::size_t k = 0; k < order.size(); k++) pos[static_cast<std::size_t>(order[k])] = static_cast<int>(k);
-        LM_ASSERT(order.size() == queue.size(), "shuffle order is a permutation of the queue");
+        LM_ASSERT(order.size() == static_cast<std::size_t>(std::count(inContext.begin(), inContext.end(), 1)),
+                  "shuffle order is a permutation of the context entries");
     }
-    // New shuffle order: `prefix` (distinct valid indices, in this order) first, the rest
-    // of the queue in random order after it.
+    // New shuffle order of the context entries: `prefix` (context entries, in this
+    // order) first, the rest in random order after it.
     void buildShuffle(const std::vector<int> &prefix) {
         order.clear();
         if (!shuffle) {
@@ -381,57 +410,99 @@ struct Player::Impl {
         }
         std::vector<char> used(queue.size(), 0);
         for (int i : prefix)
-            if (i >= 0 && i < queueCount() && !used[static_cast<std::size_t>(i)]) {
+            if (isContext(i) && !used[static_cast<std::size_t>(i)]) {
                 used[static_cast<std::size_t>(i)] = 1;
                 order.push_back(i);
             }
         const auto fixed = static_cast<std::ptrdiff_t>(order.size());
         for (int i = 0; i < queueCount(); i++)
-            if (!used[static_cast<std::size_t>(i)]) order.push_back(i);
+            if (isContext(i) && !used[static_cast<std::size_t>(i)]) order.push_back(i);
         std::shuffle(order.begin() + fixed, order.end(), rng);
         reindexOrder();
     }
-    // Index played after `i`, or -1. `natural`: the track ended by itself (repeat-one
-    // replays it); otherwise (next(), a failed open) repeat-one moves on like repeat-all.
-    // `commit`: a wrap with shuffle draws the new permutation (the decoder and next());
-    // otherwise only the existence of a successor matters (hasNext).
-    int successor(int i, bool natural, bool commit) {
+    // Context entry after context entry `c` in the play order (c < 0: the first one),
+    // or -1. Wraps with repeat; `commit`: a shuffle wrap draws the new permutation.
+    int contextAfter(int c, bool commit) {
         const int n = queueCount();
-        if (n == 0 || i < 0 || i >= n) return -1;
-        if (natural && repeat == Repeat::One) return i;
         const bool wrap = repeat != Repeat::Off;
-        if (!shuffle) return i + 1 < n ? i + 1 : wrap ? 0 : -1;
+        if (!shuffle) {
+            for (int j = std::max(c, -1) + 1; j < n; j++)
+                if (isContext(j)) return j;
+            if (c < 0 || !wrap) return -1;
+            for (int j = 0; j <= c && j < n; j++)
+                if (isContext(j)) return j;
+            return -1;
+        }
         LM_ASSERT(pos.size() == queue.size(), "shuffle order covers the queue");
-        const int p = pos[static_cast<std::size_t>(i)];
-        if (p + 1 < n) return order[static_cast<std::size_t>(p) + 1];
+        if (order.empty()) return -1;
+        const int p = isContext(c) ? pos[static_cast<std::size_t>(c)] : -1;
+        const std::size_t after = p < 0 ? 0 : static_cast<std::size_t>(p) + 1;
+        if (after < order.size()) return order[after];
         if (!wrap) return -1;
         if (commit) {
             buildShuffle({});
-            if (n > 1 && order.front() == i) { // never the same track twice in a row
+            if (order.size() > 1 && order.front() == c) { // never the same track twice in a row
                 std::swap(order.front(), order.back());
                 reindexOrder();
             }
         }
         return order.front();
     }
-    // Index played before `i` in the play order, or -1 (wraps with repeat).
-    int predecessor(int i) const {
+    // Context entry before `c` in the play order, or -1 (wraps with repeat).
+    int contextBefore(int c) const {
+        if (!isContext(c)) return -1;
         const int n = queueCount();
-        if (n == 0 || i < 0 || i >= n) return -1;
         const bool wrap = repeat != Repeat::Off;
-        if (!shuffle) return i > 0 ? i - 1 : wrap ? n - 1 : -1;
-        LM_ASSERT(pos.size() == queue.size(), "shuffle order covers the queue");
-        const int p = pos[static_cast<std::size_t>(i)];
+        if (!shuffle) {
+            for (int j = c - 1; j >= 0; j--)
+                if (isContext(j)) return j;
+            if (!wrap) return -1;
+            for (int j = n - 1; j > c; j--)
+                if (isContext(j)) return j;
+            return -1;
+        }
+        const int p = pos[static_cast<std::size_t>(c)];
         if (p > 0) return order[static_cast<std::size_t>(p) - 1];
-        return wrap ? order.back() : -1;
+        return wrap && order.size() > 1 ? order.back() : -1;
     }
-    int firstInOrder() const { return shuffle && !order.empty() ? order.front() : 0; }
-    // Audible track followed by the tracks already decoded after it (control thread).
+    // What plays after `from`: repeat-one (natural end only) replays it; else the next
+    // user-queue entry not yet taken; else the context continues after from.ctx.
+    // `commit` takes the user-queue entry (upNextTaken++; it leaves upNext once audible,
+    // see serviceMarkers) and lets a shuffle wrap reshuffle; without it this only asks
+    // whether there is a successor (hasNext).
+    Pick successor(const Pick &from, bool natural, bool commit) {
+        if (natural && repeat == Repeat::One && validIndex(from.idx)) return Pick{from.idx, from.ctx, from.user, false};
+        if (upNextTaken < upNext.size()) {
+            const int e = upNext[upNextTaken];
+            if (commit) upNextTaken++;
+            return Pick{e, from.ctx, true, true};
+        }
+        const int c = contextAfter(from.ctx, commit);
+        return Pick{c, c, false, false};
+    }
+    // Track prev() goes to (other than restarting): from a user-queue track the context
+    // track that played before it, else the previous context entry.
+    int predecessor(const Pick &from) const {
+        if (from.user) return isContext(from.ctx) ? from.ctx : -1;
+        return contextBefore(from.ctx);
+    }
+    // Context entries of the audible track and those already decoded after it.
     std::vector<int> playedAhead() const {
         std::vector<int> v;
-        if (index >= 0) v.push_back(index);
-        for (const auto &m : markers) v.push_back(m.index);
+        if (index >= 0) v.push_back(cur.ctx);
+        for (const auto &m : markers) v.push_back(m.ctx);
         return v;
+    }
+    Pick curPick() const { return Pick{cur.index, cur.ctx, cur.user, false}; }
+    // Position in upNext of a visible user-queue position (after the taken ones) that
+    // holds `entry` (-1: any); -1 if none.
+    long upNextAt(int visiblePos, int entry) const {
+        const std::size_t at = upNextTaken + static_cast<std::size_t>(std::max(visiblePos, 0));
+        if (visiblePos >= 0 && at < upNext.size() && (entry < 0 || upNext[at] == entry)) return static_cast<long>(at);
+        if (entry < 0) return -1;
+        for (std::size_t k = upNextTaken; k < upNext.size(); k++) // the list moved meanwhile
+            if (upNext[k] == entry) return static_cast<long>(k);
+        return -1;
     }
 
     // ---------------------------------------------------------------- snapshot/events
@@ -450,6 +521,7 @@ struct Player::Impl {
         return s;
     }
 
+    std::vector<int> upNextSnap; // publish() scratch (control thread)
     void publish() {
         std::size_t qsize;
         Repeat rep;
@@ -459,9 +531,14 @@ struct Player::Impl {
             qsize = queue.size();
             rep = repeat;
             shuf = shuffle;
-            hasNext = successor(index, false, false) >= 0;
+            hasNext = index >= 0 && successor(curPick(), false, false).idx >= 0;
+            const std::size_t taken = std::min(upNextTaken, upNext.size());
+            upNextSnap.assign(upNext.begin() + static_cast<std::ptrdiff_t>(taken), upNext.end());
         }
         std::lock_guard lk(sm);
+        snap.upNext.swap(upNextSnap);
+        snap.fromUserQueue = index >= 0 && cur.user;
+        snap.contextIndex = index >= 0 ? cur.ctx : -1;
         snap.repeat = rep;
         snap.shuffle = shuf;
         snap.hasNext = hasNext;
@@ -532,6 +609,7 @@ struct Player::Impl {
             markers.clear();
             decoderErrors.clear();
             decoderExhausted = false;
+            upNextTaken = 0; // user-queue entries picked but never audible stay queued
         }
         ring.discardAll(); // safe: callback stopped, decoder idle
         LM_ASSERT(ring.readable() == 0, "flush leaves the ring empty");
@@ -547,18 +625,31 @@ struct Player::Impl {
 
     // Starts decoding at queue[i] + frame. Returns false if no track from i on opens.
     // seekSec >= 0: start at that time instead of `frame` (the rate is known once open).
-    bool startAt(int i, std::uint64_t frame, Status target, double seekSec = -1) {
+    // `pk.consumes`: pk.idx is upNext.front(); a jump to it takes it off the user queue
+    // at once (only the decoder's gapless picks wait until they are audible).
+    bool startAt(Pick pk, std::uint64_t frame, Status target, double seekSec = -1) {
         const Status before = status;
         openPending = false;
         flush();
         std::unique_ptr<Decoder> dec;
         std::string path;
+        int i = pk.idx;
         // A track that fails to open is skipped along the play order; each queue entry
         // is tried at most once (repeat would otherwise loop over a broken queue).
         for (std::size_t tries = 0;; tries++, frame = 0) {
             {
                 std::lock_guard lk(dm);
-                if (tries > 0) i = tries < queue.size() ? successor(i, false, true) : -1;
+                upNextTaken = 0; // flushed: nothing is picked ahead
+                if (tries > 0) {
+                    pk = tries < queue.size() ? successor(pk, false, true) : Pick{};
+                    i = pk.idx;
+                }
+                if (pk.consumes) {
+                    LM_ASSERT(!upNext.empty() && upNext.front() == pk.idx, "a consuming pick is the user queue's head");
+                    upNext.pop_front();
+                    upNextTaken = 0;
+                    pk.consumes = false;
+                }
                 if (i < 0 || static_cast<std::size_t>(i) >= queue.size()) break;
                 path = queue[static_cast<std::size_t>(i)];
             }
@@ -581,6 +672,8 @@ struct Player::Impl {
                 index = i;
                 cur = Marker{};
                 cur.index = i;
+                cur.ctx = pk.ctx;
+                cur.user = pk.user;
                 cur.info.path = path;
                 status = target;
                 openPending = true;
@@ -620,12 +713,15 @@ struct Player::Impl {
         if (frame && dec->totalFrames()) frame = std::min(frame, dec->totalFrames());
         // The state describes the new track from here on, whether or not the prebuffer
         // fills in time; the decoder's own marker (same ring frame) confirms it later.
-        Marker m{ring.totalWritten() / kCh, i, frame, infoFor(path, *dec)};
+        Marker m{ring.totalWritten() / kCh, i, frame, infoFor(path, *dec), pk.ctx, pk.user, pk.consumes};
         const bool newTrack = i != index || path != cur.info.path;
         {
             std::lock_guard lk(dm);
             job.active = true;
             job.index = i;
+            job.ctx = pk.ctx;
+            job.user = pk.user;
+            job.consumes = pk.consumes;
             job.startFrame = frame;
             job.devRate = out.sampleRate();
             job.preopened = std::move(dec);
@@ -671,6 +767,13 @@ struct Player::Impl {
                 cur = std::move(markers.front());
                 markers.pop_front();
                 changed = true;
+                if (cur.consumes) { // a user-queue track picked by the decoder is audible now
+                    LM_ASSERT(upNextTaken > 0 && !upNext.empty() && upNext.front() == cur.index,
+                              "the decoder takes user-queue entries in order");
+                    upNext.pop_front();
+                    upNextTaken--;
+                    cur.consumes = false;
+                }
             }
             errs.swap(decoderErrors);
         }
@@ -692,6 +795,7 @@ struct Player::Impl {
                 std::lock_guard lk(dm);
                 const std::size_t before = queue.size();
                 for (auto &p : c.paths) queue.push_back(std::move(p));
+                inContext.resize(queue.size(), 1);
                 if (shuffle && queue.size() > before) {
                     if (before == 0 || index < 0) {
                         buildShuffle(playedAhead());
@@ -700,19 +804,15 @@ struct Player::Impl {
                         // audible track and anything already decoded), which is reshuffled.
                         const auto ahead = playedAhead();
                         int from = 0;
-                        for (int i : ahead) from = std::max(from, pos[static_cast<std::size_t>(i)] + 1);
+                        pos.resize(queue.size(), -1);
+                        for (int i : ahead)
+                            if (isContext(i)) from = std::max(from, pos[static_cast<std::size_t>(i)] + 1);
                         for (std::size_t i = before; i < queue.size(); i++) order.push_back(static_cast<int>(i));
                         std::shuffle(order.begin() + from, order.end(), rng);
                         reindexOrder();
                     }
                 }
-                modeGen++;
-                // An exhausted decoder resumes with the new tracks; make sure the end of
-                // queue is not declared in between (service() checks this flag).
-                if (!c.paths.empty() && decoderExhausted) {
-                    decoderExhausted = false;
-                    out.endOfStream.store(false, std::memory_order_release);
-                }
+                if (!c.paths.empty()) moreToPlay();
             }
             dcv.notify_all(); // an exhausted decoder continues gaplessly
             publish();
@@ -725,8 +825,11 @@ struct Player::Impl {
             {
                 std::lock_guard lk(dm);
                 queue.clear();
+                inContext.clear();
                 order.clear();
                 pos.clear();
+                upNext.clear();
+                upNextTaken = 0;
             }
             index = -1;
             cur = Marker{};
@@ -739,13 +842,19 @@ struct Player::Impl {
             if (status == Status::Paused) resume();
             else if (status == Status::Stopped) startAt(startIndex(), 0, Status::Playing);
             break;
-        case Cmd::PlayIndex:
+        case Cmd::PlayIndex: {
+            Pick pk{c.index, c.index, false, false};
             {
                 std::lock_guard lk(dm);
-                if (shuffle && c.index >= 0 && c.index < queueCount()) buildShuffle({c.index});
+                if (shuffle && isContext(c.index)) buildShuffle({c.index});
+                if (validIndex(c.index) && !isContext(c.index)) { // a user-queue-only entry
+                    pk.ctx = index >= 0 ? cur.ctx : -1;
+                    pk.user = true;
+                }
             }
-            startAt(c.index, 0, Status::Playing);
+            startAt(pk, 0, Status::Playing);
             break;
+        }
         case Cmd::Pause:
             if (status == Status::Playing) pauseNow();
             break;
@@ -763,12 +872,13 @@ struct Player::Impl {
             break;
         case Cmd::Next: {
             serviceMarkers();
-            int n;
-            {
+            Pick n;
+            if (index >= 0) {
                 std::lock_guard lk(dm);
-                n = successor(index, false, true);
+                upNextTaken = 0; // the pipeline is flushed below: pick from the visible list
+                n = successor(curPick(), false, true);
             }
-            if (n >= 0)
+            if (n.idx >= 0)
                 startAt(n, 0, status == Status::Paused ? Status::Paused : Status::Playing);
             else if (status != Status::Stopped) endOfQueue();
             break;
@@ -779,22 +889,23 @@ struct Player::Impl {
             int p;
             {
                 std::lock_guard lk(dm);
-                p = predecessor(index);
+                p = predecessor(curPick());
             }
             const bool restart = stateNow().position > 3.0 || p < 0;
-            startAt(restart ? index : p, 0, status == Status::Paused ? Status::Paused : Status::Playing);
+            startAt(restart ? curPick() : Pick{p, p, false, false}, 0,
+                    status == Status::Paused ? Status::Paused : Status::Playing);
             break;
         }
         case Cmd::Seek: {
             serviceMarkers();
             const double s = std::max(0.0, c.value);
             if (openPending && index >= 0) { // the track was never opened: open it at s
-                startAt(index, 0, status, s);
+                startAt(curPick(), 0, status, s);
                 emit(EventType::Seeked);
                 break;
             }
             if (status == Status::Stopped || index < 0 || !cur.info.sampleRate) break;
-            startAt(index, static_cast<std::uint64_t>(s * cur.info.sampleRate), status);
+            startAt(curPick(), static_cast<std::uint64_t>(s * cur.info.sampleRate), status);
             emit(EventType::Seeked);
             break;
         }
@@ -829,17 +940,98 @@ struct Player::Impl {
             emit(EventType::ModeChanged);
             break;
         }
+        case Cmd::QueueAdd:
+        case Cmd::QueueAddEntries:
+        case Cmd::QueueMove:
+        case Cmd::QueueRemove:
+        case Cmd::QueueClear: {
+            bool changed = false;
+            {
+                std::lock_guard lk(dm);
+                changed = editUserQueue(c);
+                if (changed) moreToPlay();
+            }
+            if (!changed) break;
+            dcv.notify_all();
+            publish();
+            emit(EventType::QueueChanged);
+            break;
+        }
         case Cmd::Barrier: c.barrier->set_value(); break;
         }
     }
 
-    // Track that play() starts from when stopped: the current one, else the first in
-    // play order (a fresh shuffle permutation after the queue ended).
-    int startIndex() {
-        if (index >= 0) return index;
+    // dm held: the queue or play order changed in a way that may give an exhausted
+    // decoder a next track; make sure the end of queue is not declared in between
+    // (service() checks decoderExhausted).
+    void moreToPlay() {
+        modeGen++;
+        if (decoderExhausted) {
+            decoderExhausted = false;
+            out.endOfStream.store(false, std::memory_order_release);
+        }
+    }
+
+    // dm held. Applies a user-queue command; false if nothing changed. Positions are
+    // those of PlayerState::upNext (the entries not yet picked); `entry` guards against
+    // a list that moved since the caller's snapshot.
+    bool editUserQueue(Cmd &c) {
+        const auto visibleBegin = upNext.begin() + static_cast<std::ptrdiff_t>(upNextTaken);
+        switch (c.kind) {
+        case Cmd::QueueAdd:
+        case Cmd::QueueAddEntries: {
+            std::vector<int> add;
+            if (c.kind == Cmd::QueueAdd) {
+                for (auto &p : c.paths) {
+                    add.push_back(queueCount());
+                    queue.push_back(std::move(p));
+                }
+                inContext.resize(queue.size(), 0);
+                if (shuffle) pos.resize(queue.size(), -1);
+            } else {
+                for (int e : c.ints)
+                    if (validIndex(e)) add.push_back(e);
+            }
+            if (add.empty()) return false;
+            if (c.index) upNext.insert(visibleBegin, add.begin(), add.end()); // play next
+            else upNext.insert(upNext.end(), add.begin(), add.end());
+            return true;
+        }
+        case Cmd::QueueMove: {
+            const long from = upNextAt(c.index, c.ints.empty() ? -1 : c.ints[0]);
+            const long visible = static_cast<long>(upNext.size() - upNextTaken);
+            if (from < 0 || c.ints.size() < 2) return false;
+            const long to = static_cast<long>(upNextTaken) + std::clamp<long>(c.ints[1], 0, visible - 1);
+            if (to == from) return false;
+            const int e = upNext[static_cast<std::size_t>(from)];
+            upNext.erase(upNext.begin() + from);
+            upNext.insert(upNext.begin() + to, e);
+            return true;
+        }
+        case Cmd::QueueRemove: {
+            const long at = upNextAt(c.index, c.ints.empty() ? -1 : c.ints[0]);
+            if (at < 0) return false;
+            upNext.erase(upNext.begin() + at);
+            return true;
+        }
+        case Cmd::QueueClear:
+            if (upNext.size() == upNextTaken) return false;
+            upNext.erase(visibleBegin, upNext.end());
+            return true;
+        default: return false;
+        }
+    }
+
+    // What play() starts from when stopped: the current track, else the user queue's
+    // head, else the first context entry in play order (a fresh shuffle permutation
+    // after the queue ended).
+    Pick startIndex() {
+        if (index >= 0) return curPick();
         std::lock_guard lk(dm);
+        if (!upNext.empty()) return Pick{upNext.front(), -1, true, true};
         if (shuffle) buildShuffle({});
-        return firstInOrder();
+        const int c = contextAfter(-1, false);
+        return Pick{c, c, false, false};
     }
 
     void pauseNow() {
@@ -973,8 +1165,8 @@ struct Player::Impl {
     void decoderMain() {
         std::unique_ptr<Decoder> dec;
         std::uint64_t seen = 0;
-        int idx = -1;     // track to open next (-1: none, the play order ended)
-        int lastIdx = -1; // track before idx (resume point when the order ended)
+        Pick pk;     // track to open next (idx -1: none, the play order ended)
+        Pick lastPk; // track before it (resume point when the order ended)
         std::size_t fails = 0; // consecutive tracks that failed to open
         std::uint64_t endGen = 0; // modeGen when the order ended
         std::uint64_t startFrame = 0;
@@ -1012,8 +1204,8 @@ struct Player::Impl {
                         seen = gen;
                         ackGen = gen;
                         active = job.active;
-                        idx = job.index;
-                        lastIdx = -1;
+                        pk = Pick{job.index, job.ctx, job.user, job.consumes};
+                        lastPk = Pick{};
                         fails = 0;
                         startFrame = job.startFrame;
                         devRate = job.devRate;
@@ -1032,9 +1224,9 @@ struct Player::Impl {
                         if (modeGen != endGen) {
                             endGen = modeGen;
                             fails = 0;
-                            idx = successor(lastIdx, true, true);
+                            pk = successor(lastPk, true, true);
                         }
-                        if (idx >= 0) {
+                        if (pk.idx >= 0) {
                             exhausted = false;
                             decoderExhausted = false;
                             out.endOfStream.store(false, std::memory_order_release);
@@ -1045,8 +1237,8 @@ struct Player::Impl {
                         continue;
                     }
                     if (needOpen && !dec) {
-                        if (idx < 0 || static_cast<std::size_t>(idx) >= queue.size()) {
-                            idx = -1;
+                        if (pk.idx < 0 || static_cast<std::size_t>(pk.idx) >= queue.size()) {
+                            pk = Pick{};
                             endGen = modeGen;
                             exhausted = true;
                             decoderExhausted = true;
@@ -1056,9 +1248,9 @@ struct Player::Impl {
                             lk.lock();
                             continue;
                         }
-                        path = queue[static_cast<std::size_t>(idx)];
+                        path = queue[static_cast<std::size_t>(pk.idx)];
                     } else if (needOpen) {
-                        path = queue[static_cast<std::size_t>(idx)];
+                        path = queue[static_cast<std::size_t>(pk.idx)];
                     }
                     break;
                 }
@@ -1088,8 +1280,15 @@ struct Player::Impl {
                 if (gen != seen) continue;
                 if (!dec) {
                     decoderErrors.push_back(err);
-                    lastIdx = idx;
-                    idx = ++fails < queue.size() ? successor(idx, false, true) : -1;
+                    if (pk.consumes) { // a user-queue entry that never became audible: drop it
+                        LM_ASSERT(upNextTaken > 0 && upNext[upNextTaken - 1] == pk.idx,
+                                  "a failed user-queue pick is the last one taken");
+                        upNext.erase(upNext.begin() + static_cast<std::ptrdiff_t>(upNextTaken - 1));
+                        upNextTaken--;
+                        pk.consumes = false;
+                    }
+                    lastPk = pk;
+                    pk = ++fails < queue.size() ? successor(pk, false, true) : Pick{};
                     startFrame = 0;
                     continue; // a pending gap carries over to the next track that opens
                 }
@@ -1115,7 +1314,7 @@ struct Player::Impl {
                 trackIn = trackOut = 0;
                 LM_ASSERT(markers.empty() || markers.back().ringFrame <= ring.totalWritten() / kCh,
                           "track markers are ordered by ring position");
-                markers.push_back(Marker{ring.totalWritten() / kCh, idx, startFrame, info});
+                markers.push_back(Marker{ring.totalWritten() / kCh, pk.idx, startFrame, info, pk.ctx, pk.user, pk.consumes});
                 fails = 0;
                 needOpen = false;
             }
@@ -1164,8 +1363,8 @@ struct Player::Impl {
                 {
                     std::lock_guard lk(dm);
                     if (gen != seen) continue; // retired: the new job decides what plays
-                    lastIdx = idx;
-                    idx = successor(idx, true, true);
+                    lastPk = pk;
+                    pk = successor(pk, true, true);
                 }
                 startFrame = 0;
                 needOpen = true;
@@ -1234,6 +1433,25 @@ void Player::next() { impl_->push(Cmd{Cmd::Next}); }
 void Player::prev() { impl_->push(Cmd{Cmd::Prev}); }
 void Player::seek(double seconds) { impl_->push(Cmd{Cmd::Seek, {}, 0, seconds}); }
 void Player::setVolume(float v) { impl_->push(Cmd{Cmd::Volume, {}, 0, static_cast<double>(v)}); }
+void Player::queueAdd(std::vector<std::string> paths, bool next) {
+    impl_->push(Cmd{Cmd::QueueAdd, std::move(paths), next ? 1 : 0});
+}
+void Player::queueAddEntries(std::vector<int> entries, bool next) {
+    Cmd c{Cmd::QueueAddEntries, {}, next ? 1 : 0};
+    c.ints = std::move(entries);
+    impl_->push(std::move(c));
+}
+void Player::queueMove(int position, int to, int entry) {
+    Cmd c{Cmd::QueueMove, {}, position};
+    c.ints = {entry, to};
+    impl_->push(std::move(c));
+}
+void Player::queueRemove(int position, int entry) {
+    Cmd c{Cmd::QueueRemove, {}, position};
+    c.ints = {entry};
+    impl_->push(std::move(c));
+}
+void Player::queueClearUser() { impl_->push(Cmd{Cmd::QueueClear}); }
 void Player::setRepeat(Repeat r) { impl_->push(Cmd{Cmd::SetRepeat, {}, static_cast<int>(r)}); }
 void Player::setShuffle(bool on) { impl_->push(Cmd{Cmd::SetShuffle, {}, on ? 1 : 0}); }
 void Player::setGap(double seconds) {
