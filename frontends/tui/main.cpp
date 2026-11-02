@@ -1321,6 +1321,33 @@ int run(int argc, char **argv) {
         lmtui::ArtWorker artWorker(coversDir, [] { wake(); },
                                    [](std::function<void()> fn) { spawnDetached(std::move(fn)); });
         if (coversDir.empty()) ui.status.log(lmtui::StatusLine::Level::Warning, "cover art: " + coversErr);
+#ifdef LM_TUI_NET
+        if (client) { // server albums: the thumbnail lightmusicd made, fetched when wanted
+            const auto acc = client->thumbAccess();
+            lmtui::RemoteThumbs rt;
+            rt.server = acc.server;
+            rt.albumOf = [albumOf = acc.albumOf](const std::string &track) -> std::optional<std::int64_t> {
+                const auto id = lm::net::Client::parseTrackUri(track);
+                return id ? albumOf(*id) : std::nullopt;
+            };
+            rt.fetch = [fetch = acc.fetch](std::int64_t album, std::int64_t ifRev, std::string &rgb, std::int64_t &rev,
+                                           std::string *err) {
+                using G = lmtui::RemoteThumbs::Got;
+                lm::net::AlbumThumb t;
+                if (!fetch(album, ifRev, t, err)) return G::Failed;
+                rev = t.rev;
+                switch (t.status) {
+                case lm::net::AlbumThumb::Status::Ok: rgb = std::move(t.rgb); return G::Ok;
+                case lm::net::AlbumThumb::Status::NotModified: return G::NotModified;
+                case lm::net::AlbumThumb::Status::NotReady: return G::NotReady;
+                case lm::net::AlbumThumb::Status::NoArt: break;
+                }
+                return G::NoArt;
+            };
+            static_assert(lm::net::AlbumThumb::kAlbumThumbBytes == lm::art::kThumbBytes, "one thumbnail format");
+            artWorker.setRemote(std::move(rt));
+        }
+#endif
         auto prefetchArt = [&](std::size_t from) {
             if (!ui.coverArt) return;
             std::vector<std::string> local;
@@ -1331,9 +1358,8 @@ int run(int argc, char **argv) {
         // The playing track's and the next one's album thumbnails (only those are kept).
         auto wantedArt = [&] {
             std::vector<std::string> want;
-            auto add = [&](int i) {
-                if (i >= 0 && static_cast<std::size_t>(i) < ui.paths.size() && !ui.remote[static_cast<std::size_t>(i)])
-                    want.push_back(ui.paths[static_cast<std::size_t>(i)]);
+            auto add = [&](int i) { // local files and server tracks (lm:// URIs)
+                if (i >= 0 && static_cast<std::size_t>(i) < ui.paths.size()) want.push_back(ui.paths[static_cast<std::size_t>(i)]);
             };
             if (!ui.coverArt) return want;
             add(ui.st.index);

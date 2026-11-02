@@ -14,10 +14,12 @@
 #include <ftxui/dom/elements.hpp>
 
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -40,6 +42,20 @@ inline constexpr int kMaxCoverRows = 16, kMinCoverRows = 4, kMinListCols = 40;
 // foreground = upper pixel, background = lower pixel).
 [[nodiscard]] ftxui::Element coverElement(const lm::art::Thumb &t, PaneSize size);
 
+// Server albums (the TUI built with libnet): how to find a remote track's album and fetch
+// the thumbnail lightmusicd made for it. Called on the worker thread; the functions must
+// stay valid for as long as the (detached) worker runs.
+struct RemoteThumbs {
+    std::string server; // the server URL: the cache keys are per server
+    // The album of a remote track; nullopt when `track` is not one (a local path).
+    std::function<std::optional<std::int64_t>(const std::string &track)> albumOf;
+    enum class Got { Ok, NotModified, NoArt, NotReady, Failed };
+    // GET the thumbnail; `ifRev` > 0: the revision held. Ok fills `rgb` (12288 bytes) and
+    // `rev`; Failed sets `err`.
+    std::function<Got(std::int64_t albumId, std::int64_t ifRev, std::string &rgb, std::int64_t &rev, std::string *err)>
+        fetch;
+};
+
 class ArtWorker {
 public:
     using Spawn = std::function<void(std::function<void()>)>;
@@ -56,6 +72,10 @@ public:
     // Stops the worker after its current album; never waits for it (a read may block).
     ~ArtWorker();
 
+    // UI thread, before the first request: thumbnails of server tracks. A remote album's
+    // thumbnail is fetched when it is wanted (never eagerly), revalidated by revision, and
+    // kept in the covers cache; offline, the cached one is shown.
+    void setRemote(RemoteThumbs r);
     // UI thread: thumbnails for these tracks' albums, made in the background (each
     // folder once per session).
     void prefetch(const std::vector<std::string> &tracks);
@@ -76,6 +96,7 @@ private:
         std::vector<std::string> messages;
         std::set<std::string> reported;
         bool stop = false, running = false;
+        std::shared_ptr<const RemoteThumbs> remote; // set before the thread starts
     };
     static void run(const std::shared_ptr<Shared> &sh, const std::string &dir, const std::function<void()> &notify);
     void start();

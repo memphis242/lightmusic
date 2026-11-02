@@ -1506,6 +1506,50 @@ void loopbackWarning() {
 
 } // namespace
 
+// Album thumbnails (Client::fetchAlbumThumb): 200 with exactly one thumbnail and its
+// revision, 304 for the revision held, 404 (no art), 503 (not ready), and untrusted
+// replies refused: a short or oversized body, an unexpected 304, other statuses.
+static void albumThumbs() {
+    FakeServer srv;
+    const std::string dir = tempDir("thumb");
+    auto cl = open(baseCfg(srv.url(), dir));
+    CHECK(cl != nullptr);
+    if (!cl) return;
+    using lm::net::AlbumThumb;
+    const std::string px(AlbumThumb::kAlbumThumbBytes, '\x7f');
+    srv.setThumb(1, {200, px, 42});
+    srv.setThumb(2, {503, "", 1});
+    srv.setThumb(3, {200, px.substr(1), 1});
+    srv.setThumb(4, {200, px + "x", 1});
+    srv.setThumb(5, {500, "", 1});
+    AlbumThumb t;
+    std::string err;
+    CHECK(cl->fetchAlbumThumb(1, 0, t, &err) && t.status == AlbumThumb::Status::Ok && t.rgb == px && t.rev == 42);
+    CHECK(cl->fetchAlbumThumb(1, 42, t, &err) && t.status == AlbumThumb::Status::NotModified && t.rev == 42 &&
+          t.rgb.empty());
+    CHECK(cl->fetchAlbumThumb(1, 41, t, &err) && t.status == AlbumThumb::Status::Ok); // stale: the new one
+    CHECK(cl->fetchAlbumThumb(2, 0, t, &err) && t.status == AlbumThumb::Status::NotReady);
+    CHECK(cl->fetchAlbumThumb(9, 0, t, &err) && t.status == AlbumThumb::Status::NoArt);
+    err.clear();
+    CHECK(!cl->fetchAlbumThumb(3, 0, t, &err) && err.find("bad size") != std::string::npos);
+    CHECK(!cl->fetchAlbumThumb(4, 0, t, &err) && err.find("larger") != std::string::npos);
+    CHECK(!cl->fetchAlbumThumb(5, 0, t, &err) && err.find("HTTP 500") != std::string::npos);
+    // The detached-worker form works the same, and keeps working (failing) after the
+    // Client is gone.
+    const auto acc = cl->thumbAccess();
+    CHECK(acc.server == srv.url());
+    CHECK(acc.fetch(1, 0, t, &err) && t.status == AlbumThumb::Status::Ok);
+    CHECK(!acc.albumOf(lm::TrackId(777)));
+    // A server that is gone: a transport error, not a crash or a hang.
+    srv.stop();
+    CHECK(!cl->fetchAlbumThumb(1, 0, t, &err) && !err.empty());
+    cl.reset();
+    err.clear();
+    CHECK(!acc.fetch(1, 0, t, &err) && err.find("cancelled") != std::string::npos);
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 int main(int argc, char **argv) {
     g_self = fs::canonical("/proc/self/exe").string();
     if (argc == 5 && std::string(argv[1]) == "child") return childMain(argv[2], argv[3], std::atoll(argv[4]));
@@ -1522,6 +1566,7 @@ int main(int argc, char **argv) {
         {"renamecrash", renameCrash},    {"remap", idRemap},                {"otherurl", restartOtherUrl},
         {"cycle", interruptedCycle},
         {"hot", hotSettings},            {"trimrelease", trimOnRelease}, {"trimrace", trimReleaseRace},            {"diskfloor", diskFloor},          {"defaultcap", defaultCap},
+        {"thumbs", albumThumbs},
     };
     for (auto &[name, fn] : tests) {
         if (!only.empty() && only != name) continue;

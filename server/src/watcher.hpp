@@ -50,9 +50,13 @@ public:
     std::size_t watch_count() const { return watch_count_.load(); }
 
     std::function<void(const std::string &)> log = [](const std::string &) {};
+    // Called on the watcher thread after the initial scan and after each applied batch
+    // (the index may have changed): e.g. Thumbnailer::kick. Set before start().
+    std::function<void()> on_change = [] {};
 
 private:
     void run();
+    void changed();
     void add_watch_tree(const std::string &dir);
     void forget_tree(const std::string &dir);
     void rename_tree(const std::string &from, const std::string &to);

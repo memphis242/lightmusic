@@ -89,6 +89,21 @@ struct CacheInfo {
     std::int64_t cachedBytes = 0, size = 0;
 };
 
+// GET /api/v1/cover/<album>/thumb: the album's 64x64 RGB thumbnail (lightmusicd makes it
+// in the background; the full image is never fetched).
+struct AlbumThumb {
+    enum class Status {
+        Ok,          // rgb holds kAlbumThumbBytes, rev the album revision it was made at
+        NotModified, // the thumbnail at `ifRev` is still current
+        NoArt,       // the album has no usable art (404)
+        NotReady,    // not made yet (503): ask again later
+    };
+    static constexpr std::size_t kAlbumThumbBytes = std::size_t{64} * 64 * 3;
+    Status status = Status::NoArt;
+    std::string rgb;
+    std::int64_t rev = 0;
+};
+
 struct CacheStats {
     std::int64_t usage = 0;     // bytes reserved by all cache entries (sparse file sizes)
     std::int64_t pinned = 0;    // of which pinned ("saved offline"; not counted toward cap)
@@ -148,6 +163,21 @@ public:
     // before then evicts nothing). Turning the fill off stops a running idle fetch that
     // no reader uses. No-op after shutdown.
     void setCacheSettings(std::uint64_t capBytes, bool backgroundFill, bool pauseOnMetered);
+
+    // Fetches an album thumbnail (blocking; network; any thread but the network thread).
+    // `ifRev` > 0: the revision of a thumbnail already held (conditional request). false
+    // with *err on a transport error, a refused key, another status, or a body that is
+    // not exactly one thumbnail (server data is untrusted).
+    [[nodiscard]] bool fetchAlbumThumb(std::int64_t albumId, std::int64_t ifRev, AlbumThumb &out, std::string *err);
+    // The same for a detached worker thread that may outlive the Client: the functions
+    // keep the client's internals alive; after ~Client, fetches fail ("cancelled") and
+    // albumOf still answers from the mirror.
+    struct ThumbAccess {
+        std::string server; // the server URL (a cache namespace for its album ids)
+        std::function<std::optional<std::int64_t>(TrackId)> albumOf;
+        std::function<bool(std::int64_t albumId, std::int64_t ifRev, AlbumThumb &, std::string *)> fetch;
+    };
+    [[nodiscard]] ThumbAccess thumbAccess() const;
 
     // A ByteSource for the track (cache first, network for holes). Blocking reads;
     // decoder thread only. nullptr with *err if the track is unknown.

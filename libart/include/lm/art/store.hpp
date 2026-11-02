@@ -35,6 +35,9 @@ public:
     // Reads the entry for `key`. A missing file, another stamp, or a corrupt or unreadable
     // file is a Miss; for the last two `err` (if given) says why.
     [[nodiscard]] Lookup load(std::string_view key, std::uint64_t stamp, Thumb &out, std::string *err = nullptr) const;
+    // The entry for `key` whatever its stamp (returned in `stamp`): for a cache that is
+    // revalidated elsewhere (server thumbnails, by revision).
+    [[nodiscard]] Lookup peek(std::string_view key, Thumb &out, std::uint64_t &stamp, std::string *err = nullptr) const;
     // Records `t` (nullopt: no art) for `key` at `stamp`.
     [[nodiscard]] bool store(std::string_view key, std::uint64_t stamp, const std::optional<Thumb> &t,
                              std::string *err) const;
@@ -48,10 +51,13 @@ private:
     std::string dir_;
 };
 
+// The preference of a folder image name (lower is better), compared case-insensitively:
+// cover, folder, front; each as .jpg, .jpeg, .png in that order. -1: not a cover image.
+[[nodiscard]] int coverImageRank(std::string_view fileName);
+
 // A local album is the folder of its tracks. `probeAlbum` lists the folder (reads no file
 // content): the art sources are the first audio file in name order (its embedded
-// picture) and the folder image (cover.jpg, then folder.jpg, then cover.jpeg,
-// folder.jpeg, cover.png, folder.png; names compared case-insensitively). The stamp
+// picture) and the folder image (the best by coverImageRank()). The stamp
 // covers the names, sizes and modification times of both, so replacing, re-tagging or
 // adding art changes it; the key is a hash of the folder path.
 struct LocalAlbum {
