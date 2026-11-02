@@ -282,8 +282,11 @@ static bytes apicBody(unsigned char enc, unsigned char type, const bytes &img) {
     return b;
 }
 static bytes flacWith(const std::vector<std::pair<int, bytes>> &blocks) {
-    bytes f = {'f', 'L', 'a', 'C', 0, 0, 0, 34};
-    f.resize(f.size() + 34, 0);
+    // Built at its full size first: growing an 8-byte vector by resize() trips a GCC 15
+    // -O3 -Warray-bounds false positive inside std::vector (as frame() above notes).
+    const unsigned char head[8] = {'f', 'L', 'a', 'C', 0, 0, 0, 34};
+    bytes f(8 + 34, 0);
+    std::copy(head, head + 8, f.begin());
     for (std::size_t i = 0; i < blocks.size(); i++) {
         const auto &[type, body] = blocks[i];
         const bool last = i + 1 == blocks.size();

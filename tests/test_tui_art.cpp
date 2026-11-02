@@ -92,7 +92,7 @@ static bool waitFor(Waiter &w, const std::function<bool()> &done) {
 static void worker(const std::string &tmp) {
     const std::string covers = tmp + "/covers";
     const std::string a = tmp + "/A", b = tmp + "/B", c = tmp + "/C";
-    for (const auto &d : {a, b, c}) fs::create_directories(d);
+    for (const auto &d : {a, b, c}) (void)fs::create_directories(d); // the writes below check
     CHECK(lmtest::writeBytes(a + "/cover.png", lmtest::makePng(4, 4, lmtest::solid(4, 4, 10, 20, 30))));
     CHECK(lmtest::writeBytes(a + "/t1.mp3", {}));
     CHECK(lmtest::writeBytes(b + "/t2.mp3", {})); // no art (and not real audio: reported once)

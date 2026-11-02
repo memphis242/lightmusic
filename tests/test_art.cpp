@@ -215,7 +215,7 @@ static void cacheAndAlbums(const std::string &tmp) {
 
     // Albums: a folder with tracks and a cover image (case-insensitive name).
     const std::string alb = tmp + "/Artist/Album";
-    fs::create_directories(alb);
+    (void)fs::create_directories(alb);
     CHECK(lmtest::writeBytes(alb + "/02 b.mp3", bytes(10, 0)));
     CHECK(lmtest::writeBytes(alb + "/01 a.flac", bytes(10, 0)));
     CHECK(lmtest::writeBytes(alb + "/notes.txt", bytes(10, 0)));
@@ -256,7 +256,7 @@ static void cacheAndAlbums(const std::string &tmp) {
     CHECK(!lm::art::buildAlbumThumb(a, built, &err, small) && err.find("too large") != std::string::npos);
     // A folder with only the image; a folder that does not exist.
     const std::string only = tmp + "/OnlyArt";
-    fs::create_directories(only);
+    (void)fs::create_directories(only);
     CHECK(lmtest::writeBytes(only + "/cover.jpg", red)); // a PNG named .jpg: the content decides
     CHECK(lm::art::probeAlbum(only + "/x.mp3", a, &err) && a.audio.empty());
     CHECK(lm::art::buildAlbumThumb(a, built, &err) && built);
@@ -271,7 +271,7 @@ static void realFiles(const std::string &tmp) {
         return;
     }
     const std::string d = tmp + "/real";
-    fs::create_directories(d);
+    (void)fs::create_directories(d);
     auto run = [](const std::string &cmd) { return std::system(("ffmpeg -hide_banner -loglevel error -y " + cmd).c_str()) == 0; };
     CHECK(run("-f lavfi -i color=c=0x30C060:s=600x600 -frames:v 1 \"" + d + "/green.jpg\""));
     CHECK(run("-f lavfi -i testsrc2=s=3000x3000 -frames:v 1 -q:v 3 \"" + d + "/large.jpg\""));
@@ -298,7 +298,7 @@ static void realFiles(const std::string &tmp) {
     // Embedded front covers: MP3 and FLAC, in an album folder that also has a (red)
     // folder image: the embedded picture wins.
     const std::string alb = d + "/album";
-    fs::create_directories(alb);
+    (void)fs::create_directories(alb);
     CHECK(run("-i \"" + d + "/tone.wav\" -i \"" + d + "/green.jpg\" -map 0:a -map 1:v -c:a libmp3lame -c:v copy "
               "-id3v2_version 3 -metadata:s:v comment=\"Cover (front)\" -disposition:v attached_pic \"" + alb + "/01.mp3\""));
     CHECK(run("-i \"" + d + "/tone.wav\" -i \"" + d + "/green.jpg\" -map 0:a -map 1:v -c:a flac -c:v copy "
