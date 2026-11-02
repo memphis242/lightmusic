@@ -28,6 +28,8 @@ struct ClientSettings {
     ReplayGain replayGain = ReplayGain::Off;
     double replayGainPreampDb = 0; // -15..15 dB, added to the tagged gain (tagged files only)
     bool replayGainPreventClipping = true; // cap the gain by the tagged peak
+    bool pauseOnDeviceLoss = true;     // pause when the output goes away (headphones, Bluetooth)
+    bool resumeOnDeviceReturn = false; // ... and resume when it comes back
     double gapSeconds = 0; // silence between tracks, 0..30 (0: gapless)
     RepeatMode repeat = RepeatMode::Off;
     bool shuffle = false;

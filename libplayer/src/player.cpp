@@ -116,6 +116,7 @@ const char *eventName(EventType t) {
     case EventType::Error: return "error";
     case EventType::Log: return "log";
     case EventType::ModeChanged: return "mode";
+    case EventType::DeviceChanged: return "device";
     }
     return "?";
 }
@@ -225,6 +226,9 @@ struct Player::Impl {
     // next/prev move from that track, a seek re-opens it at the new position. Only
     // stop/clear (or a failed open) end Stopped. Cleared by the next startAt().
     bool openPending = false;
+    // Paused because the output device went away (PlayerConfig::pauseOnDeviceLoss); a
+    // device return resumes only then (resumeOnDeviceReturn). Cleared by user commands.
+    bool pausedByDevice = false;
 
     // Decoder shared state (guarded by dm).
     struct Job {
@@ -822,6 +826,11 @@ struct Player::Impl {
 
     // ---------------------------------------------------------------- commands
     void handle(Cmd &c) {
+        switch (c.kind) { // the user took over: a device return no longer resumes
+        case Cmd::Clear: case Cmd::Play: case Cmd::PlayIndex: case Cmd::Cue: case Cmd::Pause: case Cmd::Toggle:
+        case Cmd::Stop: pausedByDevice = false; break;
+        default: break;
+        }
         switch (c.kind) {
         case Cmd::Enqueue: {
             {
@@ -1113,12 +1122,20 @@ struct Player::Impl {
     void service() {
         if (out.deviceStoppedUnexpectedly.exchange(false)) {
             // Device lost (e.g. sink gone and the server could not move the stream).
-            // Reopen the default device at the same rate; ring contents are kept.
-            emit(EventType::Error, "audio: device stopped unexpectedly; reopening default device");
+            // Reopen the default device at the same rate; ring contents are kept. With
+            // pauseOnDeviceLoss, playback pauses instead of continuing on it.
+            const bool pause = cfg.pauseOnDeviceLoss && status == Status::Playing;
+            emit(EventType::Error, pause ? "audio: device stopped unexpectedly; paused"
+                                         : "audio: device stopped unexpectedly; reopening default device");
             const std::uint32_t rate = out.sampleRate();
             std::string err;
             stopOutput();
             out.close();
+            if (pause) {
+                pausedByDevice = true;
+                draining = false;
+                setStatus(Status::Paused);
+            }
             if (out.open(rate, cfg.nullBackend, &err) && (status != Status::Playing || startOutput())) {
                 publish();
                 emit(EventType::Log, out.describe());
@@ -1128,6 +1145,19 @@ struct Player::Impl {
             }
         }
         if (out.deviceRerouted.exchange(false)) {
+            // The stream moved to another device: headphones unplugged, Bluetooth gone,
+            // or (paused by that) moved back when they return.
+            if (pausedByDevice && status == Status::Paused) {
+                if (cfg.resumeOnDeviceReturn) {
+                    pausedByDevice = false;
+                    resume();
+                    emit(EventType::DeviceChanged, "audio output changed: resumed");
+                }
+            } else if (cfg.pauseOnDeviceLoss && status == Status::Playing) {
+                pausedByDevice = true;
+                pauseNow();
+                emit(EventType::DeviceChanged, "audio output changed: paused");
+            }
             publish();
             emit(EventType::Log, "audio: rerouted; " + out.describe());
         }
@@ -1514,6 +1544,11 @@ void Player::queueClearUser() { impl_->push(Cmd{Cmd::QueueClear}); }
 void Player::setRepeat(Repeat r) { impl_->push(Cmd{Cmd::SetRepeat, {}, static_cast<int>(r)}); }
 void Player::setShuffle(bool on) { impl_->push(Cmd{Cmd::SetShuffle, {}, on ? 1 : 0}); }
 void Player::setStopAfterCurrent(bool on) { impl_->push(Cmd{Cmd::StopAfter, {}, on ? 1 : 0}); }
+void Player::simulateDeviceEvent(DeviceEvent e) {
+    if (e == DeviceEvent::Lost) impl_->out.deviceStoppedUnexpectedly.store(true, std::memory_order_release);
+    else impl_->out.deviceRerouted.store(true, std::memory_order_release);
+    impl_->poke();
+}
 void Player::setGap(double seconds) {
     if (!std::isnan(seconds)) impl_->gapSec.store(clampGap(seconds), std::memory_order_relaxed);
 }

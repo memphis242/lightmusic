@@ -803,6 +803,7 @@ void apply(Ui &ui, const lm::Event &ev) {
     if (ui.stopAfterTarget && ev.state.stopAfterCurrent == *ui.stopAfterTarget) ui.stopAfterTarget.reset();
     switch (ev.type) {
     case lm::EventType::Error: ui.error("error: " + ev.message); break;
+    case lm::EventType::DeviceChanged: ui.warn(ev.message); break;
     case lm::EventType::TrackChanged:
         // The message stays until it expires: an error that made the player skip a
         // track must not vanish with the skip.
@@ -962,6 +963,8 @@ int run(int argc, char **argv) {
                                                                        : lm::GainMode::Off;
     cfg.replayGainPreampDb = static_cast<float>(set.replayGainPreampDb);
     cfg.replayGainPreventClipping = set.replayGainPreventClipping;
+    cfg.pauseOnDeviceLoss = set.pauseOnDeviceLoss;
+    cfg.resumeOnDeviceReturn = set.resumeOnDeviceReturn;
     cfg.gapSeconds = set.gapSeconds;
     cfg.repeat = toRepeat(set.repeat);
     cfg.shuffle = set.shuffle;
