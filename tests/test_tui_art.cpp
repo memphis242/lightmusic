@@ -165,12 +165,82 @@ static void worker(const std::string &tmp) {
     }
 }
 
+// Server albums: fetched when wanted, revalidated by revision (If-None-Match), kept in the
+// cache and shown from it when the server cannot be reached; local paths are untouched.
+static void remote(const std::string &tmp) {
+    using G = lmtui::RemoteThumbs::Got;
+    struct Script {
+        std::mutex m;
+        std::vector<G> answers;   // next answers, in order
+        std::vector<std::int64_t> ifRevs; // what the worker sent
+    };
+    auto script = std::make_shared<Script>();
+    lmtui::RemoteThumbs rt;
+    rt.server = "http://music.test";
+    rt.albumOf = [](const std::string &track) -> std::optional<std::int64_t> {
+        if (track.rfind("lm://", 0) != 0) return std::nullopt;
+        return 7;
+    };
+    rt.fetch = [script](std::int64_t album, std::int64_t ifRev, std::string &rgb, std::int64_t &rev, std::string *err) {
+        std::lock_guard lk(script->m);
+        script->ifRevs.push_back(ifRev);
+        CHECK_EQ(album, 7);
+        const G g = script->answers.empty() ? G::Failed : script->answers.front();
+        if (!script->answers.empty()) script->answers.erase(script->answers.begin());
+        if (g == G::Ok) {
+            const auto px = lmtest::solid(64, 64, 5, 6, 7);
+            rgb.assign(px.begin(), px.end());
+            rev = 3;
+        }
+        if (g == G::Failed && err) *err = "server unreachable";
+        return g;
+    };
+    auto spawn = [](std::function<void()> fn) { std::thread(std::move(fn)).detach(); };
+    const std::string covers = tmp + "/rcovers";
+    auto ask = [&](std::vector<G> answers) {
+        {
+            std::lock_guard lk(script->m);
+            script->answers = std::move(answers);
+        }
+        Waiter w;
+        lmtui::ArtWorker art(covers, [&w] { w.notify(); }, spawn);
+        art.setRemote(rt);
+        art.want({"lm://server/track/1"});
+        std::vector<lmtui::ArtWorker::Result> got;
+        const bool ok = waitFor(w, [&] {
+            for (auto &r : art.take()) got.push_back(std::move(r));
+            return !got.empty();
+        });
+        CHECK(ok);
+        std::vector<std::string> msgs = art.takeMessages();
+        return std::make_pair(got.empty() ? nullptr : got[0].thumb, msgs);
+    };
+    auto [t1, m1] = ask({G::Ok});
+    CHECK(t1 && t1->at(3, 3) == (Rgb{5, 6, 7}));
+    auto [t2, m2] = ask({G::NotModified}); // revalidated: the cached one
+    CHECK(t2 && t2->at(0, 0) == (Rgb{5, 6, 7}));
+    auto [t3, m3] = ask({G::Failed}); // offline: the cached one, and a message
+    CHECK(t3 && t3->at(63, 63) == (Rgb{5, 6, 7}));
+    CHECK(m3.size() == 1 && m3[0].find("server unreachable") != std::string::npos);
+    auto [t4, m4] = ask({G::NotReady}); // not made yet on the server: what we have
+    CHECK(t4 != nullptr);
+    auto [t5, m5] = ask({G::NoArt}); // art removed: none
+    CHECK(t5 == nullptr);
+    auto [t6, m6] = ask({G::Failed}); // offline after "no art": none
+    CHECK(t6 == nullptr);
+    {
+        std::lock_guard lk(script->m);
+        CHECK(script->ifRevs == (std::vector<std::int64_t>{0, 3, 3, 3, 3, 0}));
+    }
+}
+
 int main() {
     char tmpl[] = "/tmp/lm_tui_art_XXXXXX";
     const std::string tmp = lmtest::makeTempDir(tmpl);
     layout();
     rendering();
     worker(tmp);
+    remote(tmp);
     std::error_code ec;
     fs::remove_all(tmp, ec);
     return lmtest::finish("test_tui_art");

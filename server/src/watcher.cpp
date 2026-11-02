@@ -102,6 +102,14 @@ void Watcher::rename_tree(const std::string &from, const std::string &to) {
     }
 }
 
+void Watcher::changed() {
+    try {
+        on_change();
+    } catch (const std::exception &e) {  // a listener's failure must not stop the watcher
+        log(std::string("change listener failed: ") + e.what());
+    }
+}
+
 void Watcher::run() {
     if (!opt_.watch) {
         try {
@@ -113,12 +121,14 @@ void Watcher::run() {
             log(std::string("scan failed: ") + e.what());
         }
         ready_ = true;
+        changed();
         return;
     }
     ifd_ = ::inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
     if (ifd_ < 0) {
         log(std::string("inotify_init1: ") + std::strerror(errno));
         ready_ = true;
+        changed();
         return;
     }
     // Watches first, then the scan: anything written in between is seen by one or both.
@@ -132,6 +142,7 @@ void Watcher::run() {
         log(std::string("scan failed: ") + e.what());
     }
     ready_ = true;
+    changed();
 
     std::vector<Op> ops;
     // Paths whose most recent queued op is an Index (to coalesce repeated events).
@@ -184,6 +195,7 @@ void Watcher::run() {
         ops.clear();
         index_tail.clear();
         overflow = false;
+        changed();
         ++batches_;
     };
 

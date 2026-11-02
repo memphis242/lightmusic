@@ -396,6 +396,13 @@ std::optional<std::int64_t> Db::album_rev(std::int64_t album_id) {
     return s.i64(0);
 }
 
+std::vector<std::pair<std::int64_t, std::int64_t>> Db::album_revs() {
+    std::vector<std::pair<std::int64_t, std::int64_t>> v;
+    Stmt s(db_, "SELECT id, rev FROM album ORDER BY id");
+    while (s.step()) v.emplace_back(s.i64(0), s.i64(1));
+    return v;
+}
+
 namespace {
 
 constexpr const char *kTrackSelect =

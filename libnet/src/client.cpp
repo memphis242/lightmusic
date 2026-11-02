@@ -70,6 +70,8 @@
 #include "lm/net/range_set.hpp"
 #include "metered.hpp"
 
+#include "lm/assert.hpp"
+
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <netinet/in.h>
@@ -81,6 +83,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -1608,6 +1611,100 @@ bool plainLibraryId(const std::string &s) {
     for (char ch : s)
         if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '-')) return false;
     return true;
+}
+} // namespace
+
+namespace {
+bool fetchThumb(Client::Core &c, std::int64_t albumId, std::int64_t ifRev, AlbumThumb &out, std::string *err);
+} // namespace
+
+bool Client::fetchAlbumThumb(std::int64_t albumId, std::int64_t ifRev, AlbumThumb &out, std::string *err) {
+    return fetchThumb(*core_, albumId, ifRev, out, err);
+}
+
+Client::ThumbAccess Client::thumbAccess() const {
+    ThumbAccess a;
+    a.server = core_->base;
+    a.albumOf = [core = core_](TrackId id) -> std::optional<std::int64_t> {
+        auto t = core->db.track(id);
+        if (!t || t->albumId <= 0) return std::nullopt;
+        return t->albumId;
+    };
+    a.fetch = [core = core_](std::int64_t albumId, std::int64_t ifRev, AlbumThumb &out, std::string *err) {
+        return fetchThumb(*core, albumId, ifRev, out, err);
+    };
+    return a;
+}
+
+namespace {
+bool fetchThumb(Client::Core &c, std::int64_t albumId, std::int64_t ifRev, AlbumThumb &out, std::string *err) {
+    LM_ASSERT(!c.net->onNetThread(), "a blocking fetch on the network thread would wait for itself");
+    out = AlbumThumb{};
+    struct Result {
+        long status = 0;
+        std::string etag, body;
+        bool ok = false, tooBig = false;
+        std::string err;
+    };
+    auto res = std::make_shared<Result>();
+    auto done = std::make_shared<std::promise<void>>();
+    auto fut = done->get_future();
+    HttpRequest req;
+    req.url = c.base + "/api/v1/cover/" + std::to_string(albumId) + "/thumb";
+    if (ifRev > 0) req.headers.push_back("If-None-Match: \"r" + std::to_string(ifRev) + "\"");
+    req.totalTimeoutSec = 30;
+    req.onHead = [res](const HttpResponseHead &h) {
+        res->status = h.status;
+        res->etag = h.header("etag");
+        return true;
+    };
+    req.onData = [res](const char *p, std::size_t n) {
+        if (res->body.size() + n > AlbumThumb::kAlbumThumbBytes) {
+            res->tooBig = true;
+            return false;
+        }
+        res->body.append(p, n);
+        return true;
+    };
+    req.onDone = [res, done](bool ok, const std::string &e) {
+        res->ok = ok;
+        res->err = e;
+        done->set_value();
+    };
+    c.net->start(std::move(req));
+    fut.wait();
+    const std::string what = "album " + std::to_string(albumId) + " thumbnail: ";
+    auto fail = [&](const std::string &m) {
+        if (err) *err = what + m;
+        return false;
+    };
+    if (res->tooBig) return fail("larger than a thumbnail");
+    if (!res->ok) return fail(res->err);
+    // ETag "r<rev>": the album revision.
+    auto parseRev = [](const std::string &etag) -> std::int64_t {
+        if (etag.size() < 4 || etag.front() != '"' || etag[1] != 'r' || etag.back() != '"') return 0;
+        std::int64_t v = 0;
+        const auto r = std::from_chars(etag.data() + 2, etag.data() + etag.size() - 1, v);
+        return r.ec == std::errc() && r.ptr == etag.data() + etag.size() - 1 && v > 0 ? v : 0;
+    };
+    switch (res->status) {
+    case 200:
+        if (res->body.size() != AlbumThumb::kAlbumThumbBytes)
+            return fail("bad size (" + std::to_string(res->body.size()) + " bytes)");
+        out.status = AlbumThumb::Status::Ok;
+        out.rgb = std::move(res->body);
+        out.rev = parseRev(res->etag);
+        return true;
+    case 304:
+        if (ifRev <= 0) return fail("unexpected 304");
+        out.status = AlbumThumb::Status::NotModified;
+        out.rev = ifRev;
+        return true;
+    case 404: out.status = AlbumThumb::Status::NoArt; return true;
+    case 503: out.status = AlbumThumb::Status::NotReady; return true;
+    case 401: return fail("server refused the API key (401)");
+    default: return fail("HTTP " + std::to_string(res->status));
+    }
 }
 } // namespace
 

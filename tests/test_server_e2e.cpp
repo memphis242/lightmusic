@@ -319,6 +319,32 @@ int main(int argc, char **argv) {
     r = get("/api/v1/cover/" + album, {{"If-None-Match", cover_etag}});
     CHECK(r && r->status == 304);
 
+    // thumb: the 64x64 RGB thumbnail of the same (red) cover, made in the background
+    // after the initial scan (503 until then); never the full image.
+    bool retry_after = true;
+    const bool thumb_ready = wait_until([&] {
+        r = get("/api/v1/cover/" + album + "/thumb");
+        if (r && r->status == 503) retry_after = retry_after && !r->get_header_value("Retry-After").empty();
+        return r && r->status == 200;
+    });
+    CHECK(thumb_ready && retry_after);
+    CHECK(r && r->body.size() == 64u * 64u * 3u && r->get_header_value("Content-Type") == "application/octet-stream");
+    if (r && r->body.size() == 64u * 64u * 3u) {
+        const auto px = [&](std::size_t i) { return static_cast<unsigned char>(r->body[i]); };
+        CHECK(px(0) > 200 && px(1) < 50 && px(2) < 50);                     // top-left
+        CHECK(px(12285) > 200 && px(12286) < 50 && px(12287) < 50);         // bottom-right
+    }
+    const std::string thumb_etag = r ? r->get_header_value("ETag") : "";
+    CHECK(!thumb_etag.empty());
+    r = get("/api/v1/cover/" + album + "/thumb", {{"If-None-Match", thumb_etag}});
+    CHECK(r && r->status == 304 && r->body.empty());
+    r = cli.Get("/api/v1/cover/" + album + "/thumb");  // no key
+    CHECK(r && r->status == 401);
+    r = cli.Get("/api/v1/cover/" + album + "/thumb?apiKey=" + key);  // header only
+    CHECK(r && r->status == 401);
+    r = get("/api/v1/cover/999999/thumb");
+    CHECK(r && r->status == 404);
+
     // slowloris: headers trickled slower than --header-timeout (2 s) get the connection
     // closed even though each byte arrives well within the 5 s per-read timeout
     {

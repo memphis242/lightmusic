@@ -4,6 +4,7 @@
 #include "config.hpp"
 #include "db.hpp"
 #include "indexer.hpp"
+#include "thumbs.hpp"
 #include "watcher.hpp"
 
 #include "lm/print.hpp"
@@ -122,9 +123,21 @@ int main(int argc, char **argv) try {
         return 1;
     }
 
+    // Album thumbnails for /cover/<id>/thumb, made in the background after each index
+    // change. Not essential: without them the server still runs (thumb answers 503).
+    Thumbnailer thumbs(cfg->db_path, roots);
+    thumbs.log = log_line;
+    bool thumbsOn = true;
+    try {
+        thumbs.start();
+    } catch (const std::exception &e) {
+        log_line(std::string("warning: ") + e.what() + "; album thumbnails disabled");
+        thumbsOn = false;
+    }
     Watcher watcher(ix, Watcher::Options{std::chrono::milliseconds(250),
                                          std::chrono::milliseconds(2000), cfg->watch});
     watcher.log = log_line;
+    if (thumbsOn) watcher.on_change = [&thumbs] { thumbs.kick(); };
     ix.log = log_line;
     DbPool pool(cfg->db_path, std::size_t(cfg->threads));
     HttpApi api(*cfg, pool);

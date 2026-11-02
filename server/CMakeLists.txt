@@ -29,17 +29,17 @@ target_link_libraries(lm_httplib INTERFACE Threads::Threads)
 
 add_library(lm_server_core STATIC
   src/auth.cpp src/range.cpp src/config.cpp src/db.cpp src/tags.cpp
-  src/indexer.cpp src/watcher.cpp src/safe_open.cpp)
+  src/indexer.cpp src/watcher.cpp src/safe_open.cpp src/cover.cpp src/thumbs.cpp)
 add_library(lm::server_core ALIAS lm_server_core)
 target_include_directories(lm_server_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(lm_server_core
   PUBLIC PkgConfig::SQLITE3 Threads::Threads lm::config
-  PRIVATE lm_warnings_app PkgConfig::TAGLIB)
+  PRIVATE lm_warnings_app PkgConfig::TAGLIB lm::art)
 
 # api.cpp is the only TU that includes httplib.h (slow to compile).
 add_executable(lightmusicd src/main.cpp src/api.cpp)
 lm_release_link_options(lightmusicd)
-target_link_libraries(lightmusicd PRIVATE lm_server_core lm_httplib lm_warnings_app PkgConfig::TAGLIB)
+target_link_libraries(lightmusicd PRIVATE lm_server_core lm_httplib lm_warnings_app PkgConfig::TAGLIB lm::art)
 install(TARGETS lightmusicd RUNTIME DESTINATION bin)
 
 # GCC 13 with -fsanitize=address reports a false -Wmaybe-uninitialized inside

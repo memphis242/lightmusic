@@ -1,10 +1,12 @@
 #include "api.hpp"
 
 #include "auth.hpp"
+#include "cover.hpp"
 #include "json.hpp"
 #include "range.hpp"
 #include "safe_open.hpp"
 #include "tags.hpp"
+#include "thumbs.hpp"
 
 #include <httplib.h>
 
@@ -31,7 +33,6 @@ namespace {
 
 constexpr const char *kVersion = "0.1.0";
 constexpr std::size_t kStreamChunk = std::size_t{64} * 1024;
-constexpr std::int64_t kMaxCoverBytes = std::int64_t{20} * 1024 * 1024;
 
 // cpp-httplib parses the Range header into req.ranges and would apply it to whatever we
 // put in the response. We implement Range ourselves (range.hpp), so every handler first
@@ -219,12 +220,14 @@ struct HttpApi::Impl {
     };
     std::mutex cover_mu;
     std::unordered_map<std::int64_t, CoverEntry> cover_cache;
+    // Album thumbnails made by the Thumbnailer (read only here).
+    lm::art::CoverCache thumbs;
 
     using Handler = httplib::Server::Handler;
     std::vector<std::pair<std::regex, Handler>> table;  // for re-dispatch (bad Range)
 
     Impl(const Config &c, DbPool &p, HttpApi *s)
-        : cfg(c), pool(p), roots(c.music_dirs), srv(*this), self(s) {
+        : cfg(c), pool(p), roots(c.music_dirs), srv(*this), self(s), thumbs(Thumbnailer::dir_for(c.db_path)) {
         for (auto &t : cfg.trusted_proxies) trusted.push_back(normalize_ip(t));
         watchdog = std::thread([this] { watch_deadlines(); });
     }
@@ -425,38 +428,6 @@ struct HttpApi::Impl {
             });
     }
 
-    std::optional<Picture> load_cover(const std::vector<std::string> &paths) {
-        std::optional<Picture> pic;
-        for (std::size_t i = 0; i < paths.size() && i < 3 && !pic; ++i) {
-            int fd = roots.open(paths[i]);
-            if (fd < 0) continue;
-            Fd guard(fd);
-            struct stat sb{};
-            if (::fstat(fd, &sb) == 0 && S_ISREG(sb.st_mode)) pic = read_embedded_picture(fd, paths[i]);
-        }
-        if (pic) return pic;
-        std::string dir = paths.front().substr(0, paths.front().rfind('/'));
-        for (const char *name : {"cover.jpg", "folder.jpg", "cover.jpeg", "front.jpg",
-                                 "cover.png", "folder.png"}) {
-            int fd = roots.open(dir + "/" + name);
-            if (fd < 0) continue;
-            Fd guard(fd);
-            struct stat sb{};
-            if (::fstat(fd, &sb) != 0 || !S_ISREG(sb.st_mode) || sb.st_size > kMaxCoverBytes)
-                continue;
-            std::string data(std::size_t(sb.st_size), '\0');
-            std::size_t got = 0;
-            while (got < data.size()) {
-                ssize_t n = ::read(fd, data.data() + got, data.size() - got);
-                if (n <= 0) break;
-                got += std::size_t(n);
-            }
-            data.resize(got);
-            return Picture{std::strstr(name, ".png") ? "image/png" : "image/jpeg", std::move(data)};
-        }
-        return std::nullopt;
-    }
-
     // The cover's ETag (a hash of the image) is cached per album and reused while the
     // album's rev is unchanged, so a conditional request (304) costs one indexed SELECT
     // and no file I/O. A cover.jpg replaced without any track change keeps the old
@@ -483,7 +454,7 @@ struct HttpApi::Impl {
         }
         auto paths = pool.get()->album_track_paths(id);
         if (paths.empty()) return error(res, 404, "no such album");
-        std::optional<Picture> pic = load_cover(paths);
+        std::optional<Picture> pic = load_album_cover(roots, paths);
         std::string etag;
         if (pic) {
             Sha256 h = sha256(pic->data);
@@ -503,6 +474,36 @@ struct HttpApi::Impl {
         }
         res.status = 200;
         res.set_content(std::move(pic->data), pic->mime.empty() ? "image/jpeg" : pic->mime);
+    }
+
+    // GET /cover/<id>/thumb: the album's 64x64 RGB thumbnail (12288 bytes, rows top to
+    // bottom), made in the background by the Thumbnailer; never decoded here. The ETag is
+    // the album's revision. 404 "no cover" when the album has no usable art; 503 with
+    // Retry-After while the thumbnail is not made yet (new or changed album).
+    void thumb(const httplib::Request &req, httplib::Response &res) {
+        std::int64_t id;
+        if (!parse_i64(req.matches[1].str(), id)) return error(res, 404, "no such album");
+        auto rev = pool.get()->album_rev(id);
+        if (!rev) return error(res, 404, "no such album");
+        lm::art::Thumb t;
+        std::string err;
+        switch (thumbs.load(Thumbnailer::key(id), std::uint64_t(*rev), t, &err)) {
+        case lm::art::CoverCache::Lookup::NoArt: return error(res, 404, "no cover");
+        case lm::art::CoverCache::Lookup::Miss:
+            if (!err.empty()) self->log("thumbnails: " + err);
+            res.set_header("Retry-After", "30");
+            return error(res, 503, "thumbnail not ready");
+        case lm::art::CoverCache::Lookup::Hit: break;
+        }
+        const std::string etag = "\"r" + std::to_string(*rev) + "\"";
+        res.set_header("ETag", etag);
+        res.set_header("Cache-Control", "private, max-age=86400");
+        if (none_match(req.get_header_value("If-None-Match"), etag)) {
+            res.status = 304;
+            return;
+        }
+        res.status = 200;
+        res.set_content(std::string(reinterpret_cast<const char *>(t.px.data()), t.px.size()), "application/octet-stream");
     }
 
     void get(const std::string &pattern, Handler h) {
@@ -575,6 +576,8 @@ struct HttpApi::Impl {
                 guarded(true, true, [this](auto &req, auto &res) { stream(req, res); }));
         get(R"(/api/v1/cover/(\d+))",
                 guarded(true, true, [this](auto &req, auto &res) { cover(req, res); }));
+        get(R"(/api/v1/cover/(\d+)/thumb)",
+            guarded(true, false, [this](auto &req, auto &res) { thumb(req, res); }));
 
         // No route takes a body. Refuse one before httplib would read it (a body trickled
         // in would otherwise hold a worker past the header deadline); the connection is

@@ -37,9 +37,11 @@ How they are used:
   `set_trusted_proxies`, `bind_to_any_port`/`listen_after_bind`). It is included only by
   `server/src/api.cpp` and `tests/test_server_e2e.cpp` (slow to compile). The bench keeps
   its own 0.18.1 copy in `bench/third_party/`.
-- `stb_image.h` (cover art) is compiled in exactly one translation unit
+- `stb_image.h` (cover art: the TUI and lightmusicd) is compiled in exactly one translation unit
   (`libart/src/stb_impl.c`, `-w`, SYSTEM include) with the options in
   `libart/src/lm_stb_image.h`: JPEG and PNG only (`STBI_ONLY_JPEG`/`STBI_ONLY_PNG`), no
-  stdio, no HDR/linear, `STBI_MAX_DIMENSIONS` 8192. Every other file includes
+  stdio, no HDR/linear, `STBI_MAX_DIMENSIONS` 8192, and our allocator
+  (`libart/src/stb_alloc.c`: blocks of 1 MiB and more are mmap'ed, so a freed image does
+  not stay resident). Every other file includes
   `lm_stb_image.h`. Images are untrusted: `lm::art::makeThumb` checks the byte size and
   the dimensions from the header before decoding (see README "Cover art").

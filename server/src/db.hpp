@@ -27,6 +27,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 struct sqlite3;
@@ -135,6 +136,8 @@ public:
     [[nodiscard]] std::optional<TrackFile> track_file(lm::TrackId id);
     std::vector<std::string> album_track_paths(std::int64_t album_id);  // by disc/track
     [[nodiscard]] std::optional<std::int64_t> album_rev(std::int64_t album_id);
+    // Every album as (id, rev), by id (the thumbnailer).
+    std::vector<std::pair<std::int64_t, std::int64_t>> album_revs();
     // `library`: the library id the client's mirror came from ("" = unknown); another
     // one than library_id() gets a full dump.
     std::string json_changes(std::int64_t since, const std::string &library = {});

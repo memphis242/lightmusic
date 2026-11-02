@@ -3,6 +3,8 @@
 #include "lm/assert.hpp"
 
 #include <algorithm>
+#include <cstring>
+#include <format>
 #include <utility>
 
 namespace lmtui {
@@ -65,6 +67,12 @@ void ArtWorker::start() {
     }
 }
 
+void ArtWorker::setRemote(RemoteThumbs r) {
+    std::lock_guard lk(sh_->m);
+    LM_ASSERT(!sh_->running, "set before the worker starts");
+    sh_->remote = std::make_shared<const RemoteThumbs>(std::move(r));
+}
+
 void ArtWorker::prefetch(const std::vector<std::string> &tracks) {
     std::vector<std::string> fresh;
     for (const auto &t : tracks) {
@@ -116,7 +124,50 @@ void ArtWorker::run(const std::shared_ptr<Shared> &sh, const std::string &dir, c
         if (!cacheOk) report("cache", (dir.empty() ? std::string("no cache directory") : err) +
                                           " (thumbnails are not kept between runs)");
 
+        std::shared_ptr<const RemoteThumbs> remote;
+        {
+            std::lock_guard lk(sh->m);
+            remote = sh->remote;
+        }
+        // A server album: revalidate the cached thumbnail by revision (one small request),
+        // fall back to it when the server cannot be reached.
+        auto remoteLookup = [&](std::int64_t album) -> std::shared_ptr<const lm::art::Thumb> {
+            const std::string key = std::format("r{:016x}-{}", lm::art::fnv1a64(remote->server), album);
+            lm::art::Thumb held;
+            std::uint64_t stamp = 0;
+            std::string e;
+            const auto have = cacheOk ? cache.peek(key, held, stamp, &e) : lm::art::CoverCache::Lookup::Miss;
+            auto cached = [&]() -> std::shared_ptr<const lm::art::Thumb> {
+                return have == lm::art::CoverCache::Lookup::Hit ? std::make_shared<const lm::art::Thumb>(held) : nullptr;
+            };
+            std::string rgb;
+            std::int64_t rev = 0;
+            const auto got = remote->fetch(album, have == lm::art::CoverCache::Lookup::Hit ? std::int64_t(stamp) : 0,
+                                           rgb, rev, &e);
+            switch (got) {
+            case RemoteThumbs::Got::NotModified: return cached();
+            case RemoteThumbs::Got::NotReady: return cached();
+            case RemoteThumbs::Got::Failed:
+                report("remote", e + " (cached covers are shown)");
+                return cached();
+            case RemoteThumbs::Got::NoArt:
+                if (cacheOk && !cache.store(key, 0, std::nullopt, &e)) report("store", e);
+                return nullptr;
+            case RemoteThumbs::Got::Ok: break;
+            }
+            if (rgb.size() != lm::art::kThumbBytes) { // the fetcher checks; never trust it blindly
+                report("remote size", "a server thumbnail of the wrong size was ignored");
+                return cached();
+            }
+            lm::art::Thumb t;
+            std::memcpy(t.px.data(), rgb.data(), t.px.size());
+            if (cacheOk && rev > 0 && !cache.store(key, std::uint64_t(rev), t, &e)) report("store", e);
+            return std::make_shared<const lm::art::Thumb>(t);
+        };
+
         auto lookup = [&](const std::string &track) -> std::shared_ptr<const lm::art::Thumb> {
+            if (remote && remote->albumOf)
+                if (const auto album = remote->albumOf(track)) return remoteLookup(*album);
             lm::art::LocalAlbum a;
             std::string e;
             // A folder that cannot be listed: the player reports the track itself.

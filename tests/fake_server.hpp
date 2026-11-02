@@ -30,6 +30,7 @@ public:
     FakeServer() {
         srv_.Get("/api/v1/library/changes", [this](const httplib::Request &q, httplib::Response &r) { changes(q, r); });
         srv_.Get(R"(/api/v1/stream/(\d+))", [this](const httplib::Request &q, httplib::Response &r) { stream(q, r); });
+        srv_.Get(R"(/api/v1/cover/(\d+)/thumb)", [this](const httplib::Request &q, httplib::Response &r) { thumb(q, r); });
         port_ = srv_.bind_to_any_port("127.0.0.1");
         th_ = std::thread([this] { srv_.listen_after_bind(); });
         srv_.wait_until_ready();
@@ -77,6 +78,17 @@ public:
         tracks_.erase(id);
         rev_++;
     }
+    // GET /cover/<album>/thumb: status 200 with `body` (ETag "r<rev>"; If-None-Match of it
+    // gives 304), or any other status with an empty body. Unknown albums: 404.
+    struct Thumb {
+        int status = 200;
+        std::string body;
+        std::int64_t rev = 1;
+    };
+    void setThumb(std::int64_t album, Thumb t) {
+        std::lock_guard lk(m_);
+        thumbs_[album] = std::move(t);
+    }
     std::vector<std::string> ifRangeSeen() {
         std::lock_guard lk(m_);
         return ifRange_;
@@ -104,6 +116,27 @@ private:
         r.status = 401;
         r.set_content("{\"error\":\"unauthorized\"}", "application/json");
         return false;
+    }
+
+    void thumb(const httplib::Request &q, httplib::Response &r) {
+        if (!authorized(q, r)) return;
+        std::lock_guard lk(m_);
+        const auto it = thumbs_.find(std::stoll(q.matches[1].str()));
+        if (it == thumbs_.end()) {
+            r.status = 404;
+            return;
+        }
+        const std::string etag = "\"r" + std::to_string(it->second.rev) + "\"";
+        if (it->second.status == 200 && q.get_header_value("If-None-Match") == etag) {
+            r.status = 304;
+            r.set_header("ETag", etag);
+            return;
+        }
+        r.status = it->second.status;
+        if (r.status == 200) {
+            r.set_header("ETag", etag);
+            r.set_content(it->second.body, "application/octet-stream");
+        }
     }
 
     void changes(const httplib::Request &q, httplib::Response &r) {
@@ -230,6 +263,7 @@ private:
     std::map<std::int64_t, FakeTrack> tracks_;
     std::int64_t rev_ = 1;
     std::vector<std::string> ifRange_, ranges_;
+    std::map<std::int64_t, Thumb> thumbs_;
 };
 
 } // namespace lmtest

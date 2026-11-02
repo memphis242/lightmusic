@@ -1,0 +1,27 @@
+Cover art (lm::art), 2026-11-02. Local machine (4 cores), gcc 13.3, RelWithDebInfo,
+stb_image v2.30 (JPEG+PNG), stb_alloc.c mapping blocks >= 1 MiB.
+Covers made by ffmpeg (testsrc2): 600x600 JPEG 29 KiB, 1000x1000 JPEG 74 KiB,
+3000x3000 JPEG 511 KiB, 1400x1400 PNG 230 KiB.
+
+$ lightmusic-bench-art lib 1000 typical600.jpg typical1000.jpg large3000.jpg png1400.png
+decode+thumbnail typical600.jpg (29 KiB): 3.69 ms
+decode+thumbnail typical1000.jpg (74 KiB): 8.97 ms
+decode+thumbnail large3000.jpg (511 KiB): 72.54 ms
+decode+thumbnail png1400.png (230 KiB): 12.75 ms
+before scan: VmHWM:	   45436 kB  VmRSS:	    6064 kB
+eager (cold) pass: 1000 albums, 1000 built, 0 cache hits: 27846 ms (27.85 ms/album)
+warm pass: 1000 albums, 0 built, 1000 cache hits: 16 ms (0.02 ms/album)
+after scan: VmHWM:	   45632 kB  VmRSS:	    6204 kB
+
+Same run with stb_image allocating through malloc() (before stb_alloc.c):
+decode+thumbnail 2.76 / 7.06 / 58.27 / 8.39 ms; eager pass 22.65 ms/album; RSS after the
+scan 44.9 MB (glibc's raised mmap threshold kept the freed images on the heap).
+
+lightmusicd, 200 albums (one track each, the four covers in turn): initial scan + every
+thumbnail made in 5.5 s; RSS 9.8 MB afterwards (peak 49 MB while a 3000x3000 cover is
+decoded); 7.9 MB for the same library without thumbnails; 8.1 MB after a restart with
+the thumbnails already made. 200 thumbnails on disk: 3.2 MB (12304 B each + blocks).
+
+lightmusic (TUI) on one album with a 1000x1000 cover, --null, 120x40: RSS 14.50 MB with
+ui.cover_art: false, 14.85 MB with the thumbnail cached (+0.34 MB: the worker thread, two
+12 KiB thumbnails), peak 18.6 MB on the first run while the cover is decoded.

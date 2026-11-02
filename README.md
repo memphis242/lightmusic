@@ -147,18 +147,28 @@ most 32x16 cells, and hidden when the list would get narrower than 40 columns, w
 album has no art, or with `ui.cover_art: false` (hot). A local album is its folder; its
 art is the embedded picture of the folder's first audio file (ID3v2 `APIC`, FLAC
 `PICTURE`, Vorbis/Opus `METADATA_BLOCK_PICTURE`; the front cover, else the first
-picture), else `cover.jpg`, `folder.jpg`, `cover.jpeg`, `folder.jpeg`, `cover.png` or
-`folder.png` (any case). Only JPEG and PNG are decoded (stb_image), and images are
+picture), else `cover`, `folder` or `front` `.jpg`/`.jpeg`/`.png` in that order (any
+case). Only JPEG and PNG are decoded (stb_image), and images are
 treated as untrusted: at most 16 MiB, 8192 pixels per side and 4096x4096 pixels in all,
 checked before decoding; a bad image is logged once in `:messages` and the pane stays
-empty. Nothing is decoded on the play path: a background thread at `SCHED_IDLE`
+empty. Decoded images of 1 MiB and more are mapped and unmapped directly, so a pass over
+large covers leaves no memory resident. Nothing is decoded on the play path: a background thread at `SCHED_IDLE`
 priority makes a 64x64 RGB thumbnail (12 KiB) of every album in the list once, when the
 list is loaded, and stores it in `$XDG_CACHE_HOME/lightmusic/covers/` (`cache.dir`
 moves it; 0700, one file per folder, keyed by a hash of the folder path, and redone when
 the name, size or modification time of the art sources changes, so re-tagging or
 replacing the cover is picked up). A track change loads only the playing and the next
-album's thumbnails; the pane scales the thumbnail to its size when drawn. Server
-tracks show no cover yet.
+album's thumbnails; the pane scales the thumbnail to its size when drawn. **Server
+tracks** use the thumbnail lightmusicd made (`GET /cover/{id}/thumb`; the full image is
+never fetched), requested when the track is current or next, revalidated by the album's
+revision, and kept in the same covers directory; offline, the cached one is shown.
+
+**lightmusicd** makes the thumbnails itself: after the initial scan and after each index
+change a background thread (`SCHED_IDLE`) thumbnails every new or changed album (same
+sources and limits as above; a bad image is logged once and recorded as "no art") into
+`thumbs/` next to the database (0700), stamped with the album's revision, and deletes those
+of albums that are gone. A request only reads that 12 KiB file. A cover image replaced
+without any change to the album's tracks keeps the old thumbnail until the album changes.
 
 **Playlists** (M3U / M3U8). `:save NAME` stores the list (not the user queue) as
 `$XDG_DATA_HOME/lightmusic/playlists/NAME.m3u8` (else `~/.local/share/...`), with
@@ -343,10 +353,20 @@ ctest --test-dir build --output-on-failure
   oversized folder images; with ffmpeg also JPEG covers embedded in MP3 and FLAC (the
   embedded picture wins over the folder image), files without pictures, and the decode
   time of a 3000x3000 JPEG.
+- `test_server_thumbs`: server thumbnails from a folder image (any case) and from an
+  embedded picture, "no art" for no image, a corrupt one and a symlinked one (refused),
+  nothing redone while albums are unchanged, redone after a track change, deleted with
+  the album, the cover lookup outside the roots, and the background thread (start, kick,
+  stop). `test_server_e2e` checks `/cover/{id}/thumb` over HTTP (503 then 200, pixels,
+  304, 401 without the header or with `?apiKey=`, 404) and `test_cache` the client side
+  (200/304/404/503, wrong sizes and other statuses refused, a vanished server, use after
+  the client is gone).
 - `test_tui_art`: the cover pane's size and when it hides, the half-block element
   rendered by FTXUI (glyph, foreground/background per cell, truecolour and 256-colour
   escapes), and the background worker end to end (eager thumbnails, wanted albums,
-  no-art and corrupt albums reported once, cache hits on the next run, a replaced cover).
+  no-art and corrupt albums reported once, cache hits on the next run, a replaced cover),
+  and server albums (fetched, revalidated by revision, shown from the cache offline or
+  while not ready, cleared when the art is gone).
 - `test_tui_logic`: directory scanning, natural sort, terminal key parsing (ctrl-letters,
   tab), the default keymap per context, `keys:` overrides (replacing defaults, unbinding,
   user keys taking default ones, digits, conflicts, unknown actions/keys with their
@@ -651,7 +671,8 @@ limit; the server warns at startup when it listens on loopback without one.
 | `GET /tracks/{id}` | one track |
 | `GET /search?q=TEXT&limit=20` | substring match on artist name, album title, track title/artist |
 | `GET /stream/{trackId}` | the original file; 200/206/304/416, `Accept-Ranges`, `ETag`, `Last-Modified`, `If-Range`, `If-None-Match` |
-| `GET /cover/{albumId}` | embedded front cover (first 3 tracks), else `cover.jpg`/`folder.jpg`/`cover.png`/… in the album folder; `size` is ignored for now |
+| `GET /cover/{albumId}` | embedded front cover (first 3 tracks), else `cover`/`folder`/`front` `.jpg`/`.jpeg`/`.png` (any case, never through a symlink) in the album folder; `size` is ignored for now |
+| `GET /cover/{albumId}/thumb` | the album's 64x64 RGB thumbnail: 12288 bytes, rows top to bottom, `application/octet-stream`; `ETag` `"r<album revision>"` (304 for `If-None-Match`); 404 `no cover` without usable art; 503 with `Retry-After` until it is made. Bearer header only |
 
 Shapes:
 

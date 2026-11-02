@@ -32,7 +32,7 @@ target_link_libraries(tui_logic PUBLIC lm::config PRIVATE lm_warnings_app)
 add_library(tui_art STATIC art_view.cpp)
 add_library(lm::tui_art ALIAS tui_art)
 target_include_directories(tui_art PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(tui_art PUBLIC lm::art ftxui::dom ftxui::screen PRIVATE lm_warnings_app)
+target_link_libraries(tui_art PUBLIC lm::art_local ftxui::dom ftxui::screen PRIVATE lm_warnings_app)
 
 add_executable(lightmusic main.cpp)
 lm_release_link_options(lightmusic)
