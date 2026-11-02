@@ -1,8 +1,10 @@
 // Unit tests for the TUI's non-UI logic (frontends/tui/tui_logic.*).
 #include "common.hpp"
+#include "keymap.hpp"
 #include "tui_logic.hpp"
 
 #include <limits>
+#include <map>
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -129,46 +131,57 @@ static void testFormat() {
 }
 
 static void testKeys() {
-    CHECK(lmtui::mapKey(" ") == Command::TogglePause);
-    CHECK(lmtui::mapKey("n") == Command::Next);
-    CHECK(lmtui::mapKey("p") == Command::Prev);
-    CHECK(lmtui::mapKey("left") == Command::SeekBack);
-    CHECK(lmtui::mapKey("right") == Command::SeekForward);
-    CHECK(lmtui::mapKey("+") == Command::VolumeUp);
-    CHECK(lmtui::mapKey("=") == Command::VolumeUp);
-    CHECK(lmtui::mapKey("-") == Command::VolumeDown);
-    CHECK(lmtui::mapKey("enter") == Command::PlaySelected);
-    CHECK(lmtui::mapKey("j") == Command::SelectDown);
-    CHECK(lmtui::mapKey("down") == Command::SelectDown);
-    CHECK(lmtui::mapKey("k") == Command::SelectUp);
-    CHECK(lmtui::mapKey("up") == Command::SelectUp);
-    CHECK(lmtui::mapKey("q") == Command::Quit);
-    CHECK(lmtui::mapKey("ctrl-c") == Command::Quit);
-    CHECK(lmtui::mapKey("?") == Command::ToggleHelp);
-    CHECK(lmtui::mapKey("escape") == Command::CloseHelp);
-    CHECK(lmtui::mapKey("x") == Command::None);
-    CHECK(lmtui::mapKey("") == Command::None);
-    CHECK(lmtui::mapKey("Q") == Command::None);
-    CHECK(lmtui::mapKey("r") == Command::CycleRepeat);
-    CHECK(lmtui::mapKey("s") == Command::ToggleShuffle);
-    CHECK(lmtui::mapKey("R") == Command::None);
-    CHECK(lmtui::mapKey("a") == Command::QueueAdd);
-    CHECK(lmtui::mapKey("b") == Command::ToggleBrowser);
-    CHECK(lmtui::mapKey("o") == Command::None);
-    CHECK(lmtui::mapBrowserKey("o") == Command::BrowsePlay);
-    CHECK(lmtui::mapBrowserKey("backspace") == Command::BrowseUp);
-    CHECK(lmtui::mapBrowserKey("h") == Command::BrowseUp);
-    CHECK(lmtui::mapBrowserKey("l") == Command::PlaySelected);
-    CHECK(lmtui::mapBrowserKey("enter") == Command::PlaySelected);
-    CHECK(lmtui::mapBrowserKey("escape") == Command::ToggleBrowser);
-    CHECK(lmtui::mapBrowserKey("a") == Command::QueueAdd);
-    CHECK(lmtui::mapBrowserKey(" ") == Command::TogglePause);
-    CHECK(lmtui::mapKey("home") == Command::SeekStart);
-    CHECK(lmtui::mapKey("end") == Command::SeekEnd);
-    CHECK(lmtui::mapKey("g") == Command::SelectFirst);
-    CHECK(lmtui::mapKey("G") == Command::SelectLast);
-    CHECK(lmtui::mapKey("0") == Command::SeekPercent);
-    CHECK(lmtui::mapKey("9") == Command::SeekPercent);
+    using lmtui::Context;
+    const lmtui::Keymap km;
+    auto G = [&](std::string_view k) { return km.lookup(Context::Global, k); };
+    auto Qp = [&](std::string_view k) { return km.lookup(Context::Queue, k); };
+    auto B = [&](std::string_view k) { return km.lookup(Context::Browser, k); };
+    CHECK(G(" ") == Command::TogglePause);
+    CHECK(G("n") == Command::Next);
+    CHECK(G("p") == Command::Prev);
+    CHECK(G("left") == Command::SeekBack);
+    CHECK(G("right") == Command::SeekForward);
+    CHECK(G("+") == Command::VolumeUp);
+    CHECK(G("=") == Command::VolumeUp);
+    CHECK(G("-") == Command::VolumeDown);
+    CHECK(G("enter") == Command::PlaySelected);
+    CHECK(G("j") == Command::SelectDown);
+    CHECK(G("down") == Command::SelectDown);
+    CHECK(G("k") == Command::SelectUp);
+    CHECK(G("up") == Command::SelectUp);
+    // #20: q/Q queue, quit is Ctrl-C or :q only.
+    CHECK(G("q") == Command::QueueAdd);
+    CHECK(G("Q") == Command::QueuePlayNext);
+    CHECK(G("ctrl-c") == Command::Quit);
+    CHECK(G(":") == Command::OpenCommandLine);
+    CHECK(G("a") == Command::None);
+    CHECK(G("A") == Command::None);
+    CHECK(G("?") == Command::ToggleHelp);
+    CHECK(G("escape") == Command::CloseHelp);
+    CHECK(G("x") == Command::None);
+    CHECK(G("") == Command::None);
+    CHECK(G("r") == Command::CycleRepeat);
+    CHECK(G("s") == Command::ToggleShuffle);
+    CHECK(G("R") == Command::None);
+    CHECK(G("b") == Command::ToggleBrowser);
+    CHECK(G("o") == Command::None);
+    CHECK(G("l") == Command::None);
+    CHECK(B("o") == Command::BrowsePlay);
+    CHECK(B("backspace") == Command::BrowseUp);
+    CHECK(B("h") == Command::BrowseUp);
+    CHECK(B("l") == Command::PlaySelected);
+    CHECK(B("enter") == Command::PlaySelected);
+    CHECK(B("escape") == Command::ToggleBrowser);
+    CHECK(B("q") == Command::QueueAdd);
+    CHECK(B("Q") == Command::QueuePlayNext);
+    CHECK(B(" ") == Command::TogglePause);
+    CHECK(G("home") == Command::SeekStart);
+    CHECK(G("end") == Command::SeekEnd);
+    CHECK(G("g") == Command::SelectFirst);
+    CHECK(G("G") == Command::SelectLast);
+    CHECK(G("0") == Command::SeekPercent);
+    CHECK(G("9") == Command::SeekPercent);
+    CHECK(G("ctrl-z") == Command::Suspend);
     CHECK_EQ(lmtui::percentKey("0"), 0);
     CHECK_EQ(lmtui::percentKey("5"), 50);
     CHECK_EQ(lmtui::percentKey("9"), 90);
@@ -178,21 +191,21 @@ static void testKeys() {
     CHECK_NEAR(lmtui::endSeekTarget(200.0), 195.0, 1e-9);
     CHECK_NEAR(lmtui::endSeekTarget(3.0), 0.0, 1e-9);
     CHECK(lmtui::endSeekTarget(0.0) < 0);
-    CHECK(lmtui::mapKey("A") == Command::QueuePlayNext);
-    CHECK(lmtui::mapKey("v") == Command::ToggleQueueView);
-    CHECK(lmtui::mapKey("J") == Command::None);
-    CHECK(lmtui::mapKey("d") == Command::None);
-    CHECK(lmtui::mapQueueKey("J") == Command::QueueMoveDown);
-    CHECK(lmtui::mapQueueKey("K") == Command::QueueMoveUp);
-    CHECK(lmtui::mapQueueKey("d") == Command::QueueRemove);
-    CHECK(lmtui::mapQueueKey("delete") == Command::QueueRemove);
-    CHECK(lmtui::mapQueueKey("c") == Command::QueueClear);
-    CHECK(lmtui::mapQueueKey("escape") == Command::ToggleQueueView);
-    CHECK(lmtui::mapQueueKey("v") == Command::ToggleQueueView);
-    CHECK(lmtui::mapQueueKey("a") == Command::None);
-    CHECK(lmtui::mapQueueKey("j") == Command::SelectDown);
-    CHECK(lmtui::mapQueueKey("enter") == Command::PlaySelected);
-    CHECK(lmtui::mapQueueKey(" ") == Command::TogglePause);
+    CHECK(G("v") == Command::ToggleQueueView);
+    CHECK(G("J") == Command::None);
+    CHECK(G("d") == Command::None);
+    CHECK(Qp("J") == Command::QueueMoveDown);
+    CHECK(Qp("K") == Command::QueueMoveUp);
+    CHECK(Qp("d") == Command::QueueRemove);
+    CHECK(Qp("delete") == Command::QueueRemove);
+    CHECK(Qp("c") == Command::QueueClear);
+    CHECK(Qp("escape") == Command::ToggleQueueView);
+    CHECK(Qp("v") == Command::ToggleQueueView);
+    CHECK(Qp("q") == Command::None); // the queue holds what is queued already
+    CHECK(Qp("Q") == Command::None);
+    CHECK(Qp("j") == Command::SelectDown);
+    CHECK(Qp("enter") == Command::PlaySelected);
+    CHECK(Qp(" ") == Command::TogglePause);
     CHECK_EQ(lmtui::nextRepeat(0), 1);
     CHECK_EQ(lmtui::nextRepeat(1), 2);
     CHECK_EQ(lmtui::nextRepeat(2), 0);
@@ -240,7 +253,8 @@ static void testKeyParser() {
     // UTF-8 passes through whole, even when split.
     CHECK(p.feed("\xc3").empty());
     CHECK(p.feed("\xa9" "a") == (V{"\xc3\xa9", "a"}));
-    CHECK(p.feed("\x01\x02").empty()); // other control bytes ignored
+    CHECK(p.feed("\x01\x02") == (V{"ctrl-a", "ctrl-b"}));
+    CHECK(p.feed("\x1c\x1f").empty()); // other control bytes ignored
     CHECK(!p.pending());
 
     // Malformed CSI: a byte outside 0x40..0x7e where the final byte belongs ends the
@@ -274,7 +288,149 @@ static void testKeyParser() {
     CHECK(!p.pending());
 
     CHECK(p.feed("\x1a") == (V{"ctrl-z"}));
-    CHECK(lmtui::mapKey("ctrl-z") == Command::Suspend);
+    CHECK(p.feed("\x01\x17\t") == (V{"ctrl-a", "ctrl-w", "tab"}));
+}
+
+using Named = std::map<std::string, lm::config::NamedList>;
+static lm::config::NamedList L(std::vector<std::string> items) { return {std::move(items), "cfg.yaml:3:9"}; }
+
+static void testKeymapOverrides() {
+    using lmtui::Context;
+    std::vector<std::string> errs;
+    {
+        lmtui::Keymap km;
+        // Replace defaults; "a" moves from nothing to queue_add, "q" is freed.
+        CHECK(km.apply(Named{{"queue_add", L({"a"})}, {"quit", L({"ctrl-c", "space"})}}, errs));
+        CHECK(errs.empty());
+        CHECK(km.lookup(Context::Global, "a") == Command::QueueAdd);
+        CHECK(km.lookup(Context::Global, "q") == Command::None);
+        // space was toggle_pause's default: the user's binding wins.
+        CHECK(km.lookup(Context::Global, " ") == Command::Quit);
+        CHECK(km.keysOf("toggle_pause").empty());
+        CHECK(km.keysOf("quit") == (std::vector<std::string>{"ctrl-c", " "}));
+        // Contexts are separate: the queue pane keeps its own escape.
+        CHECK(km.lookup(Context::Queue, "escape") == Command::ToggleQueueView);
+    }
+    {
+        lmtui::Keymap km;
+        CHECK(km.apply(Named{{"next", L({"space", "ctrl-n", "€"})}, {"toggle-pause", L({"p"})}, {"prev", L({})}}, errs));
+        CHECK(km.lookup(Context::Global, "ctrl-n") == Command::Next);
+        CHECK(km.lookup(Context::Global, "€") == Command::Next);
+        CHECK(km.lookup(Context::Global, "p") == Command::TogglePause);
+        CHECK(km.keysOf("prev").empty()); // [] unbinds
+        // A digit bound by the user is no longer a percent seek.
+        CHECK(km.apply(Named{{"next", L({"5"})}}, errs));
+        CHECK(km.lookup(Context::Global, "5") == Command::Next);
+        CHECK(km.lookup(Context::Global, "4") == Command::SeekPercent);
+        // A context action may reuse a global key: it wins in its pane only.
+        CHECK(km.apply(Named{{"queue_clear", L({"n"})}}, errs));
+        CHECK(km.lookup(Context::Queue, "n") == Command::QueueClear);
+        CHECK(km.lookup(Context::Global, "5") == Command::Next);
+    }
+    // Errors: the keymap is left unchanged and every problem is reported with its place.
+    lmtui::Keymap km;
+    errs.clear();
+    CHECK(!km.apply(Named{{"nope", L({"x"})}, {"next", L({"F13", "ab", ""})}}, errs));
+    CHECK_EQ(errs.size(), 4u);
+    CHECK(!errs.empty() && errs[0].find("cfg.yaml:3:9") != std::string::npos);
+    CHECK(std::any_of(errs.begin(), errs.end(), [](auto &e) { return e.find("keys.nope: unknown action") != std::string::npos; }));
+    CHECK(std::any_of(errs.begin(), errs.end(), [](auto &e) { return e.find("unknown key 'F13'") != std::string::npos; }));
+    CHECK(km.lookup(Context::Global, "n") == Command::Next);
+    errs.clear();
+    CHECK(!km.apply(Named{{"next", L({"x"})}, {"prev", L({"x"})}}, errs));
+    CHECK_EQ(errs.size(), 1u);
+    CHECK(!errs.empty() && errs[0].find("both next and prev") != std::string::npos);
+    CHECK(km.lookup(Context::Global, "x") == Command::None);
+    errs.clear();
+    // Keys the parser reports under other names cannot be bound as ctrl-x.
+    CHECK(!km.apply(Named{{"next", L({"ctrl-m"})}}, errs));
+    CHECK(lmtui::normalizeKey("space") == " ");
+    CHECK(lmtui::normalizeKey(" ").empty());
+    CHECK(lmtui::normalizeKey("\x01").empty());
+    CHECK(lmtui::normalizeKey("pageup") == "pageup");
+    CHECK(lmtui::normalizeKey("\xe2\x82").empty()); // truncated UTF-8
+    CHECK(lmtui::keyLabel(" ") == "space");
+    CHECK(lmtui::keyLabel("ctrl-c") == "Ctrl-C");
+    CHECK(lmtui::keyLabel("left") == "←");
+    CHECK_EQ(lmtui::findAction("queue-add"), lmtui::findAction("queue_add"));
+    CHECK(lmtui::findAction("queue_add") >= 0);
+    CHECK_EQ(lmtui::findAction("Queue_add"), -1);
+}
+
+static void testHelpFromBindings() {
+    lmtui::Keymap km;
+    auto has = [](const std::vector<std::string> &lines, std::string_view s) {
+        return std::any_of(lines.begin(), lines.end(), [&](const std::string &l) { return l.find(s) != std::string::npos; });
+    };
+    auto lines = km.helpLines();
+    CHECK(has(lines, "add the selection to the queue"));
+    CHECK(has(lines, "Ctrl-C"));
+    CHECK(has(lines, ":q"));
+    CHECK(km.hint() == "? help  :q quit");
+    // Every action appears in the help.
+    for (const auto &a : lmtui::actions()) CHECK(has(lines, a.help));
+    std::vector<std::string> errs;
+    CHECK(km.apply(Named{{"queue_add", L({"a"})}, {"help", L({"h"})}}, errs));
+    lines = km.helpLines();
+    CHECK(has(lines, "a            add the selection to the queue"));
+    CHECK(km.hint() == "h help  :q quit");
+    CHECK(km.apply(Named{{"help", L({})}}, errs));
+    CHECK(km.hint() == ":help help  :q quit");
+    CHECK(has(km.helpLines(), "-            this help"));
+    // Action names are unique.
+    for (const auto &a : lmtui::actions()) CHECK_EQ(lmtui::findAction(a.name), static_cast<int>(&a - lmtui::actions().data()));
+}
+
+static void testCommandLine() {
+    using CL = lmtui::CommandLine;
+    for (const char *q : {"q", " quit ", "q!", "qa"}) {
+        const CL c = lmtui::parseCommandLine(q);
+        CHECK(c.kind == CL::Run && c.cmd == Command::Quit);
+    }
+    CHECK(lmtui::parseCommandLine("q now").kind == CL::Error);
+    CHECK(lmtui::parseCommandLine("").kind == CL::Error);
+    CHECK(lmtui::parseCommandLine("").error.empty()); // nothing to report
+    CL c = lmtui::parseCommandLine("next");
+    CHECK(c.kind == CL::Run && c.cmd == Command::Next && c.ctx == lmtui::Context::Global);
+    c = lmtui::parseCommandLine("queue-clear");
+    CHECK(c.kind == CL::Run && c.cmd == Command::QueueClear && c.ctx == lmtui::Context::Queue);
+    c = lmtui::parseCommandLine("help");
+    CHECK(c.kind == CL::Run && c.cmd == Command::ToggleHelp);
+    c = lmtui::parseCommandLine("frobnicate");
+    CHECK(c.kind == CL::Error && c.error == "unknown command: frobnicate");
+    CHECK(lmtui::parseCommandLine("next 3").kind == CL::Error);
+    c = lmtui::parseCommandLine("seek 1:30");
+    CHECK(c.kind == CL::Seek && c.ms == 90'000 && !c.relative && c.percent == -1);
+    c = lmtui::parseCommandLine("seek 1:02:03");
+    CHECK(c.kind == CL::Seek && c.ms == 3'723'000);
+    c = lmtui::parseCommandLine("seek 75s");
+    CHECK(c.kind == CL::Seek && c.ms == 75'000);
+    c = lmtui::parseCommandLine("seek -10");
+    CHECK(c.kind == CL::Seek && c.ms == -10'000 && c.relative);
+    c = lmtui::parseCommandLine("seek +1:00");
+    CHECK(c.kind == CL::Seek && c.ms == 60'000 && c.relative);
+    c = lmtui::parseCommandLine("seek 50%");
+    CHECK(c.kind == CL::Seek && c.percent == 50);
+    for (const char *bad : {"seek", "seek 1:60", "seek 101%", "seek x", "seek 1:2:3:4", "seek -", "seek 1.5", "seek ::",
+                            "seek 99999999999999999999"})
+        CHECK(lmtui::parseCommandLine(bad).kind == CL::Error);
+    c = lmtui::parseCommandLine("vol 80");
+    CHECK(c.kind == CL::Volume && c.volume == 80);
+    c = lmtui::parseCommandLine("volume 150%");
+    CHECK(c.kind == CL::Volume && c.volume == 150);
+    for (const char *bad : {"vol", "vol 151", "vol -1", "volume loud"}) CHECK(lmtui::parseCommandLine(bad).kind == CL::Error);
+
+    std::string line;
+    CHECK(lmtui::editCommandLine(line, "q"));
+    CHECK(lmtui::editCommandLine(line, "€"));
+    CHECK(lmtui::editCommandLine(line, "left")); // ignored
+    CHECK(lmtui::editCommandLine(line, " "));
+    CHECK(line == "q€ ");
+    CHECK(lmtui::editCommandLine(line, "backspace"));
+    CHECK(lmtui::editCommandLine(line, "backspace")); // the whole UTF-8 character
+    CHECK(line == "q");
+    CHECK(lmtui::editCommandLine(line, "backspace"));
+    CHECK(!lmtui::editCommandLine(line, "backspace")); // empty: the caller closes it
 }
 
 static void testKeyFile() {
@@ -317,7 +473,7 @@ static void testKeyFile() {
     CHECK(lmtui::cacheGlyph(1, true) == "◐*");
     CHECK(lmtui::cacheGlyph(0, false) == "○");
     CHECK(lmtui::cacheGlyph(-1, true).empty());
-    CHECK(lmtui::mapKey("P") == Command::TogglePin);
+    CHECK(lmtui::Keymap().lookup(lmtui::Context::Global, "P") == Command::TogglePin);
 }
 
 int main() {
@@ -329,5 +485,8 @@ int main() {
     testFormat();
     testBrowseHelpers();
     testKeys();
+    testKeymapOverrides();
+    testHelpFromBindings();
+    testCommandLine();
     return lmtest::finish("test_tui_logic");
 }

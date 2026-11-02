@@ -52,10 +52,10 @@ L=$TMP/log1; : > "$L"
 { wait_in "$L" "Album A/"
   printf '\r'; wait_in "$L" "Tester — Beta"     # lazy tags in the album folder
   printf '\177'; wait_in "$L" "loose"            # back up
-  printf a; wait_in "$L" "queued: 2 tracks"      # the whole folder (row 1)
+  printf q; wait_in "$L" "queued: 2 tracks"      # the whole folder (row 1)
   printf j; sleep 0.2; printf '\r'; wait_in "$L" "Playing"
   printf b; sleep 0.3; printf '\177'; sleep 0.3  # above the music folder
-  printf q; } | tui "$L" ""
+  printf ':q\r'; } | tui "$L" ""
 rc=$?
 [ $rc -eq 0 ] || { echo "FAIL: local run exit status $rc"; tail -c 1500 "$L" | cat -v; fail=1; }
 expect "$L" "Album A/" "folder listed"
@@ -90,7 +90,7 @@ if [ -n "$SRV" ]; then
       has "$S" "saved offline  " && wait_in "$S" "\* 2. Beta"
       printf '\177'; sleep 0.5
       printf o; sleep 0.5
-      printf q; } | tui "$S" "$SARGS"
+      printf ':q\r'; } | tui "$S" "$SARGS"
     rc=$?
     [ $rc -eq 0 ] || { echo "FAIL: server run exit status $rc"; tail -c 1500 "$S" | cat -v; fail=1; }
     expect "$S" "Library: artists" "artist level"
@@ -115,7 +115,7 @@ if [ -n "$SRV" ]; then
       printf '\r'; wait_in "$O" "Library: artists"
       printf '\r'; wait_in "$O" "cached"
       printf '\r'; wait_in "$O" "Library: Album A"
-      sleep 0.3; printf q; } | tui "$O" "$SARGS"
+      sleep 0.3; printf ':q\r'; } | tui "$O" "$SARGS"
     rc=$?
     [ $rc -eq 0 ] || { echo "FAIL: offline run exit status $rc"; tail -c 1500 "$O" | cat -v; fail=1; }
     expect "$O" "offline: cached tracks play" "offline note"

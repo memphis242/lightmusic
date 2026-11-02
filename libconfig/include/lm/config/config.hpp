@@ -147,6 +147,9 @@ template <class T> struct Field {
     std::function<bool(T &t, const Value &v, std::string &err)> set;
     std::function<bool(const T &a, const T &b)> same;
     std::function<void(T &dst, const T &src)> copy;
+    // A section of free-form subkeys ("keys.next", "keys.quit", ...): every "key.<sub>"
+    // goes to setSub(t, sub, v, err); `set` then only sees the section key itself.
+    std::function<bool(T &t, const std::string &sub, const Value &v, std::string &err)> setSub;
 };
 
 template <class T> class Schema {
@@ -181,6 +184,17 @@ public:
             const Field<T> *f = nullptr;
             for (const auto &fl : fields)
                 if (fl.key == key) f = &fl;
+            if (!f)
+                for (const auto &fl : fields)
+                    if (fl.setSub && key.size() > fl.key.size() + 1 && key.compare(0, fl.key.size(), fl.key) == 0 &&
+                        key[fl.key.size()] == '.') {
+                        std::string err;
+                        if (v.kind != Value::Null && !fl.setSub(t, key.substr(fl.key.size() + 1), v, err))
+                            fail(Diag::Error, key + ": " + err);
+                        done = true;
+                        break;
+                    }
+            if (done) continue;
             if (!f) {
                 for (const auto &fl : fields) {
                     if (fl.key.size() > key.size() && fl.key.compare(0, key.size(), key) == 0 && fl.key[key.size()] == '.') {
@@ -373,6 +387,43 @@ Field<T> listField(std::string key, std::vector<std::string> T::*p, bool paths =
             }
         }
         t.*p = std::move(items);
+        return true;
+    };
+    return f;
+}
+
+// A list named by a free-form subkey (see namedListsField), with where it was set
+// ("cfg.yaml:12:9", or "command line") for later diagnostics. Equality ignores `where`:
+// moving a line in the file is not a change.
+struct NamedList {
+    std::vector<std::string> items;
+    std::string where;
+    bool operator==(const NamedList &o) const { return items == o.items; }
+};
+
+// A section of named lists: "section.<name>: value" (a scalar is a one-element list,
+// [] an empty one). `checkName` (optional) validates the name; a later layer replaces
+// the list of a name, other names are kept.
+template <class T>
+Field<T> namedListsField(std::string key, std::map<std::string, NamedList> T::*p, bool hot = false,
+                         const std::function<bool(const std::string &, std::string &)> &checkName = {}) {
+    auto f = detail::base(std::move(key), p, hot);
+    f.set = [](T &, const Value &v, std::string &err) {
+        if (v.kind == Value::Null) return true;
+        err = "must be a mapping of names to lists";
+        return false;
+    };
+    f.setSub = [p, checkName](T &t, const std::string &sub, const Value &v, std::string &err) {
+        if (sub.find('.') != std::string::npos) {
+            err = "must be a value or a list, not a mapping";
+            return false;
+        }
+        if (checkName && !checkName(sub, err)) return false;
+        NamedList list;
+        if (!parseList(v, list.items, err)) return false;
+        list.where = v.file.empty() ? std::string("command line")
+                                 : v.file + ":" + std::to_string(v.line) + ":" + std::to_string(v.col);
+        (t.*p)[sub] = std::move(list);
         return true;
     };
     return f;

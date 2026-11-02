@@ -1,6 +1,6 @@
 #!/bin/sh
 # Headless smoke test: runs the lightmusic TUI in a pty (util-linux `script`) on the
-# Null backend with generated audio, sends keys, and expects a clean exit on q.
+# Null backend with generated audio, sends keys, and expects a clean exit on Ctrl-C / :q.
 # Usage: test_tui_smoke.sh /path/to/lightmusic. Exit 77 (skip) without script/ffmpeg.
 set -u
 BIN=$1
@@ -55,7 +55,7 @@ ESC=$(printf '\033')
 # Ctrl-Z (suspend/resume; under script(1) the process group is orphaned so the kernel
 # discards the stop, but the terminal must still be released and re-taken), quit.
 keys() {
-    wait_for "Playing" || { printf q; return; }
+    wait_for "Playing" || { printf ':q\r'; return; }
     for k in '?' '?' ' '; do
         printf "$k"; sleep 0.1
     done
@@ -74,7 +74,7 @@ keys() {
     printf '\032'
     wait_more "$ESC\\[?1049h" "$c"
     sleep 0.3
-    printf q
+    printf '\003' # Ctrl-C quits (raw mode: a key, not SIGINT; exit status 0)
 }
 : > "$TMP/log"
 keys | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
@@ -111,7 +111,7 @@ wait_file() { # TEXT: poll cfg.yaml for TEXT
   printf '+'; sleep 0.1; printf '+'
   wait_file "volume: 60"
   sleep 1
-  printf '-'; sleep 0.1; printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+  printf '-'; sleep 0.1; printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
     timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log3" >/dev/null 2>&1
 rc=$?
 [ $rc -eq 0 ] || { echo "FAIL: write-back run exit status $rc"; tail -c 1000 "$TMP/log3" | cat -v; fail=1; }
@@ -125,7 +125,7 @@ grep -q "not saved" "$TMP/log3" && { echo "FAIL: save error shown"; fail=1; }
 printf 'playback:\n  volume: 50\nui:\n  save_settings: false\n' > "$CFG"
 : > "$TMP/log4"
 { n=200; while [ $n -gt 0 ] && ! grep -q Playing "$TMP/log4"; do sleep 0.05; n=$((n - 1)); done
-  printf '+'; sleep 0.1; printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+  printf '+'; sleep 0.1; printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
     timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log4" >/dev/null 2>&1
 grep -q "volume: 50" "$CFG" || { echo "FAIL: saved despite ui.save_settings: false"; cat "$CFG"; fail=1; }
 for f in "$TMP"/san*; do
@@ -140,7 +140,7 @@ mkfifo "$TMP/fifo.mp3" || exit 1
 : > "$TMP/log2"
 start=$(date +%s)
 { n=200; while [ $n -gt 0 ] && ! grep -q Playing "$TMP/log2"; do sleep 0.05; n=$((n - 1)); done
-  sleep 0.5; printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+  sleep 0.5; printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
     timeout 20 script -qfec "$BIN --null '$TMP/music/1 First.opus' '$TMP/fifo.mp3'" "$TMP/log2" >/dev/null 2>&1
 rc=$?
 el=$(( $(date +%s) - start ))
@@ -159,7 +159,7 @@ printf 'playback:\n  volume: 50\n' > "$CFG"; chmod 600 "$CFG"
   printf r; sleep 0.1; printf r; sleep 0.1; printf s
   n=200; while [ $n -gt 0 ] && ! grep -q "repeat one · shuffle" "$TMP/log5"; do sleep 0.05; n=$((n - 1)); done
   n=200; while [ $n -gt 0 ] && ! grep -q "shuffle: true" "$CFG"; do sleep 0.05; n=$((n - 1)); done
-  printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+  printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
     timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log5" >/dev/null 2>&1
 rc=$?
 [ $rc -eq 0 ] || { echo "FAIL: repeat/shuffle run exit status $rc"; tail -c 1000 "$TMP/log5" | cat -v; fail=1; }
@@ -168,24 +168,24 @@ grep -q "repeat: one" "$CFG" && grep -q "shuffle: true" "$CFG" || { echo "FAIL: 
 # ... and read back on the next start.
 : > "$TMP/log6"
 { n=200; while [ $n -gt 0 ] && ! grep -q Playing "$TMP/log6"; do sleep 0.05; n=$((n - 1)); done
-  sleep 0.3; printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+  sleep 0.3; printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
     timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log6" >/dev/null 2>&1
 grep -q "repeat one · shuffle" "$TMP/log6" || { echo "FAIL: saved repeat/shuffle not applied at start"; fail=1; }
 for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (repeat/shuffle run)"; cat "$f"; fail=1
 done
-# User queue: a queues the selected row (shown as +1 and "up next 1"), v opens the
+# User queue: q queues the selected row (Q: play next) (shown as +1 and "up next 1"), v opens the
 # queue pane, J/K/d edit it, enter plays a queued track now, esc goes back.
 : > "$TMP/log7"
 wl() { n=200; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log7"; do sleep 0.05; n=$((n - 1)); done; }
 { wl Playing
-  printf j; sleep 0.1; printf j; sleep 0.1; printf a; wl "queued: 10 Tenth"
-  printf k; sleep 0.1; printf A; wl "plays next: 2 Second"
+  printf j; sleep 0.1; printf j; sleep 0.1; printf q; wl "queued: 10 Tenth"
+  printf k; sleep 0.1; printf Q; wl "plays next: 2 Second"
   printf v; wl "Up next: 2 tracks"
   printf J; sleep 0.2; printf d; wl "Up next: 1 track"
   printf '\r'; wl "Up next: 0 tracks"
-  printf '\033'; sleep 0.3; printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+  printf '\033'; sleep 0.3; printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
     timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log7" >/dev/null 2>&1
 rc=$?
 [ $rc -eq 0 ] || { echo "FAIL: queue run exit status $rc"; tail -c 1000 "$TMP/log7" | cat -v; fail=1; }
@@ -204,7 +204,7 @@ w8() { n=200; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log8"; do sleep 0.05
   printf 5; w8 "0:1[01] / 0:20"
   printf '\033[F'; w8 "0:1[56] / 0:20"
   printf '\033[H'; sleep 0.5
-  printf q; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+  printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
     timeout 30 script -qfec "$BIN --null '$TMP/music/1 First.opus'" "$TMP/log8" >/dev/null 2>&1
 rc=$?
 [ $rc -eq 0 ] || { echo "FAIL: seek run exit status $rc"; tail -c 1000 "$TMP/log8" | cat -v; fail=1; }
@@ -212,6 +212,42 @@ grep -q "0:1[01] / 0:20" "$TMP/log8" || { echo "FAIL: 5 did not seek to 50%"; fa
 grep -q "0:1[56] / 0:20" "$TMP/log8" || { echo "FAIL: End did not seek to the last 5 s"; fail=1; }
 # After Home the position restarts below 0:05 (it was >= 0:15).
 tail -c 3000 "$TMP/log8" | grep -q "0:0[0-4] / 0:20" || { echo "FAIL: Home did not seek to the start"; fail=1; }
+# Keybindings from cfg.yaml and the ':' command line: a bare q no longer quits (it
+# queues), the user's keys replace the defaults, :vol / :seek / unknown commands work,
+# and :q quits.
+printf 'playback:\n  volume: 50\nkeys:\n  queue_add: a\n  help: h\n' > "$CFG"; chmod 600 "$CFG"
+: > "$TMP/log9"
+w9() { n=200; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log9"; do sleep 0.05; n=$((n - 1)); done; }
+{ w9 Playing; w9 "h help  :q quit"
+  printf a; w9 "queued: "
+  printf q; sleep 0.3                     # unbound now: nothing
+  printf ':vol 80\r'; w9 "vol  80%"
+  printf ':seek 50%%\r'; w9 "0:1[01] / 0:20"
+  printf ':frob\r'; w9 "unknown command: frob"
+  printf ':nex\177xt\r'; w9 "2 Second"   # backspace edits the line
+  printf h; w9 "add the selection to the queue"
+  printf h; sleep 0.2
+  printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=40 \
+    timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log9" >/dev/null 2>&1
+rc=$?
+[ $rc -eq 0 ] || { echo "FAIL: keys run exit status $rc"; tail -c 1000 "$TMP/log9" | cat -v; fail=1; }
+for want in "h help  :q quit" "queued: 1 First" "vol  80%" "0:1[01] / 0:20" "unknown command: frob" \
+            "a            add the selection to the queue"; do
+    grep -q -- "$want" "$TMP/log9" || { echo "FAIL: keys run: '$want' never shown"; fail=1; }
+done
+grep -q "queued: .*queued: " "$TMP/log9" && { echo "FAIL: unbound q still queued"; fail=1; }
+for f in "$TMP"/san*; do
+    [ -e "$f" ] || continue
+    echo "FAIL: sanitizer report $f (keys run)"; cat "$f"; fail=1
+done
+# A bad binding is refused before the terminal is touched, with its line.
+printf 'keys:\n  queue_add: [a, F13]\n' > "$CFG"
+out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?
+[ $rc -eq 2 ] && echo "$out" | grep -q "cfg.yaml:2:.*keys.queue_add: unknown key 'F13'" || { echo "FAIL: bad key not refused (rc $rc): $out"; fail=1; }
+printf 'keys:\n  next: x\n  prev: x\n' > "$CFG"
+out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?
+[ $rc -eq 2 ] && echo "$out" | grep -q "'x' is bound to both next and prev" || { echo "FAIL: key conflict not refused (rc $rc): $out"; fail=1; }
+printf 'playback:\n  volume: 50\n' > "$CFG"
 # A group-writable cfg.yaml is refused before the terminal is touched.
 chmod 620 "$CFG"
 out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?

@@ -324,6 +324,46 @@ void testGapReload() {
     CHECK(r.ok && r.applied.gapSeconds == 1.0);
 }
 
+// keys: a section of free-form names -> key lists (hot), validated by the frontend.
+void testKeysSection() {
+    Diags d;
+    ClientSettings s = load("keys:\n  queue_add: q\n  next: [n, l]\n  quit: []\n", d);
+    CHECK(!hasError(d));
+    CHECK(s.keys.size() == 3u);
+    CHECK(s.keys["queue_add"].items == std::vector<std::string>{"q"});
+    CHECK(s.keys["next"].items == (std::vector<std::string>{"n", "l"}));
+    CHECK(s.keys["quit"].items.empty());
+    CHECK(s.keys["next"].where.find("cfg.yaml:3:") != std::string::npos);
+    d.clear();
+    s = load("keys:\n", d); // empty section: defaults
+    CHECK(!hasError(d) && s.keys.empty());
+    d.clear();
+    s = load("keys: q\n", d);
+    CHECK(hasError(d) && findDiag(d, "must be a mapping"));
+    d.clear();
+    s = load("keys:\n  next:\n    a: b\n", d); // nested mapping: not a list
+    CHECK(hasError(d));
+    // A later layer replaces one name's list and keeps the others.
+    d.clear();
+    Layer cli;
+    cli.setList("keys.next", {"x"});
+    s = load("keys:\n  next: n\n  prev: p\n", d, cli);
+    CHECK(!hasError(d));
+    CHECK(s.keys["next"].items == std::vector<std::string>{"x"} && s.keys["next"].where == "command line");
+    CHECK(s.keys["prev"].items == std::vector<std::string>{"p"});
+    // Hot, and a moved line alone is not a change.
+    const std::string path = writeFile("keys.yaml", "keys:\n  next: n\n", 0600);
+    ClientSettings running;
+    d.clear();
+    CHECK(loadClientSettings(path, true, nullptr, Layer{}, running, d));
+    writeFile("keys.yaml", "# moved\nkeys:\n  next: n\n", 0600);
+    auto r = reloadClientSettings(path, nullptr, Layer{}, running);
+    CHECK(r.ok && r.diff.hot.empty() && r.diff.restart.empty());
+    writeFile("keys.yaml", "keys:\n  next: m\n", 0600);
+    r = reloadClientSettings(path, nullptr, Layer{}, running);
+    CHECK(r.ok && r.diff.hot == std::vector<std::string>{"keys"} && r.applied.keys["next"].items[0] == "m");
+}
+
 // playback.repeat / playback.shuffle: defaults off, both hot.
 void testPlayOrderReload() {
     CHECK(ClientSettings{}.repeat == RepeatMode::Off && !ClientSettings{}.shuffle);
@@ -1075,6 +1115,7 @@ int main() {
     testScalarForms();
     testGapReload();
     testPlayOrderReload();
+    testKeysSection();
     testHomeExpansion();
     testPermissions();
     testReload();
