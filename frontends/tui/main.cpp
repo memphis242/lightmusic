@@ -78,9 +78,11 @@
 #include <exception>
 #include <filesystem>
 #include <format>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <thread>
 #include <type_traits>
 #include <string>
@@ -386,6 +388,15 @@ struct Browser {
     std::vector<BrowseLevel> stack;
 };
 
+// The stats/bookmark key of a track row: its path, or the server track's URI.
+std::string rowKey(const BrowseRow &r) {
+    if (r.kind == BrowseRow::File) return r.path;
+#ifdef LM_TUI_NET
+    if (r.kind == BrowseRow::Track) return lm::net::Client::trackUri(r.id);
+#endif
+    return {};
+}
+
 // Raw-ish terminal mode on the alternate screen; restored by the destructor (and by
 // the crash/stop handlers through the same globals).
 class Tty {
@@ -474,6 +485,13 @@ struct Ui {
     std::optional<std::int64_t> abA, abB;
     std::string abPath;
     lmtui::Bookmarks marks;
+    // Play counts and favourites (client side) and the play being heard: counted when it
+    // ends (TrackChanged or quit) if heard long enough (lmtui::countsAsPlay).
+    lmtui::PlayStats stats;
+    std::string contextLabel = "command line"; // where the list came from (stats context)
+    std::string heardPath, heardContext;
+    std::int64_t heardMs = 0, heardLenMs = 0;
+    int playsSinceSave = 0;
     // Fuzzy filter (/): the active query ("" = none), for the list or (filterBrowser)
     // the browser level it was typed in; filterInput is the prompt while typing.
     std::string filter;
@@ -645,7 +663,10 @@ Element renderBrowser(const Ui &ui, TagWorker &tags, int height) {
             mark = text(lmtui::cacheGlyph(r.cache, r.pinned) + " ");
             if (r.cache == 2) mark = mark | color(Color::Cyan);
         }
-        Element row = hbox({text(" "), mark, text(name), filler(), text(r.sub) | dim, text(" ")});
+        const std::string key = rowKey(r);
+        const bool fav = !key.empty() && ui.stats.favourite(key);
+        Element row = hbox({text(" "), mark, fav ? text("♥ ") | color(Color::Red) : text(""), text(name), filler(),
+                            text(r.sub) | dim, text(" ")});
         if (r.kind == BrowseRow::Track && r.cache == 0 && ui.net.rfind("offline", 0) == 0) row = row | dim;
         if (i == lv.selected) row = row | inverted;
         rows.push_back(std::move(row));
@@ -681,8 +702,9 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
                 inQueue = "+" + std::to_string(q + 1) + " ";
                 break;
             }
+        Element heart = ui.stats.favourite(ui.paths[i]) ? text("♥ ") | color(Color::Red) : text("");
         Element row = hbox({text(cur ? std::string(statusGlyph(st.status)) + " " : "  "), text(num) | dim,
-                            mark, text(inQueue) | color(Color::Yellow), text(ui.names[i])});
+                            mark, text(inQueue) | color(Color::Yellow), heart, text(ui.names[i])});
         if (cur) row = row | bold | color(Color::Green);
         if (sel) row = row | inverted;
         rows.push_back(std::move(row));
@@ -804,7 +826,28 @@ void updateFillQueue(const Ui &ui, lm::net::Client &client, int index) {
 }
 #endif
 
+// Counts the play being heard (if long enough) and starts the next one.
+void finishPlay(Ui &ui) {
+    if (!ui.heardPath.empty() && lmtui::countsAsPlay(ui.heardMs, ui.heardLenMs)) {
+        ui.stats.recordPlay(ui.heardPath, std::chrono::duration_cast<std::chrono::seconds>(
+                                              std::chrono::system_clock::now().time_since_epoch())
+                                              .count(),
+                            ui.heardContext);
+        ui.playsSinceSave++;
+    }
+    ui.heardPath.clear();
+    ui.heardMs = 0;
+}
+
 void apply(Ui &ui, const lm::Event &ev) {
+    if (ev.type == lm::EventType::TrackChanged || ev.type == lm::EventType::EndOfQueue) finishPlay(ui);
+    if (ev.type == lm::EventType::TrackChanged && ev.state.index >= 0) {
+        ui.heardPath = ev.state.track.path;
+        ui.heardLenMs = std::llround(ev.state.track.duration * 1000.0);
+        ui.heardContext = ev.state.fromUserQueue ? std::string("queue") : ui.contextLabel;
+    }
+    if (!ui.heardPath.empty() && ev.state.track.path == ui.heardPath && ev.state.status != lm::Status::Stopped)
+        ui.heardMs = std::max<std::int64_t>(ui.heardMs, std::llround(ev.state.position * 1000.0));
     ui.st = ev.state;
     if (ui.volumeTarget && ev.state.volume == *ui.volumeTarget) ui.volumeTarget.reset();
     if (ui.repeatTarget && ev.state.repeat == *ui.repeatTarget) ui.repeatTarget.reset();
@@ -1165,6 +1208,14 @@ int run(int argc, char **argv) {
         } else if (!missing) {
             for (const auto &d : rd) lm::diagln(stderr, "lightmusic: {}; bookmarks not loaded", d.str());
         }
+        // Play counts and favourites, same rules.
+        const std::string sf = lmtui::statsPath(sessionFile);
+        rd.clear();
+        if (lm::config::readConfigFile(sf, pol, text, missing, rd)) {
+            if (!ui.stats.parse(text, err)) lm::diagln(stderr, "lightmusic: {}: {}; play counts not loaded", sf, err);
+        } else if (!missing) {
+            for (const auto &d : rd) lm::diagln(stderr, "lightmusic: {}; play counts not loaded", d.str());
+        }
     }
     if (resumed) {
         browseAtStart = false;
@@ -1213,6 +1264,7 @@ int run(int argc, char **argv) {
     }
 #endif
     ui.ctx = resumed ? resumed->ctx : ui.paths.size();
+    ui.contextLabel = resumed ? "resumed session" : !args.empty() ? "command line" : "library";
     if (ui.paths.empty() && !browseAtStart) {
         lm::diagln(stderr, "lightmusic: no playable {}", server.empty() ? "files" : "tracks");
         return 1;
@@ -1418,6 +1470,16 @@ int run(int argc, char **argv) {
             };
             // Bookmarks file next to the session file (written on every change).
             const std::string marksFile = lmtui::bookmarksPath(sessionFile);
+            const std::string statsFile = lmtui::statsPath(sessionFile);
+            auto saveStats = [&](std::string *quitErr = nullptr) {
+                ui.playsSinceSave = 0;
+                std::error_code ec;
+                (void)std::filesystem::create_directories(statsFile.substr(0, statsFile.rfind('/')), ec); // the write reports
+                std::string err;
+                if (lm::config::writeFileAtomic(statsFile, ui.stats.format(), 0600, &err)) return;
+                if (quitErr) *quitErr = err;
+                else ui.error("play counts not saved: " + err);
+            };
             auto saveMarks = [&] {
                 std::error_code ec;
                 (void)std::filesystem::create_directories(marksFile.substr(0, marksFile.rfind('/')), ec); // the write reports
@@ -1659,10 +1721,115 @@ int run(int argc, char **argv) {
                     lv.rows.push_back(BrowseRow{BrowseRow::Root, "Library (server)", "library", 0,
                                                 offline ? "offline: cached tracks play" : "", -1, false});
                     lv.rows.push_back(BrowseRow{BrowseRow::Root, "Folders", "folders", 0, musicRoot(), -1, false});
+                    lv.rows.push_back(BrowseRow{BrowseRow::Root, "Smart lists", "smart", 0, "favourites, most played, ...", -1, false});
                     return lv;
                 }
 #endif
-                return folderLevel(musicRoot());
+                // The special rows go after the folder's entries, so the selection still
+                // starts on the first folder.
+                BrowseLevel lv = folderLevel(musicRoot());
+                lv.rows.push_back(BrowseRow{BrowseRow::Root, "Smart lists", "smart", 0, "favourites, most played, ...", -1, false});
+                return lv;
+            };
+            // ---- smart lists (from the client's play counts, favourites and library) ----
+            auto localUniverse = [&] { return lmtui::collectTracks({musicRoot()}, nullptr); };
+            auto smartKeys = [&](const std::string &id) -> std::vector<std::string> {
+                constexpr std::size_t kMax = 500;
+                if (id == "fav") return ui.stats.favourites();
+                if (id == "most") return ui.stats.mostPlayed(100);
+                if (id == "recent") return ui.stats.recentlyPlayed(100);
+                std::vector<std::string> keys;
+                if (id == "never") {
+#ifdef LM_TUI_NET
+                    if (client)
+                        for (const auto &t : client->allTracks()) keys.push_back(lm::net::Client::trackUri(t.id));
+#endif
+                    for (auto &p : localUniverse()) keys.push_back(std::move(p));
+                    std::erase_if(keys, [&](const std::string &k) {
+                        const lmtui::TrackStats *t = ui.stats.find(k);
+                        return t && t->plays > 0;
+                    });
+                } else if (id == "added") {
+                    // Server: newest ids first (ids grow as files are indexed); folders: newest
+                    // modification time first.
+#ifdef LM_TUI_NET
+                    if (client) {
+                        auto all = client->allTracks();
+                        std::sort(all.begin(), all.end(), [](const auto &a, const auto &b) { return a.id > b.id; });
+                        for (std::size_t i = 0; i < all.size() && i < 100; i++) keys.push_back(lm::net::Client::trackUri(all[i].id));
+                    }
+#endif
+                    std::vector<std::pair<std::int64_t, std::string>> local;
+                    for (auto &p : localUniverse()) {
+                        struct stat sb{};
+                        if (::stat(p.c_str(), &sb) == 0) local.emplace_back(static_cast<std::int64_t>(sb.st_mtime), std::move(p));
+                    }
+                    std::sort(local.begin(), local.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+                    for (std::size_t i = 0; i < local.size() && i < 100; i++) keys.push_back(std::move(local[i].second));
+                } else if (id == "random") {
+                    // One album (server) or folder of audio files, picked at random.
+                    std::vector<std::vector<std::string>> groups;
+#ifdef LM_TUI_NET
+                    if (client)
+                        for (const auto &al : client->albums()) {
+                            std::vector<std::string> g;
+                            for (const auto &t : client->tracksOfAlbum(al.id)) g.push_back(lm::net::Client::trackUri(t.id));
+                            if (!g.empty()) groups.push_back(std::move(g));
+                        }
+#endif
+                    std::map<std::string, std::vector<std::string>> dirs;
+                    for (auto &p : localUniverse()) dirs[lmtui::parentDir(p)].push_back(std::move(p));
+                    for (auto &[d, g] : dirs) groups.push_back(std::move(g));
+                    if (!groups.empty()) {
+                        std::random_device rd;
+                        std::uniform_int_distribution<std::size_t> pick(0, groups.size() - 1);
+                        keys = std::move(groups[pick(rd)]);
+                    }
+                }
+                if (keys.size() > kMax) keys.resize(kMax);
+                return keys;
+            };
+            auto keyRow = [&](const std::string &k) -> std::optional<BrowseRow> {
+#ifdef LM_TUI_NET
+                if (const auto tid = lm::net::Client::parseTrackUri(k)) {
+                    const auto t = client ? client->track(*tid) : std::nullopt;
+                    if (!t) return std::nullopt;
+                    BrowseRow r;
+                    r.kind = BrowseRow::Track;
+                    r.id = t->id;
+                    r.label = lmtui::trackLabel(t->artist, t->title, t->title.empty() ? "?" : t->title);
+                    r.sub = lmtui::formatTime(static_cast<double>(t->durationMs) / 1000);
+                    const auto ci = client->cacheInfo(t->id);
+                    r.cache = static_cast<int>(ci.state);
+                    r.pinned = ci.pinned;
+                    return r;
+                }
+#endif
+                if (k.find("://") != std::string::npos) return std::nullopt;
+                BrowseRow r;
+                r.kind = BrowseRow::File;
+                r.path = k;
+                r.label = k.substr(k.rfind('/') + 1);
+                if (const lmtui::TrackStats *t = ui.stats.find(k); t && t->plays > 0)
+                    r.sub = std::format("{} play{}", t->plays, t->plays == 1 ? "" : "s");
+                return r;
+            };
+            const std::vector<std::pair<std::string, std::string>> kSmart = {
+                {"fav", "Favourites"},         {"most", "Most played"}, {"recent", "Recently played"},
+                {"never", "Never played"},     {"added", "Recently added"}, {"random", "Random album"}};
+            auto smartMenu = [&] {
+                BrowseLevel lv;
+                lv.title = "Smart lists";
+                for (const auto &[id, title] : kSmart)
+                    lv.rows.push_back(BrowseRow{BrowseRow::Root, title, "smart:" + id, 0, "", -1, false});
+                return lv;
+            };
+            auto smartLevel = [&](const std::string &id, const std::string &title) {
+                BrowseLevel lv;
+                lv.title = "Smart lists: " + title;
+                for (const auto &k : smartKeys(id))
+                    if (auto r = keyRow(k)) lv.rows.push_back(std::move(*r));
+                return lv;
             };
             // Tracks under a row: a folder recursively, an album, an artist's albums.
             auto tracksOf = [&](const BrowseRow &r) {
@@ -1673,7 +1840,18 @@ int run(int argc, char **argv) {
                 switch (r.kind) {
                 case BrowseRow::Dir: local(lmtui::collectTracks({r.path}, nullptr)); break;
                 case BrowseRow::File: local({r.path}); break;
-                case BrowseRow::Root: break;
+                case BrowseRow::Root:
+                    if (r.path.starts_with("smart:"))
+                        for (const auto &k : smartKeys(r.path.substr(6))) {
+#ifdef LM_TUI_NET
+                            if (const auto tid = lm::net::Client::parseTrackUri(k)) {
+                                if (const auto t = client ? client->track(*tid) : std::nullopt) v.push_back(remoteSpec(*t));
+                                continue;
+                            }
+#endif
+                            if (k.find("://") == std::string::npos) v.push_back(Spec{k, lmtui::displayName(k), 0, 0});
+                        }
+                    break;
 #ifdef LM_TUI_NET
                 case BrowseRow::Artist:
                     for (const auto &al : client->albums())
@@ -1703,7 +1881,7 @@ int run(int argc, char **argv) {
             auto specOf = [&](std::size_t e) { return Spec{ui.paths[e], ui.names[e], ui.remote[e], ui.durMs[e]}; };
             // Makes `specs` the new list (context) and plays it from `start`. The user
             // queue is kept: its tracks are re-added after the new list.
-            auto replaceContext = [&](std::vector<Spec> specs, int start) {
+            auto replaceContext = [&](std::vector<Spec> specs, int start, std::string label) {
                 if (specs.empty()) {
                     ui.warn("no playable tracks there");
                     return;
@@ -1729,6 +1907,7 @@ int run(int argc, char **argv) {
                 }
                 ui.filter.clear(); // a new list
                 ui.filterInput.reset();
+                ui.contextLabel = std::move(label);
                 labels->stop(); // results of the old scanner refer to the old list
                 labels = std::make_shared<LabelBox>();
                 scanLabels(0);
@@ -1792,6 +1971,14 @@ int run(int argc, char **argv) {
                 switch (r->kind) {
                 case BrowseRow::Dir: ui.browser.stack.push_back(folderLevel(r->path)); break;
                 case BrowseRow::Root:
+                    if (r->path == "smart") {
+                        ui.browser.stack.push_back(smartMenu());
+                        break;
+                    }
+                    if (r->path.starts_with("smart:")) {
+                        ui.browser.stack.push_back(smartLevel(r->path.substr(6), r->label));
+                        break;
+                    }
 #ifdef LM_TUI_NET
                     if (r->path == "library") {
                         ui.browser.stack.push_back(artistLevel());
@@ -1809,7 +1996,7 @@ int run(int argc, char **argv) {
                             if (&x == r) start = static_cast<int>(v.size());
                             v.push_back(Spec{x.path, lmtui::displayName(x.path), 0});
                         }
-                    replaceContext(std::move(v), start);
+                    replaceContext(std::move(v), start, lv.dir.empty() ? lv.title : "folder " + lv.dir);
                     break;
                 }
 #ifdef LM_TUI_NET
@@ -1824,7 +2011,7 @@ int run(int argc, char **argv) {
                             if (&x == r) start = static_cast<int>(v.size());
                             v.push_back(remoteSpec(*t));
                         }
-                    replaceContext(std::move(v), start);
+                    replaceContext(std::move(v), start, lv.title.starts_with("Library: ") ? "album " + lv.title.substr(9) : lv.title);
                     break;
                 }
 #else
@@ -2008,7 +2195,13 @@ int run(int argc, char **argv) {
                     clearFilter(); // the browser closes
                     if (const BrowseRow *r = browseRow()) {
                         if (r->kind == BrowseRow::File || r->kind == BrowseRow::Track) browseOpen();
-                        else replaceContext(tracksOf(*r), 0);
+                        else {
+                            const char *what = r->kind == BrowseRow::Dir      ? "folder "
+                                               : r->kind == BrowseRow::Album  ? "album "
+                                               : r->kind == BrowseRow::Artist ? "artist "
+                                                                              : "smart list ";
+                            replaceContext(tracksOf(*r), 0, what + (r->kind == BrowseRow::Dir ? r->path : r->label));
+                        }
                     }
                     break;
                 case lmtui::Command::QueueMoveUp:
@@ -2129,6 +2322,30 @@ int run(int argc, char **argv) {
                         ui.info(std::format("A-B repeat: {}–{}", lmtui::formatMs(*ui.abA), lmtui::formatMs(ms)));
                         player.seek(static_cast<double>(*ui.abA) / 1000.0);
                     }
+                    break;
+                }
+                case lmtui::Command::ToggleFavourite: {
+                    // The selected track: a browser file/track row, a queued entry, or a
+                    // list row.
+                    std::string track, name;
+                    if (ui.browser.open) {
+                        if (const BrowseRow *r = browseRow()) {
+                            track = rowKey(*r);
+                            name = r->label;
+                        }
+                    } else {
+                        const int e = ui.queueView ? qEntry() : ui.selected;
+                        if (e >= 0 && static_cast<std::size_t>(e) < ui.paths.size()) {
+                            track = ui.paths[static_cast<std::size_t>(e)];
+                            name = ui.names[static_cast<std::size_t>(e)];
+                        }
+                    }
+                    if (track.empty()) {
+                        ui.warn("favourite: select a track");
+                        break;
+                    }
+                    ui.info(ui.stats.toggleFavourite(track) ? "♥ favourite: " + name : "not a favourite: " + name);
+                    saveStats();
                     break;
                 }
                 case lmtui::Command::AddMark:
@@ -2340,6 +2557,7 @@ int run(int argc, char **argv) {
                     }
                     for (const auto &ev : inbox.take()) {
                         apply(ui, ev);
+                        if (ui.playsSinceSave >= 10) saveStats(); // a crash loses at most 9
                         mpris.event(ev);
                         dirty = true;
                         // A change from MPRIS (or a reload) is saved like one from the keys;
@@ -2387,6 +2605,8 @@ int run(int argc, char **argv) {
             }
             quitSig = g_quitSignal.load();
             save(&quitSaveErr); // a volume changed less than 1 s ago (or not yet saved) is kept
+            finishPlay(ui); // the track being heard counts too
+            saveStats(&sessionSaveErr);
             if (useSession) { // the session for the next start without files
                 const lm::PlayerState now = player.state();
                 lmtui::Session out;

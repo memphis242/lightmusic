@@ -43,6 +43,7 @@ constexpr std::array kActions = {
     Action{"ab_start", AbStart, Context::Global, "[", "A-B repeat: set A here"},
     Action{"ab_end", AbEnd, Context::Global, "]", "A-B repeat: set B here (loops)"},
     Action{"ab_clear", AbClear, Context::Global, "\\", "A-B repeat off"},
+    Action{"favourite", ToggleFavourite, Context::Global, "f", "favourite / not (the selected track)"},
     Action{"mark", AddMark, Context::Global, "m", "bookmark this position"},
     Action{"next_mark", NextMark, Context::Global, "'", "to the next bookmark"},
     Action{"command_line", OpenCommandLine, Context::Global, ":", "command line (:q quits)"},

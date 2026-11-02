@@ -105,6 +105,7 @@ enum class Command {
     AbClear,         // \: no A-B repeat
     AddMark,         // m: bookmark this position
     NextMark,        // ': to the next bookmark of the track
+    ToggleFavourite, // f: the selected track is a favourite (or not)
 };
 
 constexpr double kSeekStep = 5.0;
@@ -255,8 +256,46 @@ public:
 private:
     std::map<std::string, std::vector<std::int64_t>> marks_;
 };
+// Play counts and favourites, kept on the client per track (path or lm:// URI), with
+// where the last play came from. Stored in $XDG_STATE_HOME/lightmusic/stats as
+//   lightmusic-stats 1 / then "PLAYS<TAB>LAST<TAB>FAV<TAB>SOURCE<TAB>CONTEXT<TAB>PATH"
+// lines (LAST: Unix seconds; SOURCE: folder | library; CONTEXT: e.g. "queue",
+// "album Abbey Road"; tabs/newlines/% escaped like the session file).
+struct TrackStats {
+    std::int64_t plays = 0;
+    std::int64_t lastPlayed = 0; // Unix seconds, 0 = never
+    bool favourite = false;
+    std::string source, context;
+    bool operator==(const TrackStats &) const = default;
+};
+class PlayStats {
+public:
+    static constexpr std::size_t kMaxTracks = 200000;
+    void recordPlay(const std::string &track, std::int64_t now, std::string_view context);
+    // Returns the new state.
+    bool toggleFavourite(const std::string &track);
+    [[nodiscard]] const TrackStats *find(const std::string &track) const;
+    [[nodiscard]] bool favourite(const std::string &track) const;
+    // Smart lists (track keys): favourites (by path), most played (count, then most
+    // recent), recently played; at most `n`.
+    [[nodiscard]] std::vector<std::string> favourites() const;
+    [[nodiscard]] std::vector<std::string> mostPlayed(std::size_t n) const;
+    [[nodiscard]] std::vector<std::string> recentlyPlayed(std::size_t n) const;
+    [[nodiscard]] std::string format() const;
+    [[nodiscard]] bool parse(std::string_view text, std::string &err); // untrusted file
+    [[nodiscard]] std::size_t size() const { return stats_.size(); }
+
+private:
+    std::map<std::string, TrackStats> stats_;
+};
+// Whether a play counts: heard for at least half the track or 4 minutes (30 s when the
+// length is unknown).
+[[nodiscard]] bool countsAsPlay(std::int64_t heardMs, std::int64_t lengthMs);
+
 // "...lightmusic/session" -> "...lightmusic/bookmarks" (same directory).
 [[nodiscard]] std::string bookmarksPath(const std::string &sessionPath);
+// ... -> "...lightmusic/stats".
+[[nodiscard]] std::string statsPath(const std::string &sessionPath);
 
 // The status line's message ("toast"): errors, warnings and confirmations, each shown
 // until it expires (info 3 s, warning 6 s, error 10 s) or a newer one replaces it. The

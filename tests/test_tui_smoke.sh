@@ -370,6 +370,33 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (A-B/bookmark runs)"; cat "$f"; fail=1
 done
+# Play counts and favourites: a track heard past half its length counts when the next
+# one starts; f marks the selected row (♥); both are saved and feed the smart lists.
+STATS="$XDG_STATE_HOME/lightmusic/stats"
+rm -f "$STATS"
+: > "$TMP/log18"
+w18() { n=400; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log18"; do sleep 0.05; n=$((n - 1)); done; }
+{ w18 Playing; sleep 0.3; printf 9; w18 "Playing.*2 Second\|Second.*Playing\|2/3"
+  printf f; w18 "♥ favourite: "
+  printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
+    timeout 40 script -qfec "$BIN --null '$TMP/music'" "$TMP/log18" >/dev/null 2>&1
+grep -q "^1	[0-9]*	0	folder	command line	.*1 First.opus$" "$STATS" || { echo "FAIL: play not counted:"; cat "$STATS"; fail=1; }
+grep -q "	1	folder	" "$STATS" || grep -q "^0	0	1	" "$STATS" || { echo "FAIL: favourite not saved:"; cat "$STATS"; fail=1; }
+[ "$(stat -c %a "$STATS" 2>/dev/null)" = 600 ] || { echo "FAIL: stats file mode"; fail=1; }
+: > "$TMP/log19"
+w19() { n=300; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log19"; do sleep 0.05; n=$((n - 1)); done; }
+{ w19 "Smart lists"; printf G; sleep 0.2; printf '\r'; w19 "Most played"   # the last row
+  printf '\r'; w19 "Smart lists: Favourites"; sleep 0.3
+  printf '\177'; sleep 0.2; printf j; sleep 0.1; printf '\r'; w19 "Smart lists: Most played"; sleep 0.3
+  printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
+    timeout 30 script -qfec "$BIN --null --no-resume" "$TMP/log19" >/dev/null 2>&1
+for want in "Smart lists: Favourites" "♥ " "Smart lists: Most played" "1 play"; do
+    grep -q -- "$want" "$TMP/log19" || { echo "FAIL: smart lists: '$want' never shown"; fail=1; }
+done
+for f in "$TMP"/san*; do
+    [ -e "$f" ] || continue
+    echo "FAIL: sanitizer report $f (stats runs)"; cat "$f"; fail=1
+done
 # A bad binding is refused before the terminal is touched, with its line.
 printf 'keys:\n  queue_add: [a, F13]\n' > "$CFG"
 out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?
