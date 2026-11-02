@@ -34,26 +34,26 @@ bool once(const std::string &path, int seeks, Run &r, std::string &err) {
     const std::uint32_t ch = d->channels();
     std::vector<float> buf(4096 * static_cast<std::size_t>(ch));
     const auto t0 = Clock::now();
-    std::uint64_t n = 0, k = 0;
-    while ((k = d->read(buf.data(), 4096)) > 0) n += k;
+    lm::Frames n, k;
+    while ((k = d->read(buf.data(), lm::Frames{4096}))) n += k;
     const auto t1 = Clock::now();
-    r.frames = n;
+    r.frames = n.count();
     r.nsPerFrame = n ? static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()) /
-                           static_cast<double>(n)
+                           static_cast<double>(n.count())
                      : 0;
     // Deterministic pseudo-random seek targets (xorshift), all inside the track.
     std::uint64_t x = 88172645463325252ull;
-    const std::uint64_t total = d->totalFrames() ? d->totalFrames() : n;
+    const std::uint64_t total = d->totalFrames() ? d->totalFrames().count() : n.count();
     const auto t2 = Clock::now();
     for (int i = 0; i < seeks && total > 4096; i++) {
         x ^= x << 13;
         x ^= x >> 7;
         x ^= x << 17;
-        if (!d->seek(x % (total - 4096))) {
+        if (!d->seek(lm::Frames{x % (total - 4096)})) {
             err = "seek failed";
             return false;
         }
-        (void)d->read(buf.data(), 4096); // the frames themselves are not checked here
+        (void)d->read(buf.data(), lm::Frames{4096}); // the frames themselves are not checked here
     }
     const auto t3 = Clock::now();
     r.usPerSeek = seeks ? static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t2).count()) / 1000.0 /

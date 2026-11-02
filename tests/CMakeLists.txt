@@ -126,6 +126,8 @@ lm_compile_fail(cf_int_field_double config_fields.cpp 2 "IntFieldValue" lm::conf
 lm_compile_fail(cf_enum_field_int config_fields.cpp 3 "EnumFieldValue" lm::config)
 lm_compile_fail(cf_bytesource_copy interfaces.cpp 1 "deleted" lm::player)
 lm_compile_fail(cf_decoder_copy interfaces.cpp 2 "deleted" lm::player)
+lm_compile_fail(cf_frames_from_int frames.cpp 1 "lm::Frames" lm::player)
+lm_compile_fail(cf_frames_to_int frames.cpp 2 "lm::Frames" lm::player)
 if(TARGET lightmusicd)
   lm_compile_fail(cf_json_kv_size_t interfaces.cpp 3 "JsonScalar" lm::player lm::server_core)
 endif()

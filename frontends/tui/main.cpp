@@ -1225,7 +1225,7 @@ int run(int argc, char **argv) {
                     // cannot open it leaves it unknown.
                     std::int64_t ms = 0;
                     if (auto d = lm::openDecoderForFile(paths[i]); d && d->sampleRate() > 0)
-                        ms = static_cast<std::int64_t>(d->totalFrames() * 1000 / d->sampleRate());
+                        ms = static_cast<std::int64_t>(d->totalFrames().count() * 1000 / d->sampleRate());
                     box->push({from + i, t.title.empty() ? std::string() : lmtui::trackLabel(t.artist, t.title, paths[i]), ms});
                 }
             });

@@ -68,8 +68,8 @@ std::vector<float> decodeAll(const std::string &path) {
     std::vector<float> out;
     if (!d) return out;
     std::vector<float> buf(4096 * 2);
-    std::uint64_t k;
-    while ((k = d->read(buf.data(), 4096)) > 0) out.insert(out.end(), buf.begin(), buf.begin() + long(k * 2));
+    lm::Frames k;
+    while ((k = d->read(buf.data(), lm::Frames{4096}))) out.insert(out.end(), buf.begin(), buf.begin() + long(k.samples(2)));
     return out;
 }
 

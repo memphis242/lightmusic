@@ -3,17 +3,28 @@
 #include "common.hpp"
 #include "decoders.hpp"
 
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <type_traits>
 #include <vector>
 
 
+// lm::Frames is a zero-cost wrapper with checked-at-compile-time arithmetic.
+static_assert(lm::Frames{3} + lm::Frames{4} == lm::Frames{7});
+static_assert(lm::Frames{7} - lm::Frames{4} == lm::Frames{3});
+static_assert(lm::Frames{2} < lm::Frames{3} && !(lm::Frames{3} < lm::Frames{3}));
+static_assert(lm::Frames{5}.samples(2) == 10 && lm::Frames{5}.count() == 5);
+static_assert(!lm::Frames{} && static_cast<bool>(lm::Frames{1}));
+static_assert(lm::Frames::max().count() == UINT64_MAX);
+static_assert(!std::is_convertible_v<std::uint64_t, lm::Frames> && !std::is_convertible_v<lm::Frames, std::uint64_t>);
+
 static std::uint64_t countFrames(lm::Decoder &d) {
     std::vector<float> buf(4096 * d.channels());
-    std::uint64_t n = 0, k;
-    while ((k = d.read(buf.data(), 4096)) > 0) n += k;
-    return n;
+    lm::Frames n, k;
+    while ((k = d.read(buf.data(), lm::Frames{4096}))) n += k;
+    return n.count();
 }
 
 struct Case {
@@ -45,19 +56,19 @@ static void decodeCase(const std::string &dir, const Case &c) {
     const std::uint64_t n = countFrames(*d);
     std::println("  {:<6} frames={} expected={} total={}", c.name, n, c.samples, d->totalFrames());
     CHECK_EQ(n, static_cast<std::uint64_t>(c.samples)); // gapless: delay/padding trimmed
-    CHECK_EQ(d->totalFrames(), static_cast<std::uint64_t>(c.samples));
+    CHECK_EQ(d->totalFrames().count(), static_cast<std::uint64_t>(c.samples));
 
     // Seek to the middle, then the remainder must be exactly the second half.
     const std::uint64_t mid = static_cast<std::uint64_t>(c.samples) / 2;
-    CHECK(d->seek(mid));
+    CHECK(d->seek(lm::Frames{mid}));
     CHECK_EQ(countFrames(*d), static_cast<std::uint64_t>(c.samples) - mid);
     // Seek back to 0 and compare the start with a fresh decode.
     auto fresh = lm::openDecoderForFile(path);
-    CHECK(d->seek(0));
+    CHECK(d->seek(lm::Frames{0}));
     std::vector<float> a(2048 * 2), b(2048 * 2);
-    const std::uint64_t ka = d->read(a.data(), 2048), kb = fresh->read(b.data(), 2048);
-    CHECK_EQ(ka, kb);
-    CHECK(std::memcmp(a.data(), b.data(), ka * 2 * sizeof(float)) == 0);
+    const lm::Frames ka = d->read(a.data(), lm::Frames{2048}), kb = fresh->read(b.data(), lm::Frames{2048});
+    CHECK(ka == kb);
+    CHECK(std::memcmp(a.data(), b.data(), ka.samples(2) * sizeof(float)) == 0);
 }
 
 static void sniffing(const std::string &dir) {
@@ -97,9 +108,9 @@ static void replayGainTags(const std::string &dir) {
 
 static std::uint64_t readAll(lm::Decoder &d) {
     std::vector<float> buf(4096 * d.channels());
-    std::uint64_t total = 0, k;
-    while ((k = d.read(buf.data(), 4096)) > 0) total += k;
-    return total;
+    lm::Frames total, k;
+    while ((k = d.read(buf.data(), lm::Frames{4096}))) total += k;
+    return total.count();
 }
 
 // Errors are told apart from the end of stream through lastError().

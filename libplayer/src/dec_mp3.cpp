@@ -38,16 +38,18 @@ public:
     Format format() const override { return Format::Mp3; }
     std::uint32_t sampleRate() const override { return mp3_.sampleRate; }
     std::uint32_t channels() const override { return mp3_.channels; }
-    std::uint64_t totalFrames() const override { return total_; }
-    std::uint64_t read(float *out, std::uint64_t frames) override {
+    Frames totalFrames() const override { return Frames(total_); }
+    Frames read(float *out, Frames limit) override {
+        const std::uint64_t frames = limit.count();
         const std::uint64_t n = drmp3_read_pcm_frames_f32(&mp3_, frames, out);
         // Like dr_flac, errors show only as a short read; detectable with a known length.
         if (n < frames && error_.empty() && total_ && mp3_.currentPCMFrame < total_)
             error_ = "dr_mp3: stream ends at frame " + std::to_string(mp3_.currentPCMFrame) + " of " +
                      std::to_string(total_) + " (truncated or corrupt): " + src_->name();
-        return n;
+        return Frames(n);
     }
-    bool seek(std::uint64_t frame) override {
+    bool seek(Frames at) override {
+        const std::uint64_t frame = at.count();
         // Without a seek table dr_mp3 decodes from the start to the target. Build one on
         // the first seek (one header scan of the file) so later seeks are cheap.
         if (!seekTableBuilt_) {

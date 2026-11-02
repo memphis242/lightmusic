@@ -54,7 +54,7 @@ static void fuzzFile(const std::string &src, const std::string &out, std::size_t
         (void)lm::readTags(out, t);
         if (auto d = lm::openDecoderForFile(out)) {
             std::vector<float> buf(1024 * d->channels());
-            d->read(buf.data(), 1024);
+            (void)d->read(buf.data(), lm::Frames{1024}); // decoding must not crash; the count is not checked
         }
     }
 }
