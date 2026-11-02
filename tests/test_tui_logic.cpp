@@ -114,14 +114,14 @@ static void testBrowseHelpers() {
 }
 
 static void testFormat() {
-    CHECK(lmtui::formatTime(0) == "0:00");
-    CHECK(lmtui::formatTime(-3) == "0:00");
-    CHECK(lmtui::formatTime(std::numeric_limits<double>::quiet_NaN()) == "0:00");
-    CHECK(lmtui::formatTime(59.9) == "0:59");
-    CHECK(lmtui::formatTime(61) == "1:01");
-    CHECK(lmtui::formatTime(3599) == "59:59");
-    CHECK(lmtui::formatTime(3600) == "1:00:00");
-    CHECK(lmtui::formatTime(3 * 3600 + 5 * 60 + 7) == "3:05:07");
+    using namespace std::chrono_literals;
+    CHECK(lmtui::formatTime(0ms) == "0:00");
+    CHECK(lmtui::formatTime(-3s) == "0:00");
+    CHECK(lmtui::formatTime(59'900ms) == "0:59");
+    CHECK(lmtui::formatTime(61s) == "1:01");
+    CHECK(lmtui::formatTime(3599s) == "59:59");
+    CHECK(lmtui::formatTime(1h) == "1:00:00");
+    CHECK(lmtui::formatTime(3h + 5min + 7s) == "3:05:07");
     CHECK(lmtui::displayName("/a/b/03 Song.name.flac") == "03 Song.name");
     CHECK(lmtui::displayName("noext") == "noext");
     CHECK(lmtui::trackLabel("Björk", "Jóga", "/x/01.flac") == "Björk — Jóga");
@@ -188,9 +188,9 @@ static void testKeys() {
     CHECK_EQ(lmtui::percentKey("10"), -1);
     CHECK_EQ(lmtui::percentKey("x"), -1);
     CHECK_EQ(lmtui::percentKey(""), -1);
-    CHECK_NEAR(lmtui::endSeekTarget(200.0), 195.0, 1e-9);
-    CHECK_NEAR(lmtui::endSeekTarget(3.0), 0.0, 1e-9);
-    CHECK(lmtui::endSeekTarget(0.0) < 0);
+    CHECK(lmtui::endSeekTarget(std::chrono::seconds(200)) == std::chrono::seconds(195));
+    CHECK(lmtui::endSeekTarget(std::chrono::seconds(3)) == std::chrono::milliseconds(0));
+    CHECK(!lmtui::endSeekTarget(std::chrono::milliseconds(0)));
     CHECK(G("v") == Command::ToggleQueueView);
     CHECK(G("J") == Command::None);
     CHECK(G("d") == Command::None);
@@ -566,9 +566,8 @@ static void testTimeLeftAndSleep() {
     t = lmtui::timeLeft(-5, {});
     CHECK(t.ms == 0 && t.tracks == 0 && !t.unknown);
     CHECK(lmtui::formatTimeLeft(lmtui::timeLeft(3'723'999, {})) == "1:02:03 left");
-    CHECK(lmtui::formatMs(0) == "0:00");
-    CHECK(lmtui::formatMs(-10) == "0:00");
-    CHECK(lmtui::formatMs(59'999) == "0:59");
+    CHECK(lmtui::formatTime(std::chrono::milliseconds(-10)) == "0:00");
+    CHECK(lmtui::formatTime(std::chrono::milliseconds(59'999)) == "0:59");
     using CL = lmtui::CommandLine;
     auto sec = [](const char *text) {
         const CL c = lmtui::parseCommandLine(text);

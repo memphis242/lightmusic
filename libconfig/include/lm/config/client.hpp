@@ -3,6 +3,7 @@
 
 #include "lm/config/config.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -23,14 +24,14 @@ struct ClientSettings {
     bool backgroundFill = true;
     bool pauseOnMetered = false;
     std::string cacheDir; // empty: $XDG_CACHE_HOME/lightmusic
-    // playback (hot: volume, gapSeconds, repeat, shuffle)
+    // playback (hot: volume, gap, repeat, shuffle)
     int volume = 100; // percent, 0..150 (above 100: software gain, as the volume keys)
     ReplayGain replayGain = ReplayGain::Off;
     double replayGainPreampDb = 0; // -15..15 dB, added to the tagged gain (tagged files only)
     bool replayGainPreventClipping = true; // cap the gain by the tagged peak
     bool pauseOnDeviceLoss = true;     // pause when the output goes away (headphones, Bluetooth)
     bool resumeOnDeviceReturn = false; // ... and resume when it comes back
-    double gapSeconds = 0; // silence between tracks, 0..30 (0: gapless)
+    std::chrono::milliseconds gap{0}; // silence between tracks, 0..30 s (0: gapless); the file says seconds
     RepeatMode repeat = RepeatMode::Off;
     bool shuffle = false;
     // ui

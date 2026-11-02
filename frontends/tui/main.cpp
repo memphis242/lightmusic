@@ -589,7 +589,7 @@ std::string timeLeftLabel(const Ui &ui) {
             ahead.push_back(dur(static_cast<int>(i)));
     if (st.stopAfterCurrent) ahead.clear(); // nothing plays after this track
     const std::int64_t curLeft =
-        st.track.duration > 0 ? std::llround((st.track.duration - st.position) * 1000.0) : 0;
+        st.track.duration > lm::Millis{0} ? (st.track.duration - st.position).count() : 0;
     return lmtui::formatTimeLeft(lmtui::timeLeft(curLeft, ahead));
 }
 
@@ -728,9 +728,14 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
         if (!tg.album.empty()) sub += (sub.empty() ? "" : " · ") + tg.album;
         if (!sub.empty()) sub = "  " + sub;
     }
-    const double dur = st.track.duration;
-    const float frac = dur > 0 ? static_cast<float>(std::clamp(st.position / dur, 0.0, 1.0)) : 0.0f;
-    const std::string times = lmtui::formatTime(st.position) + " / " + (dur > 0 ? lmtui::formatTime(dur) : "?:??");
+    const lm::Millis dur = st.track.duration;
+    // The gauge takes a fraction (float, for drawing only).
+    const float frac = dur > lm::Millis{0}
+                           ? static_cast<float>(std::clamp<lm::Millis::rep>(st.position.count(), 0, dur.count())) /
+                                 static_cast<float>(dur.count())
+                           : 0.0f;
+    const std::string times =
+        lmtui::formatTime(st.position) + " / " + (dur > lm::Millis{0} ? lmtui::formatTime(dur) : "?:??");
     const std::string vol = std::format("vol {:3}%", std::lround(st.volume * 100.0f));
     std::string pos = std::format("{}/{}", st.index + 1, st.queueSize);
     if (st.index >= 0 && st.status != lm::Status::Stopped) pos = timeLeftLabel(ui) + "  " + pos;
@@ -738,13 +743,13 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
                                         ui.shuffleTarget.value_or(st.shuffle));
     if (ui.stopAfterTarget.value_or(st.stopAfterCurrent)) mode += mode.empty() ? "stop after" : " · stop after";
     if (ui.abA || ui.abB) {
-        std::string ab = ui.abB ? std::format("A-B {}–{}", lmtui::formatMs(ui.abA.value_or(0)), lmtui::formatMs(*ui.abB))
-                                : "A " + lmtui::formatMs(*ui.abA);
+        std::string ab = ui.abB ? std::format("A-B {}–{}", lmtui::formatTime(std::chrono::milliseconds(ui.abA.value_or(0))), lmtui::formatTime(std::chrono::milliseconds(*ui.abB)))
+                                : "A " + lmtui::formatTime(std::chrono::milliseconds(*ui.abA));
         mode += (mode.empty() ? "" : " · ") + ab;
     }
     if (ui.sleepAt) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(*ui.sleepAt - std::chrono::steady_clock::now());
-        mode += (mode.empty() ? "sleep " : " · sleep ") + lmtui::formatMs(left.count());
+        mode += (mode.empty() ? "sleep " : " · sleep ") + lmtui::formatTime(std::chrono::milliseconds(left.count()));
     }
     if (!mode.empty()) mode = "  " + mode;
 
@@ -846,11 +851,11 @@ void apply(Ui &ui, const lm::Event &ev) {
     if (ev.type == lm::EventType::TrackChanged || ev.type == lm::EventType::EndOfQueue) finishPlay(ui);
     if (ev.type == lm::EventType::TrackChanged && ev.state.index >= 0) {
         ui.heardPath = ev.state.track.path;
-        ui.heardLenMs = std::llround(ev.state.track.duration * 1000.0);
+        ui.heardLenMs = ev.state.track.duration.count();
         ui.heardContext = ev.state.fromUserQueue ? std::string("queue") : ui.contextLabel;
     }
     if (!ui.heardPath.empty() && ev.state.track.path == ui.heardPath && ev.state.status != lm::Status::Stopped)
-        ui.heardMs = std::max<std::int64_t>(ui.heardMs, std::llround(ev.state.position * 1000.0));
+        ui.heardMs = std::max<std::int64_t>(ui.heardMs, ev.state.position.count());
     ui.st = ev.state;
     if (ui.volumeTarget && ev.state.volume == *ui.volumeTarget) ui.volumeTarget.reset();
     if (ui.repeatTarget && ev.state.repeat == *ui.repeatTarget) ui.repeatTarget.reset();
@@ -868,8 +873,8 @@ void apply(Ui &ui, const lm::Event &ev) {
         // track must not vanish with the skip.
         if (ev.state.index >= 0 && static_cast<std::size_t>(ev.state.index) < ui.ctx) ui.selected = ev.state.index;
         if (ev.state.index >= 0 && static_cast<std::size_t>(ev.state.index) < ui.durMs.size() &&
-            ui.durMs[static_cast<std::size_t>(ev.state.index)] == 0 && ev.state.track.duration > 0)
-            ui.durMs[static_cast<std::size_t>(ev.state.index)] = std::llround(ev.state.track.duration * 1000.0);
+            ui.durMs[static_cast<std::size_t>(ev.state.index)] == 0 && ev.state.track.duration > lm::Millis{0})
+            ui.durMs[static_cast<std::size_t>(ev.state.index)] = ev.state.track.duration.count();
         if (ev.state.index >= 0 && static_cast<std::size_t>(ev.state.index) < ui.names.size() &&
             ev.state.track.path == ui.paths[static_cast<std::size_t>(ev.state.index)])
             ui.names[static_cast<std::size_t>(ev.state.index)] =
@@ -1024,7 +1029,7 @@ int run(int argc, char **argv) {
     cfg.replayGainPreventClipping = set.replayGainPreventClipping;
     cfg.pauseOnDeviceLoss = set.pauseOnDeviceLoss;
     cfg.resumeOnDeviceReturn = set.resumeOnDeviceReturn;
-    cfg.gapSeconds = set.gapSeconds;
+    cfg.gap = set.gap;
     cfg.repeat = toRepeat(set.repeat);
     cfg.shuffle = set.shuffle;
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;
@@ -1118,7 +1123,7 @@ int run(int argc, char **argv) {
                     const auto ci = client->cacheInfo(t.id);
                     ok = lm::outln(stdout, "  {:<8}{} {:2}. {} — {}  [{}]", lm::net::cacheStateName(ci.state),
                                    ci.pinned ? "*" : " ", t.trackNo, t.artist, t.title,
-                                   lmtui::formatTime(double(t.durationMs) / 1000)) && ok;
+                                   lmtui::formatTime(lm::Millis(t.durationMs))) && ok;
                 }
             }
             const auto st = client->stats();
@@ -1349,7 +1354,7 @@ int run(int argc, char **argv) {
             if (curOutside) add(rs.index); // created first (compactSession); leaves the queue below
             for (int e : rs.upNext) add(e);
             if (rs.index >= 0) {
-                player.cueIndex(rs.index, static_cast<double>(rs.positionMs) / 1000.0);
+                player.cueIndex(rs.index, lm::Millis(rs.positionMs));
                 if (curOutside) player.queueRemove(0, rs.index);
             }
             ui.info(std::format("resumed: {} track{}{}", ui.ctx, ui.ctx == 1 ? "" : "s",
@@ -1451,7 +1456,7 @@ int run(int argc, char **argv) {
                 if (!ui.abB) return std::nullopt;
                 const lm::PlayerState now = player.state();
                 if (now.status != lm::Status::Playing || now.track.path != ui.abPath) return std::nullopt;
-                return *ui.abB - std::llround(now.position * 1000.0);
+                return *ui.abB - now.position.count();
             };
             auto abGuardMs = [&]() -> std::int64_t { // left of the 250 ms after a loop seek
                 if (!abSeekAt) return 0;
@@ -1463,7 +1468,7 @@ int run(int argc, char **argv) {
             auto serviceAb = [&] {
                 const auto left = abLeftMs();
                 if (!left || *left > 15 || abGuardMs() > 0) return;
-                player.seek(static_cast<double>(ui.abA.value_or(0)) / 1000.0);
+                player.seek(lm::Millis(ui.abA.value_or(0)));
                 abSeekAt = std::chrono::steady_clock::now();
             };
             auto abTimeoutMs = [&]() -> int {
@@ -1562,7 +1567,7 @@ int run(int argc, char **argv) {
                         ui.volumeTarget = static_cast<float>(n.volume) / 100.0f;
                         player.setVolume(*ui.volumeTarget);
                     } else if (k == "playback.gap_seconds") {
-                        player.setGap(n.gapSeconds); // from the next track transition
+                        player.setGap(n.gap); // from the next track transition
                     } else if (k == "playback.repeat") {
                         ui.repeatTarget = toRepeat(n.repeat);
                         player.setRepeat(*ui.repeatTarget);
@@ -1691,7 +1696,7 @@ int run(int argc, char **argv) {
                     r.label = (t.trackNo ? std::to_string(t.trackNo) + ". " : std::string()) +
                               lmtui::trackLabel(t.artist == t.albumArtist ? std::string() : t.artist, t.title,
                                                 t.title.empty() ? "?" : t.title);
-                    r.sub = lmtui::formatTime(static_cast<double>(t.durationMs) / 1000);
+                    r.sub = lmtui::formatTime(lm::Millis(t.durationMs));
                     const auto ci = client->cacheInfo(t.id);
                     r.cache = static_cast<int>(ci.state);
                     r.pinned = ci.pinned;
@@ -1821,7 +1826,7 @@ int run(int argc, char **argv) {
                     r.kind = BrowseRow::Track;
                     r.track = t->id;
                     r.label = lmtui::trackLabel(t->artist, t->title, t->title.empty() ? "?" : t->title);
-                    r.sub = lmtui::formatTime(static_cast<double>(t->durationMs) / 1000);
+                    r.sub = lmtui::formatTime(lm::Millis(t->durationMs));
                     const auto ci = client->cacheInfo(t->id);
                     r.cache = static_cast<int>(ci.state);
                     r.pinned = ci.pinned;
@@ -2186,20 +2191,20 @@ int run(int argc, char **argv) {
                 case lmtui::Command::Next: player.next(); break;
                 case lmtui::Command::Prev: player.prev(); break;
                 case lmtui::Command::SeekBack:
-                    player.seek(std::max(0.0, player.state().position - lmtui::kSeekStep));
+                    player.seek(std::max(lm::Millis{0}, player.state().position - lmtui::kSeekStep));
                     break;
                 case lmtui::Command::SeekForward: player.seek(player.state().position + lmtui::kSeekStep); break;
                 case lmtui::Command::SeekStart:
-                    if (ui.st.status != lm::Status::Stopped) player.seek(0);
+                    if (ui.st.status != lm::Status::Stopped) player.seek(lm::Millis{0});
                     break;
                 case lmtui::Command::SeekEnd:
                 case lmtui::Command::SeekPercent: {
                     // Absolute targets from the track length (unknown length: ignored).
                     const lm::PlayerState now = player.state();
-                    const double dur = now.track.duration;
-                    if (now.status == lm::Status::Stopped || dur <= 0) break;
-                    player.seek(cmd == lmtui::Command::SeekEnd ? lmtui::endSeekTarget(dur)
-                                                               : dur * lmtui::percentKey(key) / 100.0);
+                    const lm::Millis dur = now.track.duration;
+                    if (now.status == lm::Status::Stopped || dur <= lm::Millis{0}) break;
+                    player.seek(cmd == lmtui::Command::SeekEnd ? lmtui::endSeekTarget(dur).value_or(lm::Millis{0})
+                                                               : dur * lmtui::percentKey(key) / 100);
                     break;
                 }
                 // Step from the player's volume (or our not-yet-applied target), not
@@ -2380,7 +2385,7 @@ int run(int argc, char **argv) {
                         ui.warn("A-B repeat: nothing is playing");
                         break;
                     }
-                    const std::int64_t ms = std::llround(now.position * 1000.0);
+                    const std::int64_t ms = now.position.count();
                     if (now.track.path != ui.abPath) {
                         ui.abA.reset();
                         ui.abB.reset();
@@ -2389,14 +2394,14 @@ int run(int argc, char **argv) {
                     if (cmd == lmtui::Command::AbStart) {
                         ui.abA = ms;
                         if (ui.abB && *ui.abB <= ms + 1000) ui.abB.reset();
-                        ui.info("A-B repeat: A " + lmtui::formatMs(ms));
+                        ui.info("A-B repeat: A " + lmtui::formatTime(std::chrono::milliseconds(ms)));
                     } else if (ms <= ui.abA.value_or(0) + 1000) {
                         ui.warn("A-B repeat: B must be more than 1 s after A");
                     } else {
                         if (!ui.abA) ui.abA = 0;
                         ui.abB = ms;
-                        ui.info(std::format("A-B repeat: {}–{}", lmtui::formatMs(*ui.abA), lmtui::formatMs(ms)));
-                        player.seek(static_cast<double>(*ui.abA) / 1000.0);
+                        ui.info(std::format("A-B repeat: {}–{}", lmtui::formatTime(std::chrono::milliseconds(*ui.abA)), lmtui::formatTime(std::chrono::milliseconds(ms))));
+                        player.seek(lm::Millis(*ui.abA));
                     }
                     break;
                 }
@@ -2431,17 +2436,17 @@ int run(int argc, char **argv) {
                         ui.warn("bookmarks: nothing is playing");
                         break;
                     }
-                    const std::int64_t ms = std::llround(now.position * 1000.0);
+                    const std::int64_t ms = now.position.count();
                     if (cmd == lmtui::Command::AddMark) {
                         if (ui.marks.add(now.track.path, ms)) {
-                            ui.info("bookmark at " + lmtui::formatMs(ms));
+                            ui.info("bookmark at " + lmtui::formatTime(std::chrono::milliseconds(ms)));
                             saveMarks();
                         } else {
                             ui.warn("bookmark not added (one within 1 s, or 100 on this track)");
                         }
                     } else if (const std::int64_t to = ui.marks.next(now.track.path, ms); to >= 0) {
-                        player.seek(static_cast<double>(to) / 1000.0);
-                        ui.info("bookmark " + lmtui::formatMs(to));
+                        player.seek(lm::Millis(to));
+                        ui.info("bookmark " + lmtui::formatTime(std::chrono::milliseconds(to)));
                     } else {
                         ui.info("no bookmarks on this track (m adds one)");
                     }
@@ -2480,18 +2485,18 @@ int run(int argc, char **argv) {
                     break;
                 case lmtui::CommandLine::Seek: {
                     const lm::PlayerState now = player.state();
-                    const double dur = now.track.duration;
+                    const lm::Millis dur = now.track.duration;
                     if (now.status == lm::Status::Stopped) {
                         ui.warn("seek: nothing is playing");
                         break;
                     }
-                    if (c.percent >= 0 && dur <= 0) {
+                    if (c.percent >= 0 && dur <= lm::Millis{0}) {
                         ui.warn("seek: the track length is unknown");
                         break;
                     }
-                    const double secs = static_cast<double>(c.ms) / 1000.0;
-                    const double to = c.percent >= 0 ? dur * c.percent / 100.0 : c.relative ? now.position + secs : secs;
-                    player.seek(std::max(0.0, to));
+                    const lm::Millis t{c.ms};
+                    const lm::Millis to = c.percent >= 0 ? dur * c.percent / 100 : c.relative ? now.position + t : t;
+                    player.seek(std::max(lm::Millis{0}, to));
                     break;
                 }
                 case lmtui::CommandLine::Messages: ui.showMessages = true; break;
@@ -2558,7 +2563,7 @@ int run(int argc, char **argv) {
                         break;
                     }
                     std::string list;
-                    for (const std::int64_t m : ui.marks.marks(now.track.path)) list += " " + lmtui::formatMs(m);
+                    for (const std::int64_t m : ui.marks.marks(now.track.path)) list += " " + lmtui::formatTime(std::chrono::milliseconds(m));
                     ui.info(list.empty() ? std::string("no bookmarks on this track") : "bookmarks:" + list);
                     break;
                 }
@@ -2570,11 +2575,11 @@ int run(int argc, char **argv) {
                     } else if (c.sleepSec > 0) {
                         cancelSleep();
                         ui.sleepAt = std::chrono::steady_clock::now() + std::chrono::seconds(c.sleepSec);
-                        ui.info(std::format("sleep in {} (fades out over the last 30 s)", lmtui::formatMs(c.sleepSec * 1000)));
+                        ui.info(std::format("sleep in {} (fades out over the last 30 s)", lmtui::formatTime(std::chrono::milliseconds(c.sleepSec * 1000))));
                     } else if (ui.sleepAt) {
-                        ui.info("sleep in " + lmtui::formatMs(std::chrono::duration_cast<std::chrono::milliseconds>(
+                        ui.info("sleep in " + lmtui::formatTime(std::chrono::milliseconds(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                                   *ui.sleepAt - std::chrono::steady_clock::now())
-                                                                  .count()));
+                                                                  .count())));
                     } else {
                         ui.info("no sleep timer (:sleep 30 sets one)");
                     }
@@ -2736,7 +2741,7 @@ int run(int argc, char **argv) {
                 out.ctx = ui.ctx;
                 out.upNext = now.upNext;
                 out.index = now.index;
-                out.positionMs = now.index >= 0 ? std::llround(now.position * 1000.0) : 0;
+                out.positionMs = now.index >= 0 ? now.position.count() : 0;
                 lmtui::compactSession(out);
                 std::string err;
                 const std::string dir = sessionFile.substr(0, sessionFile.rfind('/'));

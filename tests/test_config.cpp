@@ -289,15 +289,21 @@ void testScalarForms() {
     Diags d;
     CHECK(clientSchema().resolve({&cli}, d).volume == 7 && d.empty());
     // playback.gap_seconds: default 0 (gapless); the --gap flag is a plain string too.
-    CHECK(ClientSettings{}.gapSeconds == 0.0);
+    CHECK(ClientSettings{}.gap == std::chrono::milliseconds{0});
     Layer g;
     g.set("playback.gap_seconds", "0.75");
     Diags e;
-    CHECK(clientSchema().resolve({&g}, e).gapSeconds == 0.75 && e.empty());
+    CHECK(clientSchema().resolve({&g}, e).gap == std::chrono::milliseconds{750} && e.empty());
+    // Seconds in the file, integer milliseconds kept (rounded to the nearest ms).
+    Layer g2;
+    g2.set("playback.gap_seconds", "0.0004");
+    CHECK(clientSchema().resolve({&g2}, e).gap == std::chrono::milliseconds{0} && e.empty());
+    g2.set("playback.gap_seconds", "1.2345");
+    CHECK(clientSchema().resolve({&g2}, e).gap == std::chrono::milliseconds{1235} && e.empty());
     {
         Diags x;
         auto s = load("playback:\n  gap_seconds: [1]\n", x);
-        CHECK(hasError(x) && s.gapSeconds == 0.0);
+        CHECK(hasError(x) && s.gap == std::chrono::milliseconds{0});
     }
 }
 
@@ -309,19 +315,19 @@ void testGapReload() {
     ClientSettings running;
     Diags d;
     CHECK(loadClientSettings(path, true, nullptr, cli, running, d));
-    CHECK(running.gapSeconds == 0.5);
+    CHECK(running.gap == std::chrono::milliseconds{500});
     writeFile("gap.yaml", "playback:\n  gap_seconds: 2.5\n", 0600);
     auto r = reloadClientSettings(path, nullptr, cli, running);
-    CHECK(r.ok && r.applied.gapSeconds == 2.5);
+    CHECK(r.ok && r.applied.gap == std::chrono::milliseconds{2500});
     CHECK(r.diff.hot == std::vector<std::string>{"playback.gap_seconds"} && r.diff.restart.empty());
     running = r.applied;
     writeFile("gap.yaml", "playback:\n  gap_seconds: 31\n", 0600);
     r = reloadClientSettings(path, nullptr, cli, running);
-    CHECK(!r.ok && r.applied.gapSeconds == 2.5 && findDiag(r.diags, "out of range"));
+    CHECK(!r.ok && r.applied.gap == std::chrono::milliseconds{2500} && findDiag(r.diags, "out of range"));
     cli.set("playback.gap_seconds", "1"); // the flag wins over the file
     writeFile("gap.yaml", "playback:\n  gap_seconds: 3\n", 0600);
     r = reloadClientSettings(path, nullptr, cli, running);
-    CHECK(r.ok && r.applied.gapSeconds == 1.0);
+    CHECK(r.ok && r.applied.gap == std::chrono::milliseconds{1000});
 }
 
 // ReplayGain preamp and clipping prevention (restart-only).

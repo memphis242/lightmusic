@@ -85,6 +85,16 @@ struct KeyInfo {
     std::int64_t created = 0;
 };
 
+// Paging of list endpoints: distinct types so an offset and a limit cannot be swapped.
+struct PageOffset {
+    std::int64_t value = 0;
+    constexpr explicit PageOffset(std::int64_t v) : value(v) {}
+};
+struct PageLimit {
+    std::int64_t value = 0;
+    constexpr explicit PageLimit(std::int64_t v) : value(v) {}
+};
+
 class Db {
 public:
     enum class Mode { Writer, Reader };
@@ -132,10 +142,10 @@ public:
     std::string library_id();
     std::string json_artists();
     [[nodiscard]] std::optional<std::string> json_artist(std::int64_t id);
-    std::string json_albums(const std::string &sort, std::int64_t offset, std::int64_t limit);
+    std::string json_albums(const std::string &sort, PageOffset offset, PageLimit limit);
     [[nodiscard]] std::optional<std::string> json_album(std::int64_t id);
     [[nodiscard]] std::optional<std::string> json_track(lm::TrackId id);
-    std::string json_search(const std::string &q, std::int64_t limit);
+    std::string json_search(const std::string &q, PageLimit limit);
 
 private:
     std::int64_t artist_id(const std::string &name);

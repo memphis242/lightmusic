@@ -36,7 +36,7 @@ const Schema<ClientSettings> &clientSchema() {
             boolField<S>("playback.replaygain_prevent_clipping", &S::replayGainPreventClipping),
             boolField<S>("playback.pause_on_device_loss", &S::pauseOnDeviceLoss),
             boolField<S>("playback.resume_on_device_return", &S::resumeOnDeviceReturn),
-            floatField<S>("playback.gap_seconds", &S::gapSeconds, 0.0, 30.0, true),
+            secondsField<S>("playback.gap_seconds", &S::gap, std::chrono::milliseconds{0}, std::chrono::seconds{30}, true),
             enumField<S>("playback.repeat", &S::repeat,
                          {{"off", RepeatMode::Off}, {"all", RepeatMode::All}, {"one", RepeatMode::One}}, true),
             boolField<S>("playback.shuffle", &S::shuffle, true),

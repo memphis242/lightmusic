@@ -814,7 +814,7 @@ Design (`libnet/`, see `libnet/include/lm/net/client.hpp` and the top of
   exponentially. A blocked read fails only on a fatal error (401/403/404, cache write or
   `fdatasync` failure — the entry's data is then discarded), when the server cannot be
   reached at all (so offline playback fails fast), after 5 consecutive
-  failures without progress, or after `readTimeoutSec` without progress.
+  failures without progress, or after `readTimeout` (20 s) without progress.
 - **Reads.** `CachedStreamSource` serves present ranges with `pread`; on a hole it asks
   the network thread for that range and blocks on a condition variable, which a seek,
   stop or shutdown interrupts (the player interrupts sources of retired decoders); no
@@ -1116,3 +1116,11 @@ ring, continue into the next queued track for gapless joins) and miniaudio's **r
 callback** (pop the lock-free ring, volume, silence + underrun counter; no locks,
 allocation or logging). One output device stays open on the default sink. Details are at
 the top of `libplayer/src/player.cpp`.
+
+**Units.** Times in the player API are integer milliseconds (`lm::Millis`, a
+`std::chrono::milliseconds`): positions, lengths, seeks, the gap, the ring/prebuffer/tick
+sizes; frame counts are `lm::Frames`. Conversions are exact integer math (frames = ms ×
+rate / 1000; ms = frames × 1000 / rate, rounded down). Floating point is kept only where
+it is inherent: samples, volume and gain factors, ReplayGain dB and peaks, the D-Bus
+`Volume` property, JSON numbers, and parsing decimal seconds from the config file and
+command lines (`playback.gap_seconds` stays in seconds and is stored as ms).

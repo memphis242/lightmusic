@@ -135,4 +135,6 @@ lm_compile_fail(cf_trackid_to_int track_id.cpp 2 "'(const )?(lm::)?TrackId' to" 
 lm_compile_fail(cf_trackid_arith track_id.cpp 3 "operator\\+|invalid operands" lm::player)
 if(TARGET lightmusicd)
   lm_compile_fail(cf_json_kv_size_t interfaces.cpp 3 "JsonScalar" lm::player lm::server_core)
+  lm_compile_fail(cf_paging_swapped paging.cpp 1 "Page(Offset|Limit)" lm::server_core)
+  lm_compile_fail(cf_paging_int paging.cpp 2 "Page(Offset|Limit)" lm::server_core)
 endif()

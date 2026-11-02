@@ -20,6 +20,7 @@
 #include "lm/source.hpp"
 #include "lm/track_id.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -63,7 +64,7 @@ struct ClientConfig {
     // built with it, else "unmetered". nullopt = unknown (treated as unmetered).
     std::function<std::optional<bool>()> meteredProbe;
     int meteredCheckMs = 30000;
-    double readTimeoutSec = 20;  // a read waiting this long without progress fails
+    std::chrono::milliseconds readTimeout{20'000}; // a read waiting this long without progress fails
     long connectTimeoutSec = 10;
     long stallTimeoutSec = 20;   // transfers below 1 B/s this long are aborted
     std::size_t commitBytes = std::size_t{256} * 1024; // batch: fdatasync + SQLite every 256 KiB ...

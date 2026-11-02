@@ -98,7 +98,11 @@ platform: Fedora 43 (gcc 15, clang 21). See README.md for the user-facing docs.
    them. In use: `lm::Frames` (lm/frames.hpp: decoder lengths/positions/reads, markers,
    gaps; zero cost, see bench/results/frames-20261102.txt) and `lm::TrackId`
    (include/lm/track_id.hpp: server and cache track ids in libnet, lightmusicd's db and
-   the TUI; album/artist ids stay plain integers).
+   the TUI; album/artist ids stay plain integers), integer `std::chrono` durations for
+   times (`lm::Millis` in the player API, `ClientSettings::gap`, `ClientConfig::readTimeout`;
+   no `double` seconds), and `PageOffset`/`PageLimit` for the server's list paging.
+   Floating point only where inherent (samples, volume/gain, dB, D-Bus/JSON doubles,
+   parsing decimal input).
 12. **Behaviour stays unchanged when fixing warnings**: run the full test suite after each
    batch of fixes.
 13. Do not modify `third_party/` (vendored; see third_party/VERSIONS.md).

@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -31,7 +32,8 @@ constexpr const char *kQueueIface = "net.lightmusic.Queue1";
 constexpr const char *kNotifyName = "org.freedesktop.Notifications";
 constexpr const char *kNotifyPath = "/org/freedesktop/Notifications";
 
-std::int64_t toUs(double s) { return std::isfinite(s) && s > 0 ? static_cast<std::int64_t>(s * 1e6) : 0; }
+// MPRIS times are microseconds (int64).
+std::int64_t toUs(Millis t) { return t > Millis{0} ? std::chrono::duration_cast<std::chrono::microseconds>(t).count() : 0; }
 
 const char *statusString(Status s) {
     switch (s) {
@@ -231,9 +233,10 @@ struct Server::Impl {
         if (r < 0) return r;
         const PlayerState st = s.player.state();
         if (st.index >= 0 && st.status != Status::Stopped) {
-            const double target = std::max(0.0, st.position + static_cast<double>(off) / 1e6);
+            const Millis target = std::max(
+                Millis{0}, st.position + std::chrono::duration_cast<Millis>(std::chrono::microseconds(off)));
             // Spec: seeking past the end acts like Next.
-            if (st.track.duration > 0 && target > st.track.duration) s.player.next();
+            if (st.track.duration > Millis{0} && target > st.track.duration) s.player.next();
             else s.player.seek(target);
         }
         return sd_bus_reply_method_return(m, "");
@@ -247,8 +250,8 @@ struct Server::Impl {
         const PlayerState st = s.player.state();
         // Spec: ignore a stale trackid or a position outside [0, length].
         const bool current = st.index >= 0 && st.status != Status::Stopped && trackId(st.index) == tid;
-        if (current && pos >= 0 && (st.track.duration <= 0 || pos <= toUs(st.track.duration)))
-            s.player.seek(static_cast<double>(pos) / 1e6);
+        if (current && pos >= 0 && (st.track.duration <= Millis{0} || pos <= toUs(st.track.duration)))
+            s.player.seek(std::chrono::duration_cast<Millis>(std::chrono::microseconds(pos)));
         return sd_bus_reply_method_return(m, "");
     }
     static int mOpenUri(sd_bus_message *, void *, sd_bus_error *e) {

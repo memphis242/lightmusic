@@ -21,6 +21,7 @@
 
 #include "lm/decoder.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -29,6 +30,10 @@
 #include <vector>
 
 namespace lm {
+
+// Times in the player API: integer milliseconds (positions, lengths, seeks, the gap,
+// buffer sizes). Frame math stays exact: frames = ms * rate / 1000.
+using Millis = std::chrono::milliseconds;
 
 enum class Status { Stopped, Playing, Paused };
 const char *statusName(Status s);
@@ -56,7 +61,7 @@ struct TrackInfo {
     Format format = Format::Unknown;
     std::uint32_t sampleRate = 0;
     std::uint32_t channels = 0;
-    double duration = 0; // seconds; 0 if unknown
+    Millis duration{0}; // 0 if unknown
     std::optional<float> trackGainDb;
     GainTags gain;      // all ReplayGain tags (trackGainDb is gain.trackGain)
     float appliedGain = 1.0f; // replayGainFactor() used for this track (1 with ReplayGain off)
@@ -68,7 +73,7 @@ struct PlayerState {
     int index = -1; // audible track in the queue, -1 if none
     std::size_t queueSize = 0;
     TrackInfo track;
-    double position = 0; // seconds into the audible track
+    Millis position{0}; // into the audible track
     float volume = 1.0f;
     std::uint64_t underruns = 0;
     std::string output; // backend/device description, once opened
@@ -108,9 +113,9 @@ struct Event {
 
 struct PlayerConfig {
     bool nullBackend = false;    // miniaudio Null backend (tests, dry runs)
-    double ringSeconds = 0.5;    // PCM ring size
-    double prebufferSeconds = 0.1;
-    double tickSeconds = 1.0;    // Position event interval while playing
+    Millis ring{500};      // PCM ring size
+    Millis prebuffer{100};
+    Millis tick{1000};     // Position event interval while playing
     GainMode replayGain = GainMode::Off; // apply ReplayGain (+preamp) when tagged
     float replayGainPreampDb = 0.0f;     // clamped to [-15, 15] dB
     bool replayGainPreventClipping = true; // cap the gain by the tagged peak (see replayGainFactor)
@@ -122,10 +127,10 @@ struct PlayerConfig {
     bool pauseOnDeviceLoss = true;
     bool resumeOnDeviceReturn = false;
     // Silence between tracks that follow each other naturally (one ends, the queue
-    // continues): exactly round(gapSeconds * device rate) zero frames. 0 = sample-exact
+    // continues): exactly gap * device rate / 1000 zero frames. 0 = sample-exact
     // gapless. Not inserted after the last track or on next/prev/seek/playIndex jumps.
-    // Clamped to [0, 30]; Player::setGap() changes it while running.
-    double gapSeconds = 0.0;
+    // Clamped to [0, 30 s]; Player::setGap() changes it while running.
+    Millis gap{0};
     // Initial play order (Player::setRepeat / setShuffle change it while running).
     Repeat repeat = Repeat::Off;
     bool shuffle = false;
@@ -175,20 +180,20 @@ public:
     void queueClearUser();
     void play();             // resume, or start the current/first track
     void playIndex(int index);
-    // Opens entry `index` at `seconds` (clamped to the track; NaN/inf -> 0) and leaves it
+    // Opens entry `index` at `at` (clamped to the track; negative -> 0) and leaves it
     // Paused, the device idle: play() / togglePause() start it there. For resuming a
     // session. A failed open moves on along the play order like playIndex().
-    void cueIndex(int index, double seconds);
+    void cueIndex(int index, Millis at);
     void pause();
     void togglePause();
     void stop();
     void next();
     void prev();             // restart the track if > 3 s in, else previous track
-    void seek(double seconds);
+    void seek(Millis to); // negative -> 0
     void setVolume(float v); // linear, clamped to [0, 2]; NaN/inf ignored (Error event)
-    // Silence between tracks (see PlayerConfig::gapSeconds), clamped to [0, 30]; NaN
-    // ignored. Takes effect at the next natural track end.
-    void setGap(double seconds);
+    // Silence between tracks (see PlayerConfig::gap), clamped to [0, 30 s]. Takes effect
+    // at the next natural track end.
+    void setGap(Millis gap);
     // Play order. Shuffle is a random permutation of the queue that is played through
     // without repeats; it is stable, so prev() walks back along it. Turning shuffle on
     // keeps the current track (and any already buffered for a gapless transition) first
@@ -198,7 +203,7 @@ public:
     // a new permutation is drawn at each wrap (its first track differs from the last
     // one played when the queue has more than one track).
     // Takes effect for the next track that is not already decoded: the decoder runs up
-    // to PlayerConfig::ringSeconds ahead, so a change in the last moments of a track
+    // to PlayerConfig::ring ahead, so a change in the last moments of a track
     // can apply from the track after next. Gapless transitions and the gap are unchanged.
     void setRepeat(Repeat r);
     void setShuffle(bool on);
@@ -207,7 +212,7 @@ public:
     // end of queue (EndOfQueue, Stopped, index -1) with PlayerState::resumable set, and
     // play() then continues with the track that would have followed. Like setRepeat, it
     // applies to the first track not yet fully decoded: armed in the last
-    // PlayerConfig::ringSeconds of a track, it stops after the next one.
+    // PlayerConfig::ring of a track, it stops after the next one.
     void setStopAfterCurrent(bool on);
     // Test hook: acts as if the audio backend reported a reroute (the stream moved to
     // another device) or an unexpected device stop. The Null backend reports neither.

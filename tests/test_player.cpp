@@ -1,7 +1,7 @@
 // Player on miniaudio's Null backend (no sound card needed; real-time paced):
 //  - gapless: the frames handed to the device equal the concatenation of the decoded
 //    tracks, sample for sample, with a resampled track in the middle of the queue.
-//  - gap (PlayerConfig::gapSeconds / setGap): exact zero frames between natural track
+//  - gap (PlayerConfig::gap / setGap): exact zero frames between natural track
 //    ends only, TrackChanged on the first real sample, none after the last track.
 //  - end of queue waits for the device buffer; an enqueue racing the end is not lost.
 //  - command/state machine: pause/resume/seek/next/prev/stop/volume/end of queue/errors.
@@ -10,7 +10,7 @@
 //  - user queue: before the context, play next, edits, prev, failed entries, gapless.
 //  - stop after current: ends like an end of queue, play() resumes with the next track
 //    (context or user queue), one-shot, cleared by clearQueue, disarmed by false.
-//  - cueIndex: opened paused at a position (resume), NaN and past-the-end handled.
+//  - cueIndex: opened paused at a position (resume), negative and past-the-end handled.
 //  - ReplayGain modes on a tagged file: album/track gain, preamp clamp, peak cap.
 //  - device loss (simulated reroute / stop): pause, optional resume, user override.
 #include "common.hpp"
@@ -38,6 +38,10 @@ using namespace std::chrono_literals;
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+// The player's times are integer ms; the checks below compare in seconds.
+double secs(lm::Millis t) { return static_cast<double>(t.count()) / 1000.0; }
+lm::Millis msOf(double s) { return lm::Millis(std::llround(s * 1000.0)); }
 
 struct Recorder {
     std::mutex m;
@@ -211,15 +215,15 @@ void gapBetweenTracks(const std::string &dir, bool viaSetter) {
     Tap tap(200000);
     lm::PlayerConfig cfg;
     cfg.nullBackend = true;
-    cfg.tickSeconds = 0.05;
-    cfg.gapSeconds = viaSetter ? 0.0 : gap;
+    cfg.tick = 50ms;
+    cfg.gap = msOf(viaSetter ? 0.0 : gap);
     cfg.onEvent = [&](const lm::Event &e) {
         {
             std::lock_guard lk(seen.m);
             const std::size_t f = tap.frames.load();
             if (e.type == lm::EventType::TrackChanged) seen.changes.emplace_back(e.state.index, f);
             if (e.type == lm::EventType::Position)
-                seen.pos.emplace_back(e.state.index, e.state.position, e.state.track.duration, f);
+                seen.pos.emplace_back(e.state.index, secs(e.state.position), secs(e.state.track.duration), f);
         }
         rec(e);
     };
@@ -227,7 +231,7 @@ void gapBetweenTracks(const std::string &dir, bool viaSetter) {
     cfg.outputTapUser = &tap;
     {
         lm::Player p(cfg);
-        if (viaSetter) p.setGap(gap); // hot change before the first transition
+        if (viaSetter) p.setGap(msOf(gap)); // hot change before the first transition
         p.enqueue({a, d, b});
         p.play();
         CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s));
@@ -265,7 +269,7 @@ void gapJumps(const std::string &dir) {
         Recorder rec;
         lm::PlayerConfig cfg;
         cfg.nullBackend = true;
-        cfg.gapSeconds = 5.0; // longer than the ring: the decoder waits inside the gap
+        cfg.gap = msOf(5.0); // longer than the ring: the decoder waits inside the gap
         cfg.onEvent = std::ref(rec);
         lm::Player p(cfg);
         p.enqueue({e1, e2});
@@ -274,12 +278,12 @@ void gapJumps(const std::string &dir) {
         auto st = p.state();
         CHECK_EQ(st.index, 0);
         CHECK(st.status == lm::Status::Playing);
-        CHECK(st.position <= st.track.duration + 1e-9);
-        CHECK_NEAR(st.position, 0.25, 1e-6);
-        p.seek(0.1); // replays e1 from 0.1; its natural end starts a new gap
+        CHECK(secs(st.position) <= secs(st.track.duration) + 1e-9);
+        CHECK_NEAR(secs(st.position), 0.25, 1e-6);
+        p.seek(msOf(0.1)); // replays e1 from 0.1; its natural end starts a new gap
         p.sync();
         CHECK_EQ(p.state().index, 0);
-        CHECK(p.state().position < 0.2);
+        CHECK(secs(p.state().position) < 0.2);
         std::this_thread::sleep_for(500ms);
         CHECK_EQ(p.state().index, 0);
         p.pause();
@@ -301,7 +305,7 @@ void gapJumps(const std::string &dir) {
         Recorder rec;
         lm::PlayerConfig cfg;
         cfg.nullBackend = true;
-        cfg.gapSeconds = 0.4;
+        cfg.gap = msOf(0.4);
         cfg.onEvent = std::ref(rec);
         cfg.outputTap = &Tap::fn;
         cfg.outputTapUser = &tap;
@@ -447,7 +451,7 @@ void commands(const std::string &dir) {
     Recorder rec;
     lm::PlayerConfig cfg;
     cfg.nullBackend = true;
-    cfg.tickSeconds = 0.1;
+    cfg.tick = 100ms;
     cfg.onEvent = std::ref(rec);
     lm::Player p(cfg);
 
@@ -462,47 +466,47 @@ void commands(const std::string &dir) {
     auto s = p.state();
     CHECK(s.status == lm::Status::Playing);
     CHECK_EQ(s.index, 0);
-    CHECK_NEAR(s.track.duration, 6.0, 0.001);
+    CHECK(s.track.duration == 6s); // exact: integer ms from the frame count
     CHECK(s.output.find("Null") != std::string::npos);
 
     std::this_thread::sleep_for(450ms);
     CHECK(rec.count(lm::EventType::Position) >= 2); // ~10 Hz in this test
-    const double before = p.state().position;
+    const double before = secs(p.state().position);
     CHECK(before > 0.2 && before < 1.0);
 
     p.pause();
     p.sync();
     CHECK(p.state().status == lm::Status::Paused);
-    const double paused = p.state().position;
+    const double paused = secs(p.state().position);
     std::this_thread::sleep_for(250ms);
-    CHECK_NEAR(p.state().position, paused, 0.001); // frozen while paused
+    CHECK_NEAR(secs(p.state().position), paused, 0.001); // frozen while paused
     const auto ticks = rec.count(lm::EventType::Position);
     std::this_thread::sleep_for(300ms);
     CHECK_EQ(rec.count(lm::EventType::Position), ticks); // no ticks while paused (idle)
 
-    p.seek(4.0); // seeking while paused stays paused
+    p.seek(msOf(4.0)); // seeking while paused stays paused
     p.sync();
     s = p.state();
     CHECK(s.status == lm::Status::Paused);
-    CHECK_NEAR(s.position, 4.0, 0.05);
+    CHECK_NEAR(secs(s.position), 4.0, 0.05);
     p.play();
     p.sync();
     CHECK(p.state().status == lm::Status::Playing);
     std::this_thread::sleep_for(200ms);
-    CHECK_NEAR(p.state().position, 4.2, 0.15);
+    CHECK_NEAR(secs(p.state().position), 4.2, 0.15);
 
     p.next();
     p.sync();
     CHECK_EQ(p.state().index, 1);
-    CHECK(p.state().position < 0.2);
+    CHECK(secs(p.state().position) < 0.2);
     p.prev(); // < 3 s into track 1: go to track 0
     p.sync();
     CHECK_EQ(p.state().index, 0);
-    p.seek(3.5);
+    p.seek(msOf(3.5));
     p.prev(); // > 3 s in: restart track 0
     p.sync();
     CHECK_EQ(p.state().index, 0);
-    CHECK(p.state().position < 0.3);
+    CHECK(secs(p.state().position) < 0.3);
 
     p.setVolume(0.25f);
     p.sync();
@@ -518,7 +522,7 @@ void commands(const std::string &dir) {
     p.stop();
     p.sync();
     CHECK(p.state().status == lm::Status::Stopped);
-    CHECK_NEAR(p.state().position, 0.0, 1e-9);
+    CHECK_NEAR(secs(p.state().position), 0.0, 1e-9);
     p.play(); // from stop: same track, from the start
     p.sync();
     CHECK_EQ(p.state().index, 0);
@@ -528,7 +532,7 @@ void commands(const std::string &dir) {
     s = p.state();
     CHECK_EQ(s.index, 2);
     CHECK_EQ(s.track.sampleRate, 48000u);
-    p.seek(5.8);
+    p.seek(msOf(5.8));
     p.sync();
     CHECK(rec.waitFor(lm::EventType::EndOfQueue, 3s)); // natural end of the last track
     s = p.state();
@@ -573,7 +577,7 @@ void commands(const std::string &dir) {
             for (int k = 0; k < 20; k++) {
                 switch ((i + k) % 5) {
                 case 0: p.togglePause(); break;
-                case 1: p.seek(k * 0.1); break;
+                case 1: p.seek(msOf(k * 0.1)); break;
                 case 2: p.next(); break;
                 case 3: p.prev(); break;
                 case 4: (void)p.state(); break;
@@ -660,7 +664,7 @@ void interruptedOpenProceeds(const std::string &dir) {
     Recorder rec;
     lm::PlayerConfig cfg;
     cfg.nullBackend = true;
-    cfg.tickSeconds = 0.1;
+    cfg.tick = 100ms;
     cfg.onEvent = std::ref(rec);
     cfg.openSource = [&](const std::string &uri, std::string *err) -> std::unique_ptr<lm::ByteSource> {
         ++opens;
@@ -679,7 +683,7 @@ void interruptedOpenProceeds(const std::string &dir) {
     auto waitPlaying = [&](lm::Player &p, int index, double minPos = 0) {
         for (int i = 0; i < 500; i++) {
             const auto st = p.state();
-            if (st.status == lm::Status::Playing && st.index == index && st.position >= minPos) return true;
+            if (st.status == lm::Status::Playing && st.index == index && secs(st.position) >= minPos) return true;
             std::this_thread::sleep_for(10ms);
         }
         return false;
@@ -728,7 +732,7 @@ void interruptedOpenProceeds(const std::string &dir) {
         p.enqueue({"lm://stalled/1", ok});
         p.play();
         waitStalls(4);
-        p.seek(2.0);
+        p.seek(msOf(2.0));
         waitStalls(5); // re-opened at 2 s
         CHECK(p.state().status != lm::Status::Stopped);
         CHECK_EQ(p.state().index, 0);
@@ -743,10 +747,10 @@ void interruptedOpenProceeds(const std::string &dir) {
         p.play();
         waitStalls(6);
         p.next();
-        p.seek(3.0); // queued behind next(): applies to track 2
+        p.seek(msOf(3.0)); // queued behind next(): applies to track 2
         p.sync();
         CHECK(waitPlaying(p, 1, 2.9));
-        CHECK(p.state().position < 5.0);
+        CHECK(secs(p.state().position) < 5.0);
     }
 }
 
@@ -1194,17 +1198,17 @@ static void stopAfterCurrent(const std::string &dir) {
         auto v = rec.trackIndexes();
         CHECK(v.size() == 4 && v[2] == 0 && v[3] == 2);
         // cueIndex: opened paused at the position, nothing played until play().
-        p.cueIndex(1, 0.25);
+        p.cueIndex(1, 250ms);
         p.sync();
         const lm::PlayerState cs = p.state();
         CHECK(cs.status == lm::Status::Paused && cs.index == 1);
-        CHECK(cs.position >= 0.24 && cs.position <= 0.26);
+        CHECK(secs(cs.position) >= 0.24 && secs(cs.position) <= 0.26);
         p.play();
         CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s, 4));
-        p.cueIndex(0, std::numeric_limits<double>::quiet_NaN()); // -> 0
+        p.cueIndex(0, -5s); // negative -> 0
         p.sync();
-        CHECK(p.state().status == lm::Status::Paused && p.state().index == 0 && p.state().position < 0.01);
-        p.cueIndex(0, 99.0); // past the end: clamped
+        CHECK(p.state().status == lm::Status::Paused && p.state().index == 0 && secs(p.state().position) < 0.01);
+        p.cueIndex(0, 99s); // past the end: clamped
         p.sync();
         CHECK(p.state().status == lm::Status::Paused && p.state().index == 0);
         // ModeChanged reports arming (no event for a no-op).
@@ -1300,9 +1304,9 @@ static void deviceLoss(const std::string &dir) {
         CHECK(rec.waitFor(lm::EventType::Error, 5s));
         p.play(); // the reopened device works
         CHECK(waitStatus(p, lm::Status::Playing));
-        const double at = p.state().position;
+        const double at = secs(p.state().position);
         std::this_thread::sleep_for(300ms);
-        CHECK(p.state().position > at);
+        CHECK(secs(p.state().position) > at);
     }
     {
         Recorder rec;
