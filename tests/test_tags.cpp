@@ -1,10 +1,13 @@
 // Tags without ffmpeg: hand-built ID3v2/ID3v1/Vorbis-comment edge cases, the tag-only
 // reader on in-memory MP3/FLAC/Ogg files (pictures skipped, bounded reads), and
 // robustness against corrupted, truncated and structurally odd tags (random and
-// structured fuzzing; meant to run under ASan/UBSan). File fixtures: test_tags_files.
+// structured fuzzing; meant to run under ASan/UBSan); ReplayGain album gain/peaks and
+// lm::replayGainFactor (modes, preamp, clipping prevention). File fixtures: test_tags_files.
 #include "common.hpp"
 #include "decoders.hpp"
+#include "lm/player.hpp"
 
+#include <cmath>
 #include <cstring>
 #include <algorithm>
 #include <memory>
@@ -154,7 +157,7 @@ static void fuzzParsers(const bytes &seed, std::mt19937 &rng) {
         auto heap = std::make_unique<unsigned char[]>(b.size() + 1);
         std::memcpy(heap.get(), b.data(), b.size());
         Tags t;
-        std::optional<float> g;
+        lm::GainTags g;
         parseId3v2(heap.get(), b.size(), &t, &g);
         parseId3v1(heap.get(), b.size(), t);
         applyVorbisComment(std::string_view(reinterpret_cast<const char *>(heap.get()), b.size()), t);
@@ -297,10 +300,10 @@ static void newCases() {
         append(file, v1);
         MemSource src(file);
         Tags tg;
-        std::optional<float> g;
+        lm::GainTags g;
         CHECK(readTagsFrom(src, tg, &g));
         checkTags("mp3 apic", tg, "After Pic", "", "", 0, 0, 0);
-        CHECK(g && *g == -3.5f);
+        CHECK(g.trackGain && *g.trackGain == -3.5f);
         CHECK(src.bytesRead < 64 * 1024);
         // Same file, v2.3 sizes: still found.
         bytes fr3 = frame("APIC", pic, 3);
@@ -346,10 +349,10 @@ static void newCases() {
         append(f, audio);
         MemSource src(f);
         Tags tg;
-        std::optional<float> g;
+        lm::GainTags g;
         CHECK(readTagsFrom(src, tg, &g));
         checkTags("flac", tg, "Flac Title", "Flac Artist", "", 7, 0, 0);
-        CHECK(g && *g == -2.0f);
+        CHECK(g.trackGain && *g.trackGain == -2.0f);
         CHECK(src.bytesRead < 64 * 1024);
     }
     {
@@ -399,11 +402,11 @@ static void newCases() {
                 MemSource src(file);
                 CHECK(lm::sniffFormat(src) == (opus ? lm::Format::Opus : lm::Format::Vorbis));
                 Tags tg;
-                std::optional<float> g;
+                lm::GainTags g;
                 CHECK(readTagsFrom(src, tg, &g));
                 checkTags(opus ? (mux ? "opus mux pic" : "opus pic") : (mux ? "vorbis mux pic" : "vorbis pic"), tg,
                           "Big Pic Title", "Big Pic Artist", "", 0, 0, 0);
-                CHECK(opus ? !g : (g && *g == 1.5f)); // Opus: R128 gain, not REPLAYGAIN_*
+                CHECK(opus ? !g.trackGain : (g.trackGain && *g.trackGain == 1.5f)); // Opus: R128 gain, not REPLAYGAIN_*
                 CHECK(src.bytesRead < 256 * 1024 && src.maxEnd <= commentEnd);
             }
         }
@@ -414,10 +417,10 @@ static void newCases() {
         append(f, vc);
         MemSource src(f);
         Tags tg;
-        std::optional<float> g;
+        lm::GainTags g;
         CHECK(readTagsFrom(src, tg, &g));
         checkTags("flac pic comment", tg, "Big Pic Title", "Big Pic Artist", "", 0, 0, 0);
-        CHECK(g && *g == 1.5f && src.bytesRead < 64 * 1024);
+        CHECK(g.trackGain && *g.trackGain == 1.5f && src.bytesRead < 64 * 1024);
         // In-memory parser: same result.
         Tags t2;
         lm::detail::parseVorbisCommentBlock(vc.data(), vc.size(), t2, nullptr);
@@ -477,7 +480,7 @@ static void fuzzStructured(std::mt19937 &r, int iters) {
         auto heap = std::make_unique<unsigned char[]>(b.size() + 1);
         std::memcpy(heap.get(), b.data(), b.size());
         Tags t;
-        std::optional<float> g;
+        lm::GainTags g;
         lm::detail::parseId3v2(heap.get(), b.size(), &t, &g);
         b.insert(b.end(), {0xFF, 0xFB, 0x90, 0x00});
         MemSource src(b);
@@ -494,9 +497,90 @@ static void fuzzStructured(std::mt19937 &r, int iters) {
     }
 }
 
+// ReplayGain album gain and peaks (Vorbis comments, ID3 TXXX) and the player's factor.
+static void replayGainTags() {
+    using namespace lm::detail;
+    lm::GainTags g;
+    CHECK(applyGainComment("replaygain_album_gain=-8.25 dB", g));
+    CHECK(applyGainComment("REPLAYGAIN_TRACK_PEAK=0.988", g));
+    CHECK(applyGainComment("REPLAYGAIN_ALBUM_PEAK=1.2", g)); // > 1: inter-sample / lossy overshoot
+    CHECK(applyGainComment("REPLAYGAIN_TRACK_GAIN=+1.5 dB", g));
+    CHECK(applyGainComment("REPLAYGAIN_TRACK_GAIN=-9 dB", g)); // the first valid value wins
+    CHECK(!applyGainComment("TITLE=x", g));
+    CHECK(!applyGainComment("noequals", g));
+    CHECK(g.albumGain && *g.albumGain == -8.25f);
+    CHECK(g.trackPeak && std::fabs(*g.trackPeak - 0.988f) < 1e-6f);
+    CHECK(g.albumPeak && std::fabs(*g.albumPeak - 1.2f) < 1e-6f);
+    CHECK(g.trackGain && *g.trackGain == 1.5f);
+    lm::GainTags bad;
+    for (const char *c : {"REPLAYGAIN_TRACK_PEAK=0", "REPLAYGAIN_TRACK_PEAK=-1", "REPLAYGAIN_TRACK_PEAK=nan",
+                          "REPLAYGAIN_TRACK_PEAK=11", "REPLAYGAIN_TRACK_PEAK=", "REPLAYGAIN_ALBUM_GAIN=loud",
+                          "REPLAYGAIN_ALBUM_GAIN=99 dB"})
+        CHECK(applyGainComment(c, bad));
+    CHECK(bad == lm::GainTags{});
+    // Malformed first, valid later: the valid one is taken.
+    CHECK(applyGainComment("REPLAYGAIN_ALBUM_PEAK=0.5", bad) && bad.albumPeak && *bad.albumPeak == 0.5f);
+    // FLAC/Vorbis comment block and ID3v2 TXXX frames.
+    const bytes vc = vorbisComments({"REPLAYGAIN_ALBUM_GAIN=-4.00 dB", "REPLAYGAIN_ALBUM_PEAK=0.9", "TITLE=T"});
+    lm::GainTags gv;
+    Tags tv;
+    parseVorbisCommentBlock(vc.data(), vc.size(), tv, &gv);
+    CHECK(gv.albumGain && *gv.albumGain == -4.0f && gv.albumPeak && *gv.albumPeak == 0.9f && tv.title == "T");
+    auto txxx = [](const std::string &d, const std::string &v) {
+        bytes b{0};
+        b.insert(b.end(), d.begin(), d.end());
+        b.push_back(0);
+        b.insert(b.end(), v.begin(), v.end());
+        return frame("TXXX", b, 4);
+    };
+    bytes fr = txxx("REPLAYGAIN_ALBUM_GAIN", "-6.5 dB");
+    append(fr, txxx("replaygain_album_peak", "0.75"));
+    append(fr, txxx("REPLAYGAIN_TRACK_PEAK", "0.5"));
+    append(fr, txxx("SOMETHING_ELSE", "1"));
+    const bytes id3 = tag(4, 0, fr);
+    lm::GainTags gi;
+    parseId3v2(id3.data(), id3.size(), nullptr, &gi);
+    CHECK(gi.albumGain && *gi.albumGain == -6.5f && gi.albumPeak && *gi.albumPeak == 0.75f && gi.trackPeak &&
+          *gi.trackPeak == 0.5f && !gi.trackGain);
+
+    // replayGainFactor
+    using lm::GainMode;
+    auto near = [](float a, float b) { return std::fabs(a - b) < 1e-4f; };
+    lm::GainTags t;
+    t.trackGain = -6.0f;
+    t.albumGain = -3.0f;
+    CHECK(lm::replayGainFactor(t, GainMode::Off, 6.0f, true) == 1.0f);
+    CHECK(near(lm::replayGainFactor(t, GainMode::Track, 0.0f, false), std::pow(10.0f, -6.0f / 20.0f)));
+    CHECK(near(lm::replayGainFactor(t, GainMode::Album, 0.0f, false), std::pow(10.0f, -3.0f / 20.0f)));
+    CHECK(near(lm::replayGainFactor(t, GainMode::Album, 3.0f, false), 1.0f)); // preamp
+    CHECK(near(lm::replayGainFactor(t, GainMode::Album, 100.0f, false), std::pow(10.0f, 12.0f / 20.0f))); // clamped to 15
+    CHECK(near(lm::replayGainFactor(t, GainMode::Album, std::nanf(""), false), std::pow(10.0f, -3.0f / 20.0f)));
+    lm::GainTags only;
+    only.trackGain = 2.0f;
+    CHECK(near(lm::replayGainFactor(only, GainMode::Album, 0.0f, false), std::pow(10.0f, 2.0f / 20.0f))); // fallback
+    CHECK(lm::replayGainFactor(lm::GainTags{}, GainMode::Album, 6.0f, true) == 1.0f); // untagged: no preamp either
+    // Clipping prevention: +6 dB on a 0.8 peak would clip; capped at 1 / 0.8.
+    lm::GainTags loud;
+    loud.trackGain = 6.0f;
+    loud.trackPeak = 0.8f;
+    CHECK(near(lm::replayGainFactor(loud, GainMode::Track, 0.0f, true), 1.25f));
+    CHECK(near(lm::replayGainFactor(loud, GainMode::Track, 0.0f, false), std::pow(10.0f, 6.0f / 20.0f)));
+    loud.albumGain = 6.0f;
+    loud.albumPeak = 0.9f;
+    CHECK(near(lm::replayGainFactor(loud, GainMode::Album, 0.0f, true), 1.0f / 0.9f)); // the album peak in album mode
+    loud.albumPeak.reset();
+    CHECK(near(lm::replayGainFactor(loud, GainMode::Album, 0.0f, true), 1.25f)); // else the track peak
+    // A quiet peak does not raise a negative gain.
+    lm::GainTags quiet;
+    quiet.trackGain = -6.0f;
+    quiet.trackPeak = 0.1f;
+    CHECK(near(lm::replayGainFactor(quiet, GainMode::Track, 0.0f, true), std::pow(10.0f, -6.0f / 20.0f)));
+}
+
 int main() {
     handBuilt();
     newCases();
+    replayGainTags();
     // Fixed seed for reproducible CI; LM_FUZZ_SEED=<n> explores other inputs.
     const char *seedEnv = std::getenv("LM_FUZZ_SEED");
     std::mt19937 rng(seedEnv ? static_cast<std::uint32_t>(std::strtoul(seedEnv, nullptr, 10)) : 12345u);

@@ -41,7 +41,7 @@ public:
             for (int i = 0; i < vc->comments; i++) {
                 if (!vc->user_comments[i] || vc->comment_lengths[i] < 0) continue;
                 const std::string_view s(vc->user_comments[i], static_cast<std::size_t>(vc->comment_lengths[i]));
-                if (!gain_) gain_ = parseVorbisCommentGain(s);
+                (void)applyGainComment(s, gain_); // other comments: descriptive tags
                 applyVorbisComment(s, tags_);
             }
         }

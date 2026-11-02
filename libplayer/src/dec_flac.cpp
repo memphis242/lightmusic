@@ -61,7 +61,7 @@ private:
         drflac_uint32 len = 0;
         while (const char *c = drflac_next_vorbis_comment(&it, &len)) {
             const std::string_view s(c, len);
-            if (!self->gain_) self->gain_ = parseVorbisCommentGain(s);
+            (void)applyGainComment(s, self->gain_); // other comments: descriptive tags
             applyVorbisComment(s, self->tags_);
         }
     }

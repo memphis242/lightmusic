@@ -81,6 +81,20 @@ const char *statusName(Status s) {
     return "?";
 }
 
+float replayGainFactor(const GainTags &g, GainMode mode, float preampDb, bool preventClipping) {
+    if (mode == GainMode::Off) return 1.0f;
+    const bool album = mode == GainMode::Album && g.albumGain;
+    const std::optional<float> db = album ? g.albumGain : g.trackGain;
+    if (!db) return 1.0f; // untagged: as recorded (no preamp either)
+    const float pre = std::isfinite(preampDb) ? std::clamp(preampDb, -15.0f, 15.0f) : 0.0f;
+    float f = std::pow(10.0f, (*db + pre) / 20.0f);
+    if (preventClipping) {
+        const std::optional<float> peak = album ? (g.albumPeak ? g.albumPeak : g.trackPeak) : (g.trackPeak ? g.trackPeak : g.albumPeak);
+        if (peak && *peak > 0.0f) f = std::min(f, 1.0f / *peak);
+    }
+    return f;
+}
+
 const char *repeatName(Repeat r) {
     switch (r) {
     case Repeat::Off: return "off";
@@ -146,7 +160,7 @@ struct Pick {
     bool consumes = false;
 };
 
-TrackInfo infoFor(const std::string &path, const Decoder &d) {
+TrackInfo infoFor(const std::string &path, const Decoder &d, const PlayerConfig &cfg) {
     TrackInfo t;
     t.path = path;
     t.format = d.format();
@@ -154,6 +168,8 @@ TrackInfo infoFor(const std::string &path, const Decoder &d) {
     t.channels = d.channels();
     t.duration = d.sampleRate() ? static_cast<double>(d.totalFrames()) / d.sampleRate() : 0;
     t.trackGainDb = d.trackGainDb();
+    t.gain = d.replayGain();
+    t.appliedGain = replayGainFactor(t.gain, cfg.replayGain, cfg.replayGainPreampDb, cfg.replayGainPreventClipping);
     t.tags = d.tags();
     return t;
 }
@@ -330,6 +346,8 @@ struct Player::Impl {
     explicit Impl(PlayerConfig c)
         : cfg(std::move(c)), ring(ringSamples(48000)), repeat(cfg.repeat), shuffle(cfg.shuffle),
           rng(shuffleSeed(cfg.shuffleSeed)) {
+        cfg.replayGainPreampDb =
+            std::isfinite(cfg.replayGainPreampDb) ? std::clamp(cfg.replayGainPreampDb, -15.0f, 15.0f) : 0.0f;
         out.tap = cfg.outputTap;
         out.tapUser = cfg.outputTapUser;
         gapSec.store(clampGap(cfg.gapSeconds));
@@ -724,7 +742,7 @@ struct Player::Impl {
         if (frame && dec->totalFrames()) frame = std::min(frame, dec->totalFrames());
         // The state describes the new track from here on, whether or not the prebuffer
         // fills in time; the decoder's own marker (same ring frame) confirms it later.
-        Marker m{ring.totalWritten() / kCh, i, frame, infoFor(path, *dec), pk.ctx, pk.user, pk.consumes};
+        Marker m{ring.totalWritten() / kCh, i, frame, infoFor(path, *dec, cfg), pk.ctx, pk.user, pk.consumes};
         const bool newTrack = i != index || path != cur.info.path;
         {
             std::lock_guard lk(dm);
@@ -1340,10 +1358,8 @@ struct Player::Impl {
                     if (!ok || gen != seen) continue; // job retired during the gap
                     gapDue = 0;
                 }
-                const auto info = infoFor(path, *dec);
-                gain = 1.0f;
-                if (cfg.replayGain && info.trackGainDb)
-                    gain = std::pow(10.0f, (*info.trackGainDb + cfg.replayGainPreampDb) / 20.0f);
+                const auto info = infoFor(path, *dec, cfg);
+                gain = info.appliedGain;
                 pokeControl = true;
                 trackIn = trackOut = 0;
                 LM_ASSERT(markers.empty() || markers.back().ringFrame <= ring.totalWritten() / kCh,

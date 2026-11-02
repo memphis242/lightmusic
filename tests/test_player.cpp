@@ -11,6 +11,7 @@
 //  - stop after current: ends like an end of queue, play() resumes with the next track
 //    (context or user queue), one-shot, cleared by clearQueue, disarmed by false.
 //  - cueIndex: opened paused at a position (resume), NaN and past-the-end handled.
+//  - ReplayGain modes on a tagged file: album/track gain, preamp clamp, peak cap.
 #include "common.hpp"
 #include "lm/player.hpp"
 #include "lm/source.hpp"
@@ -1213,6 +1214,57 @@ static void stopAfterCurrent(const std::string &dir) {
     }
 }
 
+// ReplayGain on a real file: the album gain in Album mode, the track gain in Track mode,
+// the preamp clamped, and the album peak capping the gain; the device gets the scaled
+// samples (relative to the peak with ReplayGain off).
+static void replayGainModes(const std::string &dir) {
+    const std::string f = dir + "/rg_album.flac";
+    CHECK(lmtest::makeTone(f, 44100, 44100, 440,
+                           "-metadata 'REPLAYGAIN_ALBUM_GAIN=+6.02 dB' -metadata 'REPLAYGAIN_TRACK_GAIN=-6.02 dB' "
+                           "-metadata REPLAYGAIN_ALBUM_PEAK=0.2 -c:a flac -f flac"));
+    struct Case {
+        lm::GainMode mode;
+        float preamp;
+        bool prevent;
+        float factor;
+    };
+    float base = 0; // peak with ReplayGain off (the first case)
+    for (const Case c : {Case{lm::GainMode::Off, 6, true, 1.0f}, Case{lm::GainMode::Album, 0, true, 2.0f},
+                         Case{lm::GainMode::Track, 0, true, 0.5f}, Case{lm::GainMode::Album, 40, true, 5.0f},
+                         Case{lm::GainMode::Album, 40, false, 11.25f}}) {
+        Recorder rec;
+        Tap tap(44100 * 2);
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.onEvent = std::ref(rec);
+        cfg.replayGain = c.mode;
+        cfg.replayGainPreampDb = c.preamp;
+        cfg.replayGainPreventClipping = c.prevent;
+        cfg.outputTap = &Tap::fn;
+        cfg.outputTapUser = &tap;
+        lm::Player p(cfg);
+        p.enqueue({f});
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s));
+        float applied = 0; // (the state is cleared at the end: read it from TrackChanged)
+        {
+            std::lock_guard lk(rec.m);
+            for (const auto &e : rec.events)
+                if (e.type == lm::EventType::TrackChanged) applied = e.state.track.appliedGain;
+        }
+        CHECK(std::fabs(applied - c.factor) < 0.02f * c.factor);
+        float peak = 0;
+        const std::size_t n = tap.frames.load(std::memory_order_acquire) * 2;
+        for (std::size_t i = 0; i < n; i++) peak = std::max(peak, std::fabs(tap.buf[i]));
+        if (c.mode == lm::GainMode::Off) base = peak;
+        CHECK(base > 0.01f);
+        const float want = std::min(1.0f, base * c.factor); // samples are clamped to [-1, 1]
+        CHECK(std::fabs(peak - want) < 0.01f + 0.01f * want);
+        if (std::fabs(peak - want) >= 0.01f + 0.01f * want)
+            std::println(stderr, "  replaygain: mode {} preamp {}: peak {} want {}", static_cast<int>(c.mode), c.preamp, peak, want);
+    }
+}
+
 int main() {
     if (!lmtest::haveFfmpeg()) {
         std::println("test_player: ffmpeg not found, skipping");
@@ -1233,5 +1285,6 @@ int main() {
     playOrder(dir);
     userQueue(dir);
     stopAfterCurrent(dir);
+    replayGainModes(dir);
     return lmtest::finish("test_player");
 }

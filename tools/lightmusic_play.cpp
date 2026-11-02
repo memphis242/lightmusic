@@ -1,6 +1,6 @@
 // lightmusic-play: development harness for libplayer (not the TUI).
 //
-//   lightmusic-play [--null] [--rg] [--gap SECONDS] [--quiet] FILE...
+//   lightmusic-play [--null] [--rg | --rg-album] [--gap SECONDS] [--quiet] FILE...
 //
 // Commands on stdin, one per line:
 //   p        toggle pause          n        next track
@@ -49,7 +49,8 @@ int main(int argc, char **argv) {
     std::vector<std::string> files;
     for (int i = 1; i < argc; i++) {
         if (!std::strcmp(argv[i], "--null")) cfg.nullBackend = true;
-        else if (!std::strcmp(argv[i], "--rg")) cfg.replayGain = true;
+        else if (!std::strcmp(argv[i], "--rg")) cfg.replayGain = lm::GainMode::Track;
+        else if (!std::strcmp(argv[i], "--rg-album")) cfg.replayGain = lm::GainMode::Album;
         else if (!std::strcmp(argv[i], "--quiet")) quiet = true;
         else if (!std::strcmp(argv[i], "--gap")) {
             char *end = nullptr;
@@ -62,13 +63,13 @@ int main(int argc, char **argv) {
             i++;
         }
         else if (!std::strcmp(argv[i], "-h") || !std::strcmp(argv[i], "--help")) {
-            lm::diagln(stdout, "usage: lightmusic-play [--null] [--rg] [--gap SECONDS] [--quiet] FILE...\n"
+            lm::diagln(stdout, "usage: lightmusic-play [--null] [--rg | --rg-album] [--gap SECONDS] [--quiet] FILE...\n"
                        "stdin: p=pause n=next b=prev s SEC=seek v VOL=volume i=info x=stop w SEC=wait q=quit");
             return 0;
         } else files.emplace_back(argv[i]);
     }
     if (files.empty()) {
-        lm::diagln(stderr, "usage: lightmusic-play [--null] [--rg] [--gap SECONDS] [--quiet] FILE...");
+        lm::diagln(stderr, "usage: lightmusic-play [--null] [--rg | --rg-album] [--gap SECONDS] [--quiet] FILE...");
         return 2;
     }
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;

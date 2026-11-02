@@ -853,6 +853,7 @@ int run(int argc, char **argv) {
         };
         if (!std::strcmp(argv[i], "--null")) cfg.nullBackend = true;
         else if (!std::strcmp(argv[i], "--rg")) live.cli.set("playback.replaygain", "track");
+        else if (!std::strcmp(argv[i], "--rg-album")) live.cli.set("playback.replaygain", "album");
         else if (!std::strcmp(argv[i], "--gap")) live.cli.set("playback.gap_seconds", value("--gap"));
         else if (!std::strcmp(argv[i], "--server")) live.cli.set("server.url", value("--server"));
         else if (!std::strcmp(argv[i], "--key-file")) live.cli.set("server.key_file", value("--key-file"));
@@ -956,12 +957,14 @@ int run(int argc, char **argv) {
     const lm::config::ClientSettings &set = live.running;
     std::string server = noServer && live.cli.find("server.url") == nullptr ? std::string() : set.serverUrl;
     const std::string keyFile = set.keyFile, cacheDir = set.cacheDir;
-    cfg.replayGain = set.replayGain != lm::config::ReplayGain::Off;
+    cfg.replayGain = set.replayGain == lm::config::ReplayGain::Album   ? lm::GainMode::Album
+                     : set.replayGain == lm::config::ReplayGain::Track ? lm::GainMode::Track
+                                                                       : lm::GainMode::Off;
+    cfg.replayGainPreampDb = static_cast<float>(set.replayGainPreampDb);
+    cfg.replayGainPreventClipping = set.replayGainPreventClipping;
     cfg.gapSeconds = set.gapSeconds;
     cfg.repeat = toRepeat(set.repeat);
     cfg.shuffle = set.shuffle;
-    if (set.replayGain == lm::config::ReplayGain::Album)
-        lm::diagln(stderr, "lightmusic: playback.replaygain: album gain is not supported yet; using track gain");
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;
     // No files and no server: start with an empty list in the folder browser.
     bool browseAtStart = args.empty() && server.empty();

@@ -41,6 +41,16 @@ const char *statusName(Status s);
 enum class Repeat { Off, All, One };
 const char *repeatName(Repeat r); // "off", "all", "one"
 
+// ReplayGain (PlayerConfig::replayGain): Track uses the track gain; Album the album gain,
+// falling back to the track gain for files without one.
+enum class GainMode { Off, Track, Album };
+
+// The linear factor applied to a track: 10^((gain + preampDb) / 20) for the mode's gain
+// (1 for an untagged file or Off). With preventClipping it is capped so the tagged peak
+// (album peak in Album mode, else the track peak; the other one if only that is tagged)
+// stays at or below full scale. Samples are clamped to [-1, 1] after it in every case.
+[[nodiscard]] float replayGainFactor(const GainTags &g, GainMode mode, float preampDb, bool preventClipping);
+
 struct TrackInfo {
     std::string path;
     Format format = Format::Unknown;
@@ -48,6 +58,8 @@ struct TrackInfo {
     std::uint32_t channels = 0;
     double duration = 0; // seconds; 0 if unknown
     std::optional<float> trackGainDb;
+    GainTags gain;      // all ReplayGain tags (trackGainDb is gain.trackGain)
+    float appliedGain = 1.0f; // replayGainFactor() used for this track (1 with ReplayGain off)
     Tags tags;
 };
 
@@ -98,8 +110,9 @@ struct PlayerConfig {
     double ringSeconds = 0.5;    // PCM ring size
     double prebufferSeconds = 0.1;
     double tickSeconds = 1.0;    // Position event interval while playing
-    bool replayGain = false;     // apply track gain (+preamp) when tagged
-    float replayGainPreampDb = 0.0f;
+    GainMode replayGain = GainMode::Off; // apply ReplayGain (+preamp) when tagged
+    float replayGainPreampDb = 0.0f;     // clamped to [-15, 15] dB
+    bool replayGainPreventClipping = true; // cap the gain by the tagged peak (see replayGainFactor)
     // Silence between tracks that follow each other naturally (one ends, the queue
     // continues): exactly round(gapSeconds * device rate) zero frames. 0 = sample-exact
     // gapless. Not inserted after the last track or on next/prev/seek/playIndex jumps.
