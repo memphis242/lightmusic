@@ -109,7 +109,7 @@ int childMain(const std::string &url, const std::string &dir, std::int64_t id) {
     auto c = open(baseCfg(url, dir));
     if (!c || !syncOk(*c)) return 3;
     std::string err;
-    auto s = c->openTrack(id, &err);
+    auto s = c->openTrack(lm::TrackId{id}, &err);
     if (!s) return 4;
     readAll(*s); // killed somewhere in here
     return 0;
@@ -146,7 +146,7 @@ void crashConsistency() {
         auto c = open(baseCfg(srv.url(), dir));
         CHECK(c != nullptr);
         if (!c) break;
-        auto e = c->cacheEntry(1);
+        auto e = c->cacheEntry(lm::TrackId{1});
         CHECK(e.has_value());
         if (!e) break;
         auto ranges = lm::net::RangeSet::parse(e->ranges);
@@ -174,15 +174,15 @@ void crashConsistency() {
         CHECK(c != nullptr);
         if (c) {
             std::string err;
-            auto s = c->openTrack(1, &err);
+            auto s = c->openTrack(lm::TrackId{1}, &err);
             CHECK(s != nullptr);
             if (s) CHECK(readAll(*s) == data);
             const auto dl = c->stats().downloaded;
             std::println("  resume fetched {} bytes (had {})", dl, prevCovered);
             CHECK(dl <= data.size() - prevCovered + (1 << 20)); // the uncommitted tail may be refetched
             s.reset();
-            CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Cached; }, 5s));
-            auto e = c->cacheEntry(1);
+            CHECK(waitUntil([&] { return c->cacheInfo(lm::TrackId{1}).state == CacheState::Cached; }, 5s));
+            auto e = c->cacheEntry(lm::TrackId{1});
             CHECK(e && e->complete && slurp(e->file) == data);
             CHECK(e && e->file.find(".part") == std::string::npos);
         }
@@ -205,13 +205,13 @@ void ifRangeRestart() {
     srv.bytesPerSec = 400000;
     {
         std::string err;
-        auto s = c->openTrack(1, &err);
+        auto s = c->openTrack(lm::TrackId{1}, &err);
         std::string buf(100000, '\0');
         CHECK_EQ(s->read(buf.data(), buf.size()), buf.size());
         CHECK(buf == v1.substr(0, 100000));
     } // reader gone; background fill off: the download stops
     CHECK(waitUntil([&] { return !c->stats().playbackFetchActive && !c->stats().idleFillActive; }, 3s));
-    CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Partial; }, 3s));
+    CHECK(waitUntil([&] { return c->cacheInfo(lm::TrackId{1}).state == CacheState::Partial; }, 3s));
     srv.bytesPerSec = 0;
     // The file changes on the server; the client has not synced (mirror still says v1).
     srv.setTrack(1, v2, "\"v2\"");
@@ -222,7 +222,7 @@ void ifRangeRestart() {
         // otherwise (e.g. under CPU load) the 200 for v2 can restart the entry before the
         // first read, and the reader then correctly serves v2 whole instead.
         srv.hold = true;
-        auto s = c->openTrack(1, &err);
+        auto s = c->openTrack(lm::TrackId{1}, &err);
         std::string got(1000, '\0');
         const std::size_t first = s->read(got.data(), got.size());
         srv.hold = false;
@@ -239,11 +239,11 @@ void ifRangeRestart() {
     CHECK(sawIfRange);
     {
         std::string err;
-        auto s = c->openTrack(1, &err);
+        auto s = c->openTrack(lm::TrackId{1}, &err);
         CHECK(readAll(*s) == v2); // the restarted download is v2 throughout
     }
-    CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Cached; }, 5s));
-    auto e = c->cacheEntry(1);
+    CHECK(waitUntil([&] { return c->cacheInfo(lm::TrackId{1}).state == CacheState::Cached; }, 5s));
+    auto e = c->cacheEntry(lm::TrackId{1});
     CHECK(e && e->etag == "\"v2\"" && e->size == static_cast<std::int64_t>(v2.size()));
     CHECK(e && slurp(e->file) == v2);
     // Every range request carried If-Range.
@@ -268,31 +268,31 @@ void etagInvalidation() {
     if (!c) return;
     {
         std::string err;
-        auto s = c->openTrack(1, &err);
+        auto s = c->openTrack(lm::TrackId{1}, &err);
         CHECK(readAll(*s) == v1);
     }
-    CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Cached; }, 5s));
-    const std::string oldFile = c->cacheEntry(1)->file;
+    CHECK(waitUntil([&] { return c->cacheInfo(lm::TrackId{1}).state == CacheState::Cached; }, 5s));
+    const std::string oldFile = c->cacheEntry(lm::TrackId{1})->file;
     srv.setTrack(1, v2, "\"a2\"");
     CHECK(syncOk(*c));
     // Dropped by the sync (or, if the last reader's release is still in flight, right
     // after it).
-    CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Remote; }, 3s));
+    CHECK(waitUntil([&] { return c->cacheInfo(lm::TrackId{1}).state == CacheState::Remote; }, 3s));
     CHECK(!fs::exists(oldFile));
-    CHECK(c->track(1) && c->track(1)->etag == "\"a2\"");
+    CHECK(c->track(lm::TrackId{1}) && c->track(lm::TrackId{1})->etag == "\"a2\"");
     {
         std::string err;
-        auto s = c->openTrack(1, &err);
+        auto s = c->openTrack(lm::TrackId{1}, &err);
         CHECK(readAll(*s) == v2);
     }
     // Deleted on the server: the entry goes with it.
-    CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Cached; }, 5s));
+    CHECK(waitUntil([&] { return c->cacheInfo(lm::TrackId{1}).state == CacheState::Cached; }, 5s));
     srv.removeTrack(1);
     CHECK(syncOk(*c));
-    CHECK(!c->cacheEntry(1));
-    CHECK(!c->track(1));
+    CHECK(!c->cacheEntry(lm::TrackId{1}));
+    CHECK(!c->track(lm::TrackId{1}));
     std::string err;
-    CHECK(!c->openTrack(1, &err));
+    CHECK(!c->openTrack(lm::TrackId{1}, &err));
     c.reset();
     fs::remove_all(dir);
 }
@@ -315,14 +315,14 @@ void evictionAndPins() {
     if (!c) return;
     auto play = [&](int id) {
         std::string err;
-        auto s = c->openTrack(id, &err);
+        auto s = c->openTrack(lm::TrackId{id}, &err);
         CHECK(s != nullptr);
         if (s) CHECK(readAll(*s) == data[std::size_t(id - 1)]);
         s.reset();
-        CHECK(waitUntil([&] { return c->cacheInfo(id).state == CacheState::Cached; }, 5s));
+        CHECK(waitUntil([&] { return c->cacheInfo(lm::TrackId{id}).state == CacheState::Cached; }, 5s));
         std::this_thread::sleep_for(1100ms); // distinct last-access seconds for the LRU
     };
-    auto state = [&](int id) { return c->cacheInfo(id).state; };
+    auto state = [&](int id) { return c->cacheInfo(lm::TrackId{id}).state; };
     play(1);
     play(2);
     play(3);
@@ -332,20 +332,20 @@ void evictionAndPins() {
     CHECK(state(2) == CacheState::Cached && state(3) == CacheState::Cached && state(4) == CacheState::Cached);
     CHECK(c->stats().usage <= 1000000);
     std::string err;
-    CHECK(c->pin(2, true, &err));
-    CHECK(c->pin(3, true, &err));
-    CHECK(c->pin(4, true, &err));
+    CHECK(c->pin(lm::TrackId{2}, true, &err));
+    CHECK(c->pin(lm::TrackId{3}, true, &err));
+    CHECK(c->pin(lm::TrackId{4}, true, &err));
     // Saved-offline tracks do not count toward the cap: a fourth pin (1.2 MB of pins over
     // a 1 MB cap) is accepted, filled, and nothing pinned is evicted to make room.
-    CHECK(c->pin(5, true, &err));
-    CHECK(c->cacheInfo(5).pinned);
+    CHECK(c->pin(lm::TrackId{5}, true, &err));
+    CHECK(c->cacheInfo(lm::TrackId{5}).pinned);
     CHECK(c->stats().unpinned == 0);
     {
-        auto s = c->openTrack(5, &err);
+        auto s = c->openTrack(lm::TrackId{5}, &err);
         CHECK(s && readAll(*s) == data[4]);
     }
     std::this_thread::sleep_for(300ms);
-    for (int id = 2; id <= 5; id++) CHECK(state(id) == CacheState::Cached && c->cacheInfo(id).pinned);
+    for (int id = 2; id <= 5; id++) CHECK(state(id) == CacheState::Cached && c->cacheInfo(lm::TrackId{id}).pinned);
     CHECK(c->stats().pinned == 1200000);
     CHECK(c->stats().usage == 1200000);
     // Unpinned playback while pins exceed the cap: the unpinned budget is still the full
@@ -356,9 +356,9 @@ void evictionAndPins() {
     for (int id = 2; id <= 5; id++) CHECK(state(id) == CacheState::Cached);
     // Unpin 2 and 3: they now count toward the cap (0.9 MB with 1, still fits); pinned
     // 4/5 are untouched.
-    CHECK(c->pin(2, false, &err) && c->pin(3, false, &err));
+    CHECK(c->pin(lm::TrackId{2}, false, &err) && c->pin(lm::TrackId{3}, false, &err));
     CHECK(c->stats().unpinned <= 1000000);
-    CHECK(c->cacheInfo(4).pinned && c->cacheInfo(5).pinned);
+    CHECK(c->cacheInfo(lm::TrackId{4}).pinned && c->cacheInfo(lm::TrackId{5}).pinned);
     CHECK(state(4) == CacheState::Cached && state(5) == CacheState::Cached);
     CHECK(c->stats().unpinned == 900000); // 1, 2, 3 fit: 0.9 MB
     // Background fill with pins present: the unpinned cap is still enforced.
@@ -367,7 +367,7 @@ void evictionAndPins() {
     cfg.backgroundFill = true;
     c = open(cfg);
     CHECK(c && syncOk(*c));
-    c->setFillQueue({6});
+    c->setFillQueue({lm::TrackId{6}});
     CHECK(waitUntil([&] { return state(6) == CacheState::Cached; }, 5s));
     CHECK(c->stats().unpinned <= 1000000);
     CHECK(state(4) == CacheState::Cached && state(5) == CacheState::Cached);
@@ -376,7 +376,7 @@ void evictionAndPins() {
     // A pinned track that is not cached yet is filled in the background.
     srv.setTrack(7, FakeServer::randomBytes(300000, 98), "\"e7\"");
     CHECK(syncOk(*c));
-    CHECK(c->pin(7, true, &err));
+    CHECK(c->pin(lm::TrackId{7}, true, &err));
     CHECK(waitUntil([&] { return state(7) == CacheState::Cached; }, 5s));
     CHECK(c->stats().pinned == 900000);
     CHECK(c->stats().unpinned <= 1000000);
@@ -416,31 +416,31 @@ void idleFill() {
     srv.bytesPerSec = 400000;
     {
         std::string err;
-        auto s = c->openTrack(1, &err);
+        auto s = c->openTrack(lm::TrackId{1}, &err);
         std::string buf(50000, '\0');
         CHECK_EQ(s->read(buf.data(), buf.size()), buf.size());
     } // reader gone: the rest would continue as an idle fill, but the network is metered
     CHECK(waitUntil([&] { return !c->stats().idleFillActive && !c->stats().playbackFetchActive; }, 3s));
     std::this_thread::sleep_for(300ms);
-    const auto partial = c->cacheInfo(1);
+    const auto partial = c->cacheInfo(lm::TrackId{1});
     CHECK(partial.state == CacheState::Partial);
     std::this_thread::sleep_for(300ms);
-    CHECK_EQ(c->cacheInfo(1).cachedBytes, partial.cachedBytes); // paused
+    CHECK_EQ(c->cacheInfo(lm::TrackId{1}).cachedBytes, partial.cachedBytes); // paused
     CHECK(probes > 0);
     metered = false; // e.g. back on Wi-Fi: resumes within a probe interval
     CHECK(waitUntil([&] { return c->stats().idleFillActive; }, 3s));
     // Playback needs the bandwidth: the idle fill pauses at once and resumes after.
     {
         std::string err;
-        auto s = c->openTrack(2, &err);
+        auto s = c->openTrack(lm::TrackId{2}, &err);
         std::string buf(1000, '\0');
         CHECK_EQ(s->read(buf.data(), buf.size()), buf.size());
         CHECK(!c->stats().idleFillActive);
         CHECK(c->stats().playbackFetchActive);
         CHECK(readAll(*s).size() == b.size() - 1000);
     }
-    CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Cached; }, 10s));
-    CHECK(slurp(c->cacheEntry(1)->file) == a);
+    CHECK(waitUntil([&] { return c->cacheInfo(lm::TrackId{1}).state == CacheState::Cached; }, 10s));
+    CHECK(slurp(c->cacheEntry(lm::TrackId{1})->file) == a);
     c.reset();
     fs::remove_all(dir);
 }
@@ -466,8 +466,8 @@ void hotSettings() {
     auto c = open(cfg);
     CHECK(c && syncOk(*c));
     if (!c) return;
-    auto state = [&](int id) { return c->cacheInfo(id).state; };
-    c->setFillQueue({1, 2});
+    auto state = [&](int id) { return c->cacheInfo(lm::TrackId{id}).state; };
+    c->setFillQueue({lm::TrackId{1}, lm::TrackId{2}});
     std::this_thread::sleep_for(300ms);
     CHECK(state(1) == CacheState::Remote); // fill off
     c->setCacheSettings(1000000, true, false);
@@ -489,7 +489,7 @@ void hotSettings() {
     // Turning the fill off stops a running idle fetch.
     srv.bytesPerSec = 100000;
     c->setCacheSettings(1000000, true, false);
-    c->setFillQueue({3});
+    c->setFillQueue({lm::TrackId{3}});
     CHECK(waitUntil([&] { return c->stats().idleFillActive; }, 3s));
     c->setCacheSettings(1000000, false, false);
     CHECK(waitUntil([&] { return !c->stats().idleFillActive; }, 3s));
@@ -514,7 +514,7 @@ void timeoutsAndErrors() {
     srv.stall = true;
     {
         std::string err;
-        auto s = c->openTrack(1, &err);
+        auto s = c->openTrack(lm::TrackId{1}, &err);
         std::string buf(1000, '\0');
         const auto t0 = std::chrono::steady_clock::now();
         CHECK_EQ(s->read(buf.data(), buf.size()), 0u); // error, not a hang
@@ -539,8 +539,8 @@ void timeoutsAndErrors() {
         auto c3 = open(cfg);
         std::string err;
         CHECK(!c3->sync(&err));
-        CHECK(c3->track(3).has_value()); // the mirror still works offline
-        auto s = c3->openTrack(3, &err); // never fetched
+        CHECK(c3->track(lm::TrackId{3}).has_value()); // the mirror still works offline
+        auto s = c3->openTrack(lm::TrackId{3}, &err); // never fetched
         std::string buf(1000, '\0');
         const auto t0 = std::chrono::steady_clock::now();
         CHECK(s->read(buf.data(), buf.size()) < buf.size());
@@ -557,7 +557,7 @@ void timeoutsAndErrors() {
     struct stat st{};
     CHECK(stat(dir.c_str(), &st) == 0 && (st.st_mode & 0777) == 0700);
     CHECK(stat((dir + "/client.db").c_str(), &st) == 0 && (st.st_mode & 0777) == 0600);
-    CHECK(Client::parseTrackUri("lm://server/track/42") == std::optional<std::int64_t>(42));
+    CHECK(Client::parseTrackUri("lm://server/track/42") == std::optional<lm::TrackId>(lm::TrackId{42}));
     CHECK(!Client::parseTrackUri("lm://server/track/"));
     CHECK(!Client::parseTrackUri("lm://server/track/4x"));
     CHECK(!Client::parseTrackUri("/music/a.mp3"));
@@ -596,7 +596,7 @@ void concurrentSeekCancel() {
     };
     for (int round = 0; round < 4; round++) {
         std::string err;
-        auto s1 = c->openTrack(1, &err), s2 = c->openTrack(1, &err);
+        auto s1 = c->openTrack(lm::TrackId{1}, &err), s2 = c->openTrack(lm::TrackId{1}, &err);
         std::atomic<bool> stop{false};
         std::thread t1(reader, 100u + unsigned(round), s1.get(), &stop);
         std::thread t2(reader, 200u + unsigned(round), s2.get(), &stop);
@@ -619,7 +619,7 @@ void concurrentSeekCancel() {
         std::string err;
         srv.setTrack(2, FakeServer::randomBytes(100000, 43), "\"d\"");
         CHECK(syncOk(*c));
-        auto s = c->openTrack(2, &err);
+        auto s = c->openTrack(lm::TrackId{2}, &err);
         std::thread t([&] {
             std::string buf(1000, '\0');
             CHECK(s->read(buf.data(), buf.size()) == 0);
@@ -665,14 +665,14 @@ void ignoreRange() {
         CHECK(c && syncOk(*c));
         if (!c) return;
         std::string err;
-        auto s = c->openTrack(1, &err);
+        auto s = c->openTrack(lm::TrackId{1}, &err);
         CHECK(readN(*s, 4096) == data.substr(0, 4096));
         (void)s->seek(1800000, lm::ByteSource::Whence::Set);
         const std::string b = readN(*s, 4096);
         CHECK(b == data.substr(1800000, 4096));
         (void)s->seek(0, lm::ByteSource::Whence::Set);
         CHECK(readAll(*s) == data);
-        auto e = c->cacheEntry(1);
+        auto e = c->cacheEntry(lm::TrackId{1});
         CHECK(e && e->etag == "\"ir\"");
         s.reset();
         c.reset();
@@ -695,7 +695,7 @@ void truncatedResponses() {
     CHECK(c && syncOk(*c));
     if (!c) return;
     std::string err;
-    auto s = c->openTrack(1, &err);
+    auto s = c->openTrack(lm::TrackId{1}, &err);
     const auto t0 = std::chrono::steady_clock::now();
     CHECK(readAll(*s) == data);
     CHECK(std::chrono::steady_clock::now() - t0 < 20s);
@@ -722,31 +722,31 @@ void wrongTotal() {
     // A correct (slow) server first: a cached prefix that the hostile answer must not
     // discard.
     srv.bytesPerSec = 256 << 10;
-    auto s = c->openTrack(1, &err);
+    auto s = c->openTrack(lm::TrackId{1}, &err);
     CHECK(readN(*s, 64 << 10) == data.substr(0, 64 << 10));
     s.reset();
     auto covered = [&] {
-        auto e = c->cacheEntry(1);
+        auto e = c->cacheEntry(lm::TrackId{1});
         auto r = e ? lm::net::RangeSet::parse(e->ranges) : std::nullopt;
         return r ? r->covered() : 0;
     };
     CHECK(waitUntil([&] { return covered() >= (64u << 10); }, 3s));
-    CHECK(!c->cacheEntry(1)->complete);
+    CHECK(!c->cacheEntry(lm::TrackId{1})->complete);
     srv.bytesPerSec = 0;
     srv.totalDelta = 1;
-    s = c->openTrack(1, &err);
+    s = c->openTrack(lm::TrackId{1}, &err);
     (void)s->seek(256 << 10, lm::ByteSource::Whence::Set);
     const std::string got = readN(*s, data.size());
     CHECK(got.size() <= data.size() - (256 << 10) && got == data.substr(256 << 10, got.size()));
     CHECK(covered() >= (64u << 10)); // no reset: the prefix survived
     CHECK_EQ(s->size(), std::int64_t(data.size()));
-    CHECK(c->track(1) && c->track(1)->size == std::int64_t(data.size()));
-    auto e = c->cacheEntry(1);
+    CHECK(c->track(lm::TrackId{1}) && c->track(lm::TrackId{1})->size == std::int64_t(data.size()));
+    auto e = c->cacheEntry(lm::TrackId{1});
     CHECK(e && e->size == std::int64_t(data.size()) && e->etag == "\"wt\"");
     s.reset();
     // A correct server again: the same entry completes.
     srv.totalDelta = 0;
-    s = c->openTrack(1, &err);
+    s = c->openTrack(lm::TrackId{1}, &err);
     CHECK(readAll(*s) == data);
     s.reset();
     c.reset();
@@ -767,8 +767,8 @@ void orphanedIdle() {
     CHECK(c && syncOk(*c));
     if (!c) return;
     std::string err;
-    auto s1 = c->openTrack(1, &err);
-    auto s2 = c->openTrack(2, &err);
+    auto s1 = c->openTrack(lm::TrackId{1}, &err);
+    auto s2 = c->openTrack(lm::TrackId{2}, &err);
     std::string buf(1000, '\0');
     CHECK_EQ(s1->read(buf.data(), buf.size()), buf.size());
     CHECK_EQ(s2->read(buf.data(), buf.size()), buf.size());
@@ -799,15 +799,15 @@ void noValidator() {
     if (!c) return;
     std::string err;
     for (auto [id, data] : {std::pair<int, const std::string *>{1, &a}, {2, &b}}) {
-        auto s = c->openTrack(id, &err);
+        auto s = c->openTrack(lm::TrackId{id}, &err);
         CHECK(readAll(*s) == *data);
         (void)s->seek(1000, lm::ByteSource::Whence::Set);
         CHECK(readN(*s, 100) == data->substr(1000, 100));
-        auto e = c->cacheEntry(id);
+        auto e = c->cacheEntry(lm::TrackId{id});
         CHECK(e && !e->complete && e->ranges.empty()); // never committed
         s.reset();
-        CHECK(waitUntil([&] { return !c->cacheEntry(id); }, 3s)); // dropped on release
-        CHECK(!c->pin(id, true, &err));
+        CHECK(waitUntil([&] { return !c->cacheEntry(lm::TrackId{id}); }, 3s)); // dropped on release
+        CHECK(!c->pin(lm::TrackId{id}, true, &err));
     }
     for (auto &h : srv.ifRangeSeen()) CHECK(h.empty());
     c.reset();
@@ -828,26 +828,26 @@ void adoptFinal() {
         CHECK(c && syncOk(*c));
         if (!c) return;
         std::string err;
-        auto s = c->openTrack(1, &err);
+        auto s = c->openTrack(lm::TrackId{1}, &err);
         CHECK(readAll(*s) == data);
         s.reset();
-        CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Cached; }, 5s));
+        CHECK(waitUntil([&] { return c->cacheInfo(lm::TrackId{1}).state == CacheState::Cached; }, 5s));
     }
     {
         lm::net::ClientDb db;
         std::string err;
         CHECK(db.open(dir + "/client.db", &err));
-        db.updateRanges(1, "0-" + std::to_string(data.size()), std::int64_t(data.size()), false);
+        db.updateRanges(lm::TrackId{1}, "0-" + std::to_string(data.size()), std::int64_t(data.size()), false);
     }
     CHECK(fs::exists(dir + "/tracks/band-record-t1.mp3") && !fs::exists(dir + "/tracks/band-record-t1.part"));
     srv.stall = true; // any download would hang
     const int before = srv.streams;
     auto c = open(cfg);
     std::string err;
-    auto s = c->openTrack(1, &err);
+    auto s = c->openTrack(lm::TrackId{1}, &err);
     CHECK(s && readAll(*s) == data);
     CHECK_EQ(srv.streams.load(), before);
-    CHECK(c->cacheInfo(1).state == CacheState::Cached);
+    CHECK(c->cacheInfo(lm::TrackId{1}).state == CacheState::Cached);
     s.reset();
     c.reset();
     srv.stall = false;
@@ -867,14 +867,14 @@ void pinCapOnInvalidation() {
     CHECK(c && syncOk(*c));
     if (!c) return;
     std::string err;
-    CHECK(c->pin(1, true, &err));
+    CHECK(c->pin(lm::TrackId{1}, true, &err));
     srv.setTrack(1, FakeServer::randomBytes(1536 << 10, 60), "\"p2\"");
     CHECK(syncOk(*c));
-    CHECK(c->cacheInfo(1).pinned);
+    CHECK(c->cacheInfo(lm::TrackId{1}).pinned);
     CHECK(c->stats().pinned == 1536 << 10);
     CHECK(c->stats().unpinned == 0);
     c->setCacheSettings(cfg.cacheMaxBytes, true, false);
-    CHECK(waitUntil([&] { return c->cacheInfo(1).state == CacheState::Cached; }, 5s));
+    CHECK(waitUntil([&] { return c->cacheInfo(lm::TrackId{1}).state == CacheState::Cached; }, 5s));
     c.reset();
     fs::remove_all(dir);
 }
@@ -901,26 +901,26 @@ void diskFloor() {
     if (!c) return;
     std::string err;
     // 1.2 MB free - 0.3 MB = 0.9 MB < 1 MB floor: refused with a clear message.
-    CHECK(!c->pin(1, true, &err));
+    CHECK(!c->pin(lm::TrackId{1}, true, &err));
     CHECK(err.find("free disk space") != std::string::npos);
-    CHECK(!c->cacheInfo(1).pinned && !c->cacheEntry(1));
+    CHECK(!c->cacheInfo(lm::TrackId{1}).pinned && !c->cacheEntry(lm::TrackId{1}));
     // The 5% term: with a 40 MB filesystem the floor is 2 MB.
     *avail = 2200000;
     *total = 40000000;
-    CHECK(!c->pin(1, true, &err));
+    CHECK(!c->pin(lm::TrackId{1}, true, &err));
     *total = 10000000;
     CHECK(c->stats().diskFloor == 1000000 && c->stats().diskAvail == 2200000);
-    CHECK(c->pin(1, true, &err));
-    CHECK(c->pin(2, true, &err));
+    CHECK(c->pin(lm::TrackId{1}, true, &err));
+    CHECK(c->pin(lm::TrackId{2}, true, &err));
     // Space shrinks before the background fill runs: pinned data is not fetched.
     *avail = 1100000;
     c->setCacheSettings(cfg.cacheMaxBytes, true, false);
     std::this_thread::sleep_for(500ms);
-    CHECK(c->cacheInfo(1).state == CacheState::Remote && c->cacheInfo(2).state == CacheState::Remote);
+    CHECK(c->cacheInfo(lm::TrackId{1}).state == CacheState::Remote && c->cacheInfo(lm::TrackId{2}).state == CacheState::Remote);
     CHECK_EQ(srv.streams.load(), 0);
     // Playback is never blocked by the floor (only pinned background downloads are).
     {
-        auto s = c->openTrack(1, &err);
+        auto s = c->openTrack(lm::TrackId{1}, &err);
         CHECK(s != nullptr);
     }
     c.reset();
@@ -943,16 +943,16 @@ std::set<std::string> listTracks(const std::string &dir) {
 }
 
 std::string fileOf(Client &c, std::int64_t id) {
-    auto e = c.cacheEntry(id);
+    auto e = c.cacheEntry(lm::TrackId{id});
     return e ? fs::path(e->file).filename().string() : std::string();
 }
 
 bool cacheFully(Client &c, std::int64_t id, const std::string &data) {
     std::string err;
-    auto s = c.openTrack(id, &err);
+    auto s = c.openTrack(lm::TrackId{id}, &err);
     if (!s || readAll(*s) != data) return false;
     s.reset();
-    return waitUntil([&] { return c.cacheInfo(id).state == CacheState::Cached; }, 5s);
+    return waitUntil([&] { return c.cacheInfo(lm::TrackId{id}).state == CacheState::Cached; }, 5s);
 }
 
 // Names are <artist>-<album>-<song>; equal names: the lowest id keeps it, the others get
@@ -1017,12 +1017,12 @@ void renameOnSync() {
     CHECK(cacheFully(*c, 1, d1));
     CHECK(cacheFully(*c, 3, d3));
     std::string err;
-    auto r1 = c->openTrack(1, &err); // complete file, held open across the rename
+    auto r1 = c->openTrack(lm::TrackId{1}, &err); // complete file, held open across the rename
     CHECK(r1 != nullptr);
     std::string got1(1000, '\0');
     CHECK(r1 && r1->read(got1.data(), got1.size()) == got1.size());
     srv.bytesPerSec = 1 << 20; // track 2 takes ~3 s
-    auto r2 = c->openTrack(2, &err);
+    auto r2 = c->openTrack(lm::TrackId{2}, &err);
     CHECK(r2 != nullptr);
     if (!r1 || !r2) return;
     std::string got2(200000, '\0');
@@ -1044,7 +1044,7 @@ void renameOnSync() {
     CHECK(got2 == d2);
     r1.reset();
     r2.reset();
-    CHECK(waitUntil([&] { return c->cacheInfo(2).state == CacheState::Cached; }, 10s));
+    CHECK(waitUntil([&] { return c->cacheInfo(lm::TrackId{2}).state == CacheState::Cached; }, 10s));
     CHECK_STR(fileOf(*c, 2), std::string("band-live-t2-live.mp3"));
     CHECK(slurp(dir + "/tracks/band-live-t2-live.mp3") == d2);
     // Swap: 1 and 3 exchange tags (a rename cycle).
@@ -1063,7 +1063,7 @@ void renameOnSync() {
     CHECK(c != nullptr);
     if (!c) return;
     for (auto [id, data] : {std::pair<std::int64_t, const std::string *>{1, &d1}, {2, &d2}, {3, &d3}}) {
-        auto s = c->openTrack(id, &err);
+        auto s = c->openTrack(lm::TrackId{id}, &err);
         CHECK(s && readAll(*s) == *data);
     }
     // Eviction of a renamed entry removes its file.
@@ -1091,11 +1091,11 @@ void migrateOldLayout() {
         CHECK(cacheFully(*c, 1, d1));
         srv.bytesPerSec = 256 << 10; // track 2 stays partial
         std::string err;
-        auto s = c->openTrack(2, &err);
+        auto s = c->openTrack(lm::TrackId{2}, &err);
         char b[1000];
         CHECK(s && s->read(b, sizeof b) == sizeof b);
         s.reset();
-        CHECK(waitUntil([&] { return c->cacheEntry(2) && !c->cacheEntry(2)->ranges.empty(); }, 5s));
+        CHECK(waitUntil([&] { return c->cacheEntry(lm::TrackId{2}) && !c->cacheEntry(lm::TrackId{2})->ranges.empty(); }, 5s));
     }
     srv.bytesPerSec = 0;
     // Turn it into the old layout.
@@ -1115,7 +1115,7 @@ void migrateOldLayout() {
         lm::net::ClientDb db;
         std::string err;
         CHECK(db.open(dir + "/client.db", &err));
-        return db.entry(2);
+        return db.entry(lm::TrackId{2});
     };
     const std::string ranges2 = entry2()->ranges;
     srv.stall = true; // nothing may be downloaded again
@@ -1127,7 +1127,7 @@ void migrateOldLayout() {
         CHECK(slurp(dir + "/tracks/band-record-t1.mp3") == d1);
         CHECK_STR(fileOf(*c, 1), std::string("band-record-t1.mp3"));
         std::string err;
-        auto s = c->openTrack(1, &err);
+        auto s = c->openTrack(lm::TrackId{1}, &err);
         CHECK(s && readAll(*s) == d1);
     }
     CHECK(entry2() && entry2()->ranges == ranges2 && entry2()->name == "band-record-t2");
@@ -1158,7 +1158,7 @@ void renameCrash() {
         lm::net::ClientDb db;
         std::string err;
         CHECK(db.open(dir + "/client.db", &err));
-        db.setEntryName(id, name, prev, true);
+        db.setEntryName(lm::TrackId{id}, name, prev, true);
     };
     // Track 1: step 1 committed, no file moved yet (the server's new tags are applied on
     // top by the reconcile). Track 2: link() done, old name not yet unlinked.
@@ -1172,11 +1172,11 @@ void renameCrash() {
         if (!c) return;
         CHECK((listTracks(dir) == std::set<std::string>{"band-record-t1.mp3", "band-record-t2.mp3"}));
         std::string err;
-        auto s1 = c->openTrack(1, &err);
+        auto s1 = c->openTrack(lm::TrackId{1}, &err);
         CHECK(s1 && readAll(*s1) == d1);
-        auto s2 = c->openTrack(2, &err);
+        auto s2 = c->openTrack(lm::TrackId{2}, &err);
         CHECK(s2 && readAll(*s2) == d2);
-        CHECK(c->cacheEntry(1)->file == t + "band-record-t1.mp3");
+        CHECK(c->cacheEntry(lm::TrackId{1})->file == t + "band-record-t1.mp3");
     }
     // Crash after the move, before prev_name was cleared.
     setName(1, "q-r-s", "band-record-t1");
@@ -1187,7 +1187,7 @@ void renameCrash() {
         if (!c) return;
         CHECK(fs::exists(t + "band-record-t1.mp3") && !fs::exists(t + "q-r-s.mp3"));
         std::string err;
-        auto s1 = c->openTrack(1, &err);
+        auto s1 = c->openTrack(lm::TrackId{1}, &err);
         CHECK(s1 && readAll(*s1) == d1);
     }
     CHECK_EQ(srv.streams.load(), 2);
@@ -1246,13 +1246,13 @@ void idRemap() {
         for (auto [id, data, name] : {std::tuple<std::int64_t, const std::string *, const char *>{3, &d1, "band-record-one.mp3"},
                                       {7, &d2, "band-record-two.mp3"},
                                       {1, &d3, "band-record-three.mp3"}}) {
-            CHECK(c->cacheInfo(id).state == CacheState::Cached);
+            CHECK(c->cacheInfo(lm::TrackId{id}).state == CacheState::Cached);
             CHECK_STR(fileOf(*c, id), std::string(name));
             std::string err;
-            auto s = c->openTrack(id, &err);
+            auto s = c->openTrack(lm::TrackId{id}, &err);
             CHECK(s && readAll(*s) == *data);
         }
-        CHECK(!c->cacheEntry(2));
+        CHECK(!c->cacheEntry(lm::TrackId{2}));
     }
     CHECK_EQ(srv.streams.load(), streams);
     CHECK((listTracks(dir) == std::set<std::string>{"band-record-one.mp3", "band-record-two.mp3", "band-record-three.mp3"}));
@@ -1264,8 +1264,8 @@ void idRemap() {
         auto c = open(cfg);
         CHECK(c && syncOk(*c));
         if (!c) return;
-        CHECK(c->cacheInfo(4).state == CacheState::Remote);
-        CHECK(!c->cacheEntry(1) && !c->cacheEntry(3) && !c->cacheEntry(7));
+        CHECK(c->cacheInfo(lm::TrackId{4}).state == CacheState::Remote);
+        CHECK(!c->cacheEntry(lm::TrackId{1}) && !c->cacheEntry(lm::TrackId{3}) && !c->cacheEntry(lm::TrackId{7}));
     }
     CHECK(listTracks(dir).empty());
     srv.stall = false;
@@ -1297,11 +1297,11 @@ void restartOtherUrl() {
         for (std::size_t i = 0; i < 3; i++) {
             const std::int64_t id = ids[i];
             std::string err;
-            auto s = c->openTrack(id, &err);
+            auto s = c->openTrack(lm::TrackId{id}, &err);
             if (!s) std::println(stderr, "  run {} track {}: {}", run, id, err);
             CHECK(s && readAll(*s) == *datas[i]);
             s.reset();
-            CHECK(waitUntil([&] { return c->cacheInfo(id).state == CacheState::Cached; }, 5s));
+            CHECK(waitUntil([&] { return c->cacheInfo(lm::TrackId{id}).state == CacheState::Cached; }, 5s));
         }
         CHECK_STR(fileOf(*c, 3), std::string("band-record-t3.mp3"));
         CHECK(noTempNames(dir));
@@ -1337,7 +1337,7 @@ void interruptedCycle() {
         lm::net::ClientDb db;
         std::string err;
         CHECK(db.open(dir + "/client.db", &err));
-        db.setEntryName(id, name, prev, true);
+        db.setEntryName(lm::TrackId{id}, name, prev, true);
     };
     // 1 and 2 swap names: 1 was parked (step 1 committed, link done, old name not yet
     // unlinked); 2 is untouched.
@@ -1358,7 +1358,7 @@ void interruptedCycle() {
         // Track 3 is deleted on the server while it plays, parked under its temp name;
         // the client stops before the reader goes away.
         std::string err;
-        auto s3 = c->openTrack(3, &err);
+        auto s3 = c->openTrack(lm::TrackId{3}, &err);
         CHECK(s3 != nullptr);
         srv.removeTrack(3);
         CHECK(syncOk(*c));
@@ -1369,7 +1369,7 @@ void interruptedCycle() {
         auto c = open(cfg);
         CHECK(c != nullptr);
         if (!c) return;
-        CHECK(!c->cacheEntry(3));
+        CHECK(!c->cacheEntry(lm::TrackId{3}));
         CHECK(noTempNames(dir));
         CHECK((listTracks(dir) == std::set<std::string>{"band-record-t1.mp3", "band-record-t2.mp3"}));
     }
@@ -1395,15 +1395,15 @@ void trimOnRelease() {
     if (!c) return;
     for (int id : {1, 2}) {
         std::string err;
-        auto s = c->openTrack(id, &err);
+        auto s = c->openTrack(lm::TrackId{id}, &err);
         CHECK(s && readAll(*s).size() == 300000);
     }
     CHECK(waitUntil([&] {
-        return c->cacheInfo(1).state == CacheState::Cached && c->cacheInfo(2).state == CacheState::Cached;
+        return c->cacheInfo(lm::TrackId{1}).state == CacheState::Cached && c->cacheInfo(lm::TrackId{2}).state == CacheState::Cached;
     }, 10s));
     {
         std::string err;
-        auto s = c->openTrack(1, &err); // holds track 1 across the shrink
+        auto s = c->openTrack(lm::TrackId{1}, &err); // holds track 1 across the shrink
         CHECK(s != nullptr);
         c->setCacheSettings(400000, false, false);
     } // last reference dropped while the trim is pending
@@ -1413,7 +1413,7 @@ void trimOnRelease() {
     c->setCacheSettings(1000000, false, false); // undone within the delay
     std::this_thread::sleep_for(2500ms);       // past the delay
     CHECK_EQ(c->stats().usage, 600000u);
-    CHECK(c->cacheInfo(1).state == CacheState::Cached && c->cacheInfo(2).state == CacheState::Cached);
+    CHECK(c->cacheInfo(lm::TrackId{1}).state == CacheState::Cached && c->cacheInfo(lm::TrackId{2}).state == CacheState::Cached);
     c.reset();
     fs::remove_all(dir);
 }
@@ -1440,15 +1440,15 @@ void trimReleaseRace() {
         if (!c) break;
         for (int id : {1, 2}) {
             std::string err;
-            auto s = c->openTrack(id, &err);
+            auto s = c->openTrack(lm::TrackId{id}, &err);
             CHECK(s && readAll(*s).size() == 300000);
         }
         CHECK(waitUntil([&] {
-            return c->cacheInfo(1).state == CacheState::Cached && c->cacheInfo(2).state == CacheState::Cached;
+            return c->cacheInfo(lm::TrackId{1}).state == CacheState::Cached && c->cacheInfo(lm::TrackId{2}).state == CacheState::Cached;
         }, 10s));
         for (int i = 0; i < 20; ++i) {
             std::string err;
-            auto s = c->openTrack(1 + i % 2, &err);
+            auto s = c->openTrack(lm::TrackId{1 + i % 2}, &err);
             CHECK(s != nullptr);
             std::atomic<bool> go{false};
             std::thread rel([&] {

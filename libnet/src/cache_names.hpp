@@ -17,6 +17,8 @@
 // Worst case: base 165 + "--" + 19 digits + "." + 8-byte suffix + ".part" = 200 bytes.
 #pragma once
 
+#include "lm/track_id.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -31,12 +33,12 @@ constexpr std::size_t kBaseMax = 165;
 std::string slugComponent(std::string_view s, std::size_t maxBytes = kComponentMax);
 // "<artist>-<album>-<title>" with fallbacks and the length cap; never empty, never
 // starts with '-' or '.', never contains '.', '/' or "--".
-std::string cacheBaseName(std::string_view artist, std::string_view album, std::string_view title, std::int64_t id);
+std::string cacheBaseName(std::string_view artist, std::string_view album, std::string_view title, TrackId id);
 // Base for a track that lost the tie for `base` (see above).
-std::string collisionName(const std::string &base, std::int64_t id);
+std::string collisionName(const std::string &base, TrackId id);
 // Temporary name used to break a rename cycle (two tracks swapping names):
 // kTempNamePrefix + id. Such a file without a row is always a leftover of ours.
 constexpr std::string_view kTempNamePrefix = "renaming--";
-std::string tempCacheName(std::int64_t id);
+std::string tempCacheName(TrackId id);
 
 } // namespace lm::net

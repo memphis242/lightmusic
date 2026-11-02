@@ -188,7 +188,7 @@ int main() {
     cc.cacheDir = cache;
     if (std::getenv("LM_TEST_VERBOSE")) cc.log = [](const std::string &s) { std::println(stderr, "  [client] {}", s); };
 
-    std::vector<std::int64_t> ids;
+    std::vector<lm::TrackId> ids;
     const auto expect = [&] {
         auto v = decodeAll(a);
         auto w = decodeAll(b);

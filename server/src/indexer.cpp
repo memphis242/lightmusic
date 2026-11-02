@@ -127,7 +127,7 @@ ScanStats Indexer::scan(const std::vector<std::string> &dirs, const std::string 
 
     // Vanished files; candidates for offline-rename matching by (size, mtime, name).
     using Key = std::tuple<std::int64_t, std::int64_t, std::string>;
-    std::map<Key, std::vector<std::pair<std::string, std::int64_t>>> vanished;
+    std::map<Key, std::vector<std::pair<std::string, lm::TrackId>>> vanished;
     for (auto &[p, fsst] : known)
         if (!seen.count(p)) vanished[{fsst.size, fsst.mtime_ns, base_name(p)}].emplace_back(p, fsst.id);
 

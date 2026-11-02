@@ -360,7 +360,7 @@ struct HttpApi::Impl {
     void stream(const httplib::Request &req, httplib::Response &res) {
         std::int64_t id;
         if (!parse_i64(req.matches[1].str(), id)) return error(res, 404, "no such track");
-        auto tf = pool.get()->track_file(id);
+        auto tf = pool.get()->track_file(lm::TrackId(id));
         if (!tf) return error(res, 404, "no such track");
         // Only paths from the index are opened, never a client-supplied path, and only
         // beneath a music root without following any symlink (safe_open.hpp).
@@ -563,7 +563,7 @@ struct HttpApi::Impl {
         get(R"(/api/v1/tracks/(\d+))", guarded(true, false, [this](auto &req, auto &res) {
             std::int64_t id;
             std::optional<std::string> b;
-            if (parse_i64(req.matches[1].str(), id)) b = pool.get()->json_track(id);
+            if (parse_i64(req.matches[1].str(), id)) b = pool.get()->json_track(lm::TrackId(id));
             b ? json(res, std::move(*b)) : error(res, 404, "no such track");
         }));
         get("/api/v1/search", guarded(true, false, [this](auto &req, auto &res) {

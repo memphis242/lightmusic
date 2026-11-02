@@ -18,7 +18,7 @@ struct sqlite3;
 namespace lm::net {
 
 struct EntryRow {
-    std::int64_t trackId = 0;
+    TrackId trackId;
     std::string etag;
     std::int64_t size = 0;
     bool complete = false;
@@ -36,7 +36,7 @@ struct SyncResult {
     std::int64_t revision = 0;
     bool full = false;
     std::size_t tracks = 0, albums = 0, artists = 0, deleted = 0;
-    std::vector<std::int64_t> etagChanged; // tracks whose etag changed (or deleted)
+    std::vector<TrackId> etagChanged; // tracks whose etag changed (or deleted)
 };
 
 class ClientDb {
@@ -58,30 +58,30 @@ public:
     // Drops the mirror and every cache row (server changed).
     void wipe();
 
-    [[nodiscard]] std::optional<Track> track(std::int64_t id);
-    void setTrackValidator(std::int64_t id, const std::string &etag, std::int64_t size);
+    [[nodiscard]] std::optional<Track> track(TrackId id);
+    void setTrackValidator(TrackId id, const std::string &etag, std::int64_t size);
     std::vector<Album> albums();
     std::vector<Track> tracksOfAlbum(std::int64_t albumId);
     // Every track, by album artist, album, disc, track number.
     std::vector<Track> allTracks();
 
-    [[nodiscard]] std::optional<EntryRow> entry(std::int64_t trackId);
+    [[nodiscard]] std::optional<EntryRow> entry(TrackId trackId);
     std::vector<EntryRow> entries();
     void putEntry(const EntryRow &e); // insert or replace
-    void updateRanges(std::int64_t trackId, const std::string &ranges, std::int64_t cached, bool complete);
-    void touch(std::int64_t trackId, std::int64_t when);
-    void setPinned(std::int64_t trackId, bool pinned);
-    void deleteEntry(std::int64_t trackId);
+    void updateRanges(TrackId trackId, const std::string &ranges, std::int64_t cached, bool complete);
+    void touch(TrackId trackId, std::int64_t when);
+    void setPinned(TrackId trackId, bool pinned);
+    void deleteEntry(TrackId trackId);
     // Moves cache rows to other track ids (old -> new) in one transaction; the new ids
     // must be free or themselves moved away in the same call (a permutation is fine).
     // Used when the server's ids were remapped (database reset) and a row is adopted by
     // the track that now has its file.
-    void rekeyEntries(const std::vector<std::pair<std::int64_t, std::int64_t>> &moves);
+    void rekeyEntries(const std::vector<std::pair<TrackId, TrackId>> &moves);
     // Records the entry's file base name (and the one its files are moving from, or "").
     // durable: committed with synchronous=FULL (the step before files are renamed).
-    void setEntryName(std::int64_t trackId, const std::string &name, const std::string &prevName, bool durable);
+    void setEntryName(TrackId trackId, const std::string &name, const std::string &prevName, bool durable);
     // Does any entry other than `except` use `name` (as name or prevName)?
-    [[nodiscard]] bool nameTaken(const std::string &name, std::int64_t except);
+    [[nodiscard]] bool nameTaken(const std::string &name, TrackId except);
     // Sum of entry sizes (space reserved by the sparse files), and of pinned ones.
     std::int64_t usage();
     std::int64_t pinnedUsage();

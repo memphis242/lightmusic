@@ -16,6 +16,8 @@
 // GET /library/changes?since=R returns everything with rev > R.
 #pragma once
 
+#include "lm/track_id.hpp"
+
 #include "auth.hpp"
 
 #include <condition_variable>
@@ -39,12 +41,14 @@ public:
     Stmt(const Stmt &) = delete;
     Stmt &operator=(const Stmt &) = delete;
     Stmt &bind(int i, std::int64_t v);
+    Stmt &bind(int i, lm::TrackId v) { return bind(i, v.value()); }
     Stmt &bind(int i, const std::string &v);
     Stmt &bind_blob(int i, const void *p, int n);
     Stmt &bind_null(int i);
     bool step();  // true = row available; throws on error
     void reset();
     std::int64_t i64(int col) const;
+    lm::TrackId track_id(int col) const { return lm::TrackId(i64(col)); }
     std::string text(int col) const;
     [[nodiscard]] bool is_null(int col) const;
     const void *blob(int col, int &n) const;
@@ -65,7 +69,8 @@ struct TrackMeta {  // what the scanner extracts from a file
 };
 
 struct FileState {
-    std::int64_t id = 0, size = 0, mtime_ns = 0;
+    lm::TrackId id;
+    std::int64_t size = 0, mtime_ns = 0;
 };
 
 struct TrackFile {  // what /stream and /cover need
@@ -107,9 +112,9 @@ public:
     void rollback();
     std::int64_t revision();
     std::unordered_map<std::string, FileState> file_states(const std::string &prefix = {});
-    std::int64_t upsert_track(const TrackMeta &m);  // by path; returns id
-    void rename_track(std::int64_t id, const std::string &new_path);
-    void delete_track(std::int64_t id);
+    lm::TrackId upsert_track(const TrackMeta &m);  // by path; returns id
+    void rename_track(lm::TrackId id, const std::string &new_path);
+    void delete_track(lm::TrackId id);
     // Directory-level operations on every track whose path starts with dir + "/".
     std::size_t rename_prefix(const std::string &from_dir, const std::string &to_dir);
     std::size_t delete_prefix(const std::string &dir);
@@ -117,7 +122,7 @@ public:
     std::size_t track_count();
 
     // ---- reader side (API); return serialised JSON ----
-    [[nodiscard]] std::optional<TrackFile> track_file(std::int64_t id);
+    [[nodiscard]] std::optional<TrackFile> track_file(lm::TrackId id);
     std::vector<std::string> album_track_paths(std::int64_t album_id);  // by disc/track
     [[nodiscard]] std::optional<std::int64_t> album_rev(std::int64_t album_id);
     // `library`: the library id the client's mirror came from ("" = unknown); another
@@ -129,13 +134,13 @@ public:
     [[nodiscard]] std::optional<std::string> json_artist(std::int64_t id);
     std::string json_albums(const std::string &sort, std::int64_t offset, std::int64_t limit);
     [[nodiscard]] std::optional<std::string> json_album(std::int64_t id);
-    [[nodiscard]] std::optional<std::string> json_track(std::int64_t id);
+    [[nodiscard]] std::optional<std::string> json_track(lm::TrackId id);
     std::string json_search(const std::string &q, std::int64_t limit);
 
 private:
     std::int64_t artist_id(const std::string &name);
     std::int64_t album_id(std::int64_t artist, const std::string &title, int year);
-    void touch_album_of_track(std::int64_t track_id);
+    void touch_album_of_track(lm::TrackId track_id);
     void tombstone(const char *kind, std::int64_t id);
 
     sqlite3 *db_ = nullptr;

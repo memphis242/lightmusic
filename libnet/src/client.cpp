@@ -210,11 +210,11 @@ constexpr int kMaxTransientFailures = 5;
 } // namespace
 
 struct Entry {
-    explicit Entry(std::int64_t i) : id(i) {}
+    explicit Entry(TrackId i) : id(i) {}
     ~Entry() {
         if (fd >= 0) (void)::close(fd); // cleanup; nothing written through it is pending
     }
-    const std::int64_t id;
+    const TrackId id;
     std::string partPath, finalPath;
     int fd = -1;
     bool ephemeral = false; // no strong ETag: never persisted (fixed at creation)
@@ -263,18 +263,18 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
 
     // Guarded by cm: live entries, entry creation/eviction.
     std::mutex cm;
-    std::unordered_map<std::int64_t, std::weak_ptr<Entry>> live;
+    std::unordered_map<TrackId, std::weak_ptr<Entry>> live;
 
     // Fill queue (any thread -> network thread), guarded by fm.
     std::mutex fm;
-    std::vector<std::int64_t> fillQueue;
+    std::vector<TrackId> fillQueue;
 
     // Network-thread state.
-    std::map<std::int64_t, std::shared_ptr<Entry>> reading; // entries with open readers
+    std::map<TrackId, std::shared_ptr<Entry>> reading; // entries with open readers
     std::set<std::shared_ptr<Entry>> dirty;                  // uncommitted bytes
     int playbackFetches = 0;
     std::shared_ptr<Entry> idleEntry; // entry of the running idle fetch
-    std::map<std::int64_t, Clock::time_point> fillBackoff;
+    std::map<TrackId, Clock::time_point> fillBackoff;
     std::optional<bool> metered;
     Clock::time_point meteredAt{};
     std::optional<Clock::time_point> trimAt; // pending lazy eviction after a cap shrink
@@ -330,12 +330,12 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         std::vector<std::string> b;
         if (!r.name.empty()) b.push_back(r.name);
         if (!r.prevName.empty()) b.push_back(r.prevName);
-        if (r.name.empty()) b.push_back(std::to_string(r.trackId));
+        if (r.name.empty()) b.push_back(std::to_string(r.trackId.value()));
         return b;
     }
 
     // Deletes a cache entry's files, then its row. cm held; the entry must not be live.
-    void removeEntryLocked(std::int64_t id) {
+    void removeEntryLocked(TrackId id) {
         if (auto row = db.entry(id))
             for (const auto &b : basesOf(*row))
                 for (const auto &f : filesOf(b)) (void)::unlink((tracksDir + "/" + f).c_str());
@@ -345,8 +345,8 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     // ------------------------------------------------------------------ file names
     // Guarded by cm: plain base name of every track in the mirror, and the lowest track
     // id per base (that track keeps the plain name; the others get "--<id>").
-    std::unordered_map<std::int64_t, std::string> plainName;
-    std::unordered_map<std::string, std::int64_t> nameOwner;
+    std::unordered_map<TrackId, std::string> plainName;
+    std::unordered_map<std::string, TrackId> nameOwner;
 
     void rebuildNamesLocked() {
         plainName.clear();
@@ -359,12 +359,12 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         }
     }
     // The name a track's files should have (deterministic: a function of the mirror).
-    std::string desiredNameLocked(std::int64_t id) {
+    std::string desiredNameLocked(TrackId id) {
         auto it = plainName.find(id);
         if (it == plainName.end()) return cacheBaseName("", "", "", id);
         return nameOwner[it->second] == id ? it->second : collisionName(it->second, id);
     }
-    std::optional<std::string> suffixOf(std::int64_t id) {
+    std::optional<std::string> suffixOf(TrackId id) {
         if (auto t = db.track(id)) return t->suffix;
         return std::nullopt;
     }
@@ -373,7 +373,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     // (never all digits, never a user's "notes.txt") that no row claims are leftovers
     // (a wiped cache, a crash of an older version): they are removed instead of making
     // the entry fall back to a temporary name it could never leave.
-    bool nameFreeLocked(const std::string &name, std::int64_t id) {
+    bool nameFreeLocked(const std::string &name, TrackId id) {
         if (db.nameTaken(name, id)) return false;
         const auto suffix = suffixOf(id);
         const auto files = filesOf(name, suffix);
@@ -387,7 +387,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     // Step 2 of a rename: moves every "from.*" file to "to.*". link() never replaces a
     // file; a target that already is the same inode is a retry after a crash. Returns
     // false (nothing more moved) if a target is a different file or I/O fails.
-    bool moveFilesLocked(std::int64_t id, const std::string &from, const std::string &to) {
+    bool moveFilesLocked(TrackId id, const std::string &from, const std::string &to) {
         if (from == to) return true;
         bool ok = true;
         for (const auto &f : filesOf(from, suffixOf(id))) {
@@ -408,7 +408,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     }
 
     // Live entry of `id` (cm held), if any.
-    std::shared_ptr<Entry> liveLocked(std::int64_t id) {
+    std::shared_ptr<Entry> liveLocked(TrackId id) {
         auto it = live.find(id);
         return it == live.end() ? nullptr : it->second.lock();
     }
@@ -436,7 +436,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     // Renames entry `row` (and its files) to `to`, which must be free. cm held.
     bool renameEntryLocked(EntryRow &row, const std::string &to) {
         if (!finishRenameLocked(row)) return false;
-        const std::string from = row.name.empty() ? std::to_string(row.trackId) : row.name;
+        const std::string from = row.name.empty() ? std::to_string(row.trackId.value()) : row.name;
         if (from == to) {
             if (row.name != to) db.setEntryName(row.trackId, to, "", false);
             row.name = to;
@@ -450,7 +450,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         db.setEntryName(row.trackId, to, "", false);  // 3
         row.prevName.clear();
         retarget(liveLocked(row.trackId), to);
-        log("cache: track " + std::to_string(row.trackId) + ": " + from + " -> " + to);
+        log("cache: track " + std::to_string(row.trackId.value()) + ": " + from + " -> " + to);
         return true;
     }
 
@@ -493,7 +493,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     void dropVanishedLocked() {
         for (const auto &r : db.entries())
             if (!isLiveLocked(r.trackId) && !db.track(r.trackId)) {
-                log("cache: track " + std::to_string(r.trackId) + " is gone; dropping its cached copy");
+                log("cache: track " + std::to_string(r.trackId.value()) + " is gone; dropping its cached copy");
                 removeEntryLocked(r.trackId);
             }
     }
@@ -506,52 +506,52 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     // file's size and mtime, so it identifies the same file under its new id. Rows that
     // find no such track are left to the usual invalidation (dropped).
     void adoptRemappedLocked() {
-        std::map<std::pair<std::string, std::int64_t>, std::vector<std::int64_t>> byValidator;
+        std::map<std::pair<std::string, std::int64_t>, std::vector<TrackId>> byValidator;
         for (const auto &t : db.allTracks())
             if (strongEtag(t.etag)) byValidator[{t.etag, t.size}].push_back(t.id);
-        std::set<std::int64_t> keep; // ids whose row stays where it is
+        std::set<TrackId> keep; // ids whose row stays where it is
         std::vector<EntryRow> stale;
         for (auto &r : db.entries()) {
             auto t = db.track(r.trackId);
             if (isLiveLocked(r.trackId) || (t && t->etag == r.etag)) keep.insert(r.trackId);
             else stale.push_back(std::move(r));
         }
-        std::vector<std::pair<std::int64_t, std::int64_t>> moves;
-        std::set<std::int64_t> taken;
+        std::vector<std::pair<TrackId, TrackId>> moves;
+        std::set<TrackId> taken;
         for (const auto &r : stale) {
             if (!strongEtag(r.etag)) continue;
             auto it = byValidator.find({r.etag, r.size});
             if (it == byValidator.end() || it->second.size() != 1) continue;
-            const std::int64_t to = it->second.front();
+            const TrackId to = it->second.front();
             if (keep.count(to) || isLiveLocked(to) || !taken.insert(to).second) continue;
             moves.emplace_back(r.trackId, to);
         }
         // A stale row that stays at an id another row moves to would collide: drop it.
-        std::set<std::int64_t> moving;
+        std::set<TrackId> moving;
         for (auto &[from, to] : moves) moving.insert(from);
         for (const auto &r : stale)
             if (!moving.count(r.trackId) && taken.count(r.trackId)) removeEntryLocked(r.trackId);
         if (moves.empty()) return;
         db.rekeyEntries(moves);
         for (auto &[from, to] : moves)
-            log("cache: track " + std::to_string(from) + " is now track " + std::to_string(to) + " on the server; keeping its cached copy");
+            log(std::format("cache: track {} is now track {} on the server; keeping its cached copy", from, to));
     }
 
-    bool isLiveLocked(std::int64_t id) {
+    bool isLiveLocked(TrackId id) {
         auto it = live.find(id);
         return it != live.end() && !it->second.expired();
     }
 
     // Evicts LRU unpinned, unused entries until `need` more unpinned bytes fit. Pinned
     // bytes are not counted. cm held.
-    bool makeRoomLocked(std::int64_t need, std::int64_t exclude) { return makeRoomLocked(need, exclude, cap()); }
-    bool makeRoomLocked(std::int64_t need, std::int64_t exclude, std::int64_t limit) {
+    bool makeRoomLocked(std::int64_t need, TrackId exclude) { return makeRoomLocked(need, exclude, cap()); }
+    bool makeRoomLocked(std::int64_t need, TrackId exclude, std::int64_t limit) {
         std::int64_t usage = db.usage() - db.pinnedUsage();
         if (usage + need <= limit) return true;
         for (const auto &row : db.entries()) { // oldest access first
             if (usage + need <= limit) break;
             if (row.pinned || row.trackId == exclude || isLiveLocked(row.trackId)) continue;
-            log("cache: evicting track " + std::to_string(row.trackId));
+            log(std::format("cache: evicting track {}", row.trackId));
             removeEntryLocked(row.trackId);
             usage -= row.size;
         }
@@ -561,7 +561,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     enum class Purpose { Playback, Fill };
 
     // Returns the live entry for a track, creating it (and its files) if needed.
-    std::shared_ptr<Entry> acquire(std::int64_t id, Purpose purpose, std::string *err) {
+    std::shared_ptr<Entry> acquire(TrackId id, Purpose purpose, std::string *err) {
         std::lock_guard lk(cm);
         if (auto it = live.find(id); it != live.end())
             if (auto e = it->second.lock()) return e;
@@ -571,14 +571,14 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         }
         auto t = db.track(id);
         if (!t) {
-            if (err) *err = "unknown track " + std::to_string(id) + " (not in the library mirror)";
+            if (err) *err = "unknown track " + std::to_string(id.value()) + " (not in the library mirror)";
             return nullptr;
         }
         auto row = db.entry(id);
         // Invalidation: the mirror's ETag is the server's latest; a different cached
         // version is stale.
         if (row && row->etag != t->etag) {
-            log("cache: track " + std::to_string(id) + " changed on the server; dropping cached copy");
+            log("cache: track " + std::to_string(id.value()) + " changed on the server; dropping cached copy");
             const bool pinned = row->pinned;
             removeEntryLocked(id);
             row.reset();
@@ -589,7 +589,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             }
         }
         if (row && !row->prevName.empty() && !finishRenameLocked(*row)) {
-            if (err) *err = "cache entry of track " + std::to_string(id) + " is being renamed";
+            if (err) *err = "cache entry of track " + std::to_string(id.value()) + " is being renamed";
             return nullptr;
         }
         if (!row) {
@@ -602,7 +602,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             row = r;
         }
         auto e = std::shared_ptr<Entry>(new Entry(id), [w = weak_from_this()](Entry *p) {
-            const std::int64_t eid = p->id;
+            const TrackId eid = p->id;
             delete p;
             if (auto c = w.lock()) c->released(eid);
         });
@@ -611,7 +611,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             std::string want = desiredNameLocked(id);
             if (!nameFreeLocked(want, id)) want = tempCacheName(id); // fixed by the next reconcile
             if (!renameEntryLocked(*row, want)) {
-                if (err) *err = "cannot name the cache file of track " + std::to_string(id);
+                if (err) *err = "cannot name the cache file of track " + std::to_string(id.value());
                 return nullptr;
             }
         }
@@ -634,7 +634,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             struct stat fst{}, pst{};
             if (::stat(e->partPath.c_str(), &pst) != 0 && ::stat(e->finalPath.c_str(), &fst) == 0 &&
                 S_ISREG(fst.st_mode) && std::uint64_t(fst.st_size) == e->size) {
-                log("cache: track " + std::to_string(id) + ": adopting completed file");
+                log("cache: track " + std::to_string(id.value()) + ": adopting completed file");
                 db.updateRanges(id, "0-" + std::to_string(e->size), static_cast<std::int64_t>(e->size), true);
                 row->complete = true;
             }
@@ -680,9 +680,9 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     // May a pinned row be re-created for this track (after invalidation)? Never without
     // a strong validator. (The cap does not apply to pins; the disk floor is checked when
     // the new version is fetched.) cm held.
-    bool repinAllowedLocked(std::int64_t id, const std::string &etag) {
+    bool repinAllowedLocked(TrackId id, const std::string &etag) {
         if (!strongEtag(etag)) {
-            log("cache: track " + std::to_string(id) + " has no strong ETag; unpinned");
+            log("cache: track " + std::to_string(id.value()) + " has no strong ETag; unpinned");
             return false;
         }
         return true;
@@ -724,7 +724,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
 
     // Last reference to an entry dropped (any thread). Re-check invalidation and the cap
     // on the network thread.
-    void released(std::int64_t id) {
+    void released(TrackId id) {
         if (stopping) return;
         net->post([this, id] {
             std::lock_guard lk(cm);
@@ -740,7 +740,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             // not a lowered one. (Checking first and reading the cap inside
             // makeRoomLocked let a shrink land in between and evict at once.)
             const auto limit = cap();
-            if (!trimAt && shrinksInFlight.load() == 0) makeRoomLocked(0, -1, limit);
+            if (!trimAt && shrinksInFlight.load() == 0) makeRoomLocked(0, TrackId{}, limit);
         });
     }
 
@@ -776,7 +776,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     // dirty pages, so even earlier "durable" ranges are suspect). Drop every range, commit
     // the empty set, and report a fatal error to readers (a new read retries).
     void storageFailure(const std::shared_ptr<Entry> &e, const std::string &why) {
-        log("cache: track " + std::to_string(e->id) + ": " + why + "; discarding cached data");
+        log("cache: track " + std::to_string(e->id.value()) + ": " + why + "; discarding cached data");
         {
             std::lock_guard lk(e->m);
             e->epoch++;
@@ -797,7 +797,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     // The server's file differs from what we cached: drop every byte and start over with
     // the new validator and size. Committed before any new byte is written.
     void restart(const std::shared_ptr<Entry> &e, const std::string &etag, std::uint64_t size) {
-        log("cache: track " + std::to_string(e->id) + " changed on the server; restarting download");
+        log("cache: track " + std::to_string(e->id.value()) + " changed on the server; restarting download");
         bool wasComplete;
         {
             std::lock_guard lk(e->m);
@@ -849,7 +849,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         }
         struct stat st{};
         if (::fstat(e->fd, &st) != 0 || std::uint64_t(st.st_size) != size) {
-            log("cache: size mismatch for track " + std::to_string(e->id));
+            log("cache: size mismatch for track " + std::to_string(e->id.value()));
             return;
         }
         if (e->ephemeral) { // complete in memory only; never persisted
@@ -871,7 +871,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             e->complete = true;
             e->cv.notify_all();
         }
-        log("cache: track " + std::to_string(e->id) + " complete");
+        log("cache: track " + std::to_string(e->id.value()) + " complete");
         changed();
     }
 
@@ -902,7 +902,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     void cancelIdle() {
         if (!idleEntry) return;
         auto e = idleEntry;
-        log("cache: idle fill paused for track " + std::to_string(e->id));
+        log("cache: idle fill paused for track " + std::to_string(e->id.value()));
         cancelFetch(e);
     }
 
@@ -934,7 +934,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
         else idleEntry = e;
         setFlags();
         HttpRequest req;
-        req.url = base + "/api/v1/stream/" + std::to_string(e->id);
+        req.url = base + "/api/v1/stream/" + std::to_string(e->id.value());
         req.headers.push_back("Range: bytes=" + std::to_string(b) + "-" + std::to_string(end - 1));
         // If-Range on every range request: a changed file comes back as a full 200.
         // Never with a weak or missing validator (RFC 9110 13.1.5); such entries are ephemeral.
@@ -1120,7 +1120,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             const int backoff = progressed ? 100 : std::min(30000, 1000 << std::min(e->failures - 1, 5));
             e->retryAt = Clock::now() + std::chrono::milliseconds(backoff);
             if (!ctx->playback) fillBackoff[e->id] = e->retryAt;
-            log("cache: track " + std::to_string(e->id) + ": " + fail);
+            log("cache: track " + std::to_string(e->id.value()) + ": " + fail);
             // Readers keep waiting through transient errors (schedule() retries); they
             // fail on a fatal one or when retries keep failing without progress.
             // A server that cannot be reached at all (no response head: refused, DNS,
@@ -1201,7 +1201,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
     // Next idle-fill candidate that is not complete and not backing off.
     std::shared_ptr<Entry> nextFillCandidate() {
         const auto now = Clock::now();
-        std::vector<std::int64_t> ids;
+        std::vector<TrackId> ids;
         {
             std::lock_guard lk(fm);
             ids = fillQueue;
@@ -1227,7 +1227,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             if (row && row->complete) continue;
             std::string err;
             if (row && row->pinned && !diskFits(row->size - row->cached, &err)) {
-                log("cache: pinned track " + std::to_string(id) + " not fetched: " + err);
+                log("cache: pinned track " + std::to_string(id.value()) + " not fetched: " + err);
                 fillBackoff[id] = now + std::chrono::seconds(60);
                 continue;
             }
@@ -1286,7 +1286,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
                 hole = e->written.holeFrom(0, e->size);
             }
             if (hole) {
-                log("cache: idle fill of track " + std::to_string(e->id));
+                log("cache: idle fill of track " + std::to_string(e->id.value()));
                 startFetch(e, hole->first, hole->second, false);
             }
         }
@@ -1314,7 +1314,7 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             } else if (playbackFetches == 0 && !idleEntry) {
                 trimAt.reset();
                 std::lock_guard lk(cm);
-                makeRoomLocked(0, -1); // down to the current cap (pinned/in-use entries stay)
+                makeRoomLocked(0, TrackId{}); // down to the current cap (pinned/in-use entries stay)
             } else {
                 want(now + std::chrono::milliseconds(250)); // busy: try again shortly
             }
@@ -1689,7 +1689,7 @@ bool Client::sync(std::string *err) {
             auto row = c.db.entry(id);
             auto t = c.db.track(id);
             if (row && (!t || t->etag != row->etag)) {
-                c.log("cache: invalidating track " + std::to_string(id));
+                c.log("cache: invalidating track " + std::to_string(id.value()));
                 const bool pinned = row->pinned;
                 c.removeEntryLocked(id);
                 if (pinned && t && c.repinAllowedLocked(id, t->etag)) c.db.putEntry(EntryRow{id, t->etag, t->size, false, "", 0, true, wallNow(), "", ""});
@@ -1722,9 +1722,9 @@ std::int64_t Client::revision() { return core_->db.revision(); }
 std::vector<Album> Client::albums() { return core_->db.albums(); }
 std::vector<Track> Client::tracksOfAlbum(std::int64_t id) { return core_->db.tracksOfAlbum(id); }
 std::vector<Track> Client::allTracks() { return core_->db.allTracks(); }
-std::optional<Track> Client::track(std::int64_t id) { return core_->db.track(id); }
+std::optional<Track> Client::track(TrackId id) { return core_->db.track(id); }
 
-CacheInfo Client::cacheInfo(std::int64_t id) {
+CacheInfo Client::cacheInfo(TrackId id) {
     CacheInfo ci;
     auto row = core_->db.entry(id);
     if (auto t = core_->db.track(id)) ci.size = t->size;
@@ -1735,7 +1735,7 @@ CacheInfo Client::cacheInfo(std::int64_t id) {
     return ci;
 }
 
-std::optional<CacheEntryInfo> Client::cacheEntry(std::int64_t id) {
+std::optional<CacheEntryInfo> Client::cacheEntry(TrackId id) {
     auto row = core_->db.entry(id);
     if (!row) return std::nullopt;
     CacheEntryInfo e;
@@ -1767,13 +1767,13 @@ CacheStats Client::stats() {
     return s;
 }
 
-bool Client::pin(std::int64_t id, bool pinned, std::string *err) {
+bool Client::pin(TrackId id, bool pinned, std::string *err) {
     auto &c = *core_;
     {
         std::lock_guard lk(c.cm);
         auto t = c.db.track(id);
         if (!t) {
-            if (err) *err = "unknown track " + std::to_string(id);
+            if (err) *err = "unknown track " + std::to_string(id.value());
             return false;
         }
         auto row = c.db.entry(id);
@@ -1797,7 +1797,7 @@ bool Client::pin(std::int64_t id, bool pinned, std::string *err) {
             }
         } else if (row) {
             c.db.setPinned(id, false);
-            c.makeRoomLocked(0, -1);
+            c.makeRoomLocked(0, TrackId{});
         }
     }
     if (!c.stopping) c.net->post([] {});
@@ -1830,7 +1830,7 @@ void Client::setCacheSettings(std::uint64_t capBytes, bool backgroundFill, bool 
     c.changed();
 }
 
-void Client::setFillQueue(std::vector<std::int64_t> ids) {
+void Client::setFillQueue(std::vector<TrackId> ids) {
     {
         std::lock_guard lk(core_->fm);
         core_->fillQueue = std::move(ids);
@@ -1838,7 +1838,7 @@ void Client::setFillQueue(std::vector<std::int64_t> ids) {
     if (!core_->stopping) core_->net->post([] {});
 }
 
-std::unique_ptr<ByteSource> Client::openTrack(std::int64_t id, std::string *err) {
+std::unique_ptr<ByteSource> Client::openTrack(TrackId id, std::string *err) {
     auto e = core_->acquire(id, Core::Purpose::Playback, err);
     if (!e) return nullptr;
     return std::make_unique<CachedStreamSource>(core_, std::move(e));
@@ -1863,9 +1863,9 @@ std::function<std::unique_ptr<ByteSource>(const std::string &, std::string *)> C
     };
 }
 
-std::string Client::trackUri(std::int64_t id) { return "lm://server/track/" + std::to_string(id); }
+std::string Client::trackUri(TrackId id) { return "lm://server/track/" + std::to_string(id.value()); }
 
-std::optional<std::int64_t> Client::parseTrackUri(const std::string &uri) {
+std::optional<TrackId> Client::parseTrackUri(const std::string &uri) {
     static const std::string prefix = "lm://server/track/";
     if (uri.rfind(prefix, 0) != 0 || uri.size() == prefix.size() || uri.size() > prefix.size() + 18) return std::nullopt;
     std::int64_t v = 0;
@@ -1874,7 +1874,7 @@ std::optional<std::int64_t> Client::parseTrackUri(const std::string &uri) {
         v = v * 10 + (uri[i] - '0');
     }
     if (v <= 0) return std::nullopt;
-    return v;
+    return TrackId(v);
 }
 
 } // namespace lm::net

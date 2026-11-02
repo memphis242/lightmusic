@@ -44,10 +44,10 @@ void checkBase(const std::string &b) {
 }
 
 void ascii() {
-    CHECK_STR(cacheBaseName("Pink Floyd", "The Dark Side of the Moon", "Money", 7),
+    CHECK_STR(cacheBaseName("Pink Floyd", "The Dark Side of the Moon", "Money", lm::TrackId{7}),
              std::string("pink-floyd-the-dark-side-of-the-moon-money"));
-    CHECK_STR(cacheBaseName("AC/DC", "Back in Black", "Hells Bells", 1), std::string("ac-dc-back-in-black-hells-bells"));
-    CHECK_STR(cacheBaseName("Guns N' Roses", "Use Your Illusion I", "Don't Cry (Original)", 1),
+    CHECK_STR(cacheBaseName("AC/DC", "Back in Black", "Hells Bells", lm::TrackId{1}), std::string("ac-dc-back-in-black-hells-bells"));
+    CHECK_STR(cacheBaseName("Guns N' Roses", "Use Your Illusion I", "Don't Cry (Original)", lm::TrackId{1}),
              std::string("guns-n-roses-use-your-illusion-i-don-t-cry-original"));
     CHECK_STR(slugComponent("  --Hello,   World!!  "), std::string("hello-world"));
     CHECK_STR(slugComponent("a/b\\c:d*e?f\"g<h>i|j.k"), std::string("a-b-c-d-e-f-g-h-i-j-k"));
@@ -72,14 +72,14 @@ void unicode() {
 }
 
 void emptyAndReserved() {
-    CHECK_STR(cacheBaseName("", "", "", 42), std::string("unknown-artist-unknown-album-track-42"));
-    CHECK_STR(cacheBaseName("???", "...", "  ", 5), std::string("unknown-artist-unknown-album-track-5"));
-    CHECK_STR(cacheBaseName(".", "..", "/", 3), std::string("unknown-artist-unknown-album-track-3"));
-    CHECK_STR(cacheBaseName(".hidden", "-rf", "--help", 9), std::string("hidden-rf-help"));
+    CHECK_STR(cacheBaseName("", "", "", lm::TrackId{42}), std::string("unknown-artist-unknown-album-track-42"));
+    CHECK_STR(cacheBaseName("???", "...", "  ", lm::TrackId{5}), std::string("unknown-artist-unknown-album-track-5"));
+    CHECK_STR(cacheBaseName(".", "..", "/", lm::TrackId{3}), std::string("unknown-artist-unknown-album-track-3"));
+    CHECK_STR(cacheBaseName(".hidden", "-rf", "--help", lm::TrackId{9}), std::string("hidden-rf-help"));
     CHECK_STR(slugComponent("..."), std::string(""));
     CHECK_STR(slugComponent("-"), std::string(""));
     for (const char *s : {".", "..", "-", "--", "-x-", ".x.", " ", "\x01", "/", "CON", "nul"})
-        checkBase(cacheBaseName(s, s, s, 1));
+        checkBase(cacheBaseName(s, s, s, lm::TrackId{1}));
 }
 
 void longNames() {
@@ -93,22 +93,22 @@ void longNames() {
     // A cut that lands after a separator does not leave a trailing '-'.
     CHECK_STR(slugComponent(std::string(59, 'a') + " bbbb"), std::string(59, 'a'));
     const std::string w = std::string(200, 'w');
-    const auto b = cacheBaseName(w, w, w, 123456789);
+    const auto b = cacheBaseName(w, w, w, lm::TrackId{123456789});
     checkBase(b);
-    const std::string full = collisionName(b, INT64_MAX) + ".flac.part";
+    const std::string full = collisionName(b, lm::TrackId{INT64_MAX}) + ".flac.part";
     CHECK(full.size() <= 200);
     std::string emoji;
     for (int i = 0; i < 80; i++) emoji += "🎵";
-    checkBase(cacheBaseName(emoji, emoji, emoji, 1));
+    checkBase(cacheBaseName(emoji, emoji, emoji, lm::TrackId{1}));
 }
 
 void collisions() {
-    CHECK_STR(collisionName("a-b-c", 17), std::string("a-b-c--17"));
+    CHECK_STR(collisionName("a-b-c", lm::TrackId{17}), std::string("a-b-c--17"));
     // A plain name never contains "--", so a collision name never equals a plain one.
-    CHECK(cacheBaseName("a", "b", "c 17", 1).find("--") == std::string::npos);
-    CHECK_STR(lm::net::tempCacheName(5), std::string("renaming--5"));
+    CHECK(cacheBaseName("a", "b", "c 17", lm::TrackId{1}).find("--") == std::string::npos);
+    CHECK_STR(lm::net::tempCacheName(lm::TrackId{5}), std::string("renaming--5"));
     // Deterministic.
-    CHECK_STR(cacheBaseName("Ünïcödé", "X", "Y", 1), cacheBaseName("Ünïcödé", "X", "Y", 1));
+    CHECK_STR(cacheBaseName("Ünïcödé", "X", "Y", lm::TrackId{1}), cacheBaseName("Ünïcödé", "X", "Y", lm::TrackId{1}));
 }
 
 } // namespace
