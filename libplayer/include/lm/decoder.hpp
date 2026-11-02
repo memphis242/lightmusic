@@ -30,6 +30,14 @@ struct Tags {
     bool operator==(const Tags &) const = default;
 };
 
+// ReplayGain tags (REPLAYGAIN_TRACK_GAIN/_ALBUM_GAIN in dB, _TRACK_PEAK/_ALBUM_PEAK as
+// linear sample peaks; Opus R128_TRACK_GAIN/R128_ALBUM_GAIN converted to the ReplayGain
+// reference). Each is unset when absent or malformed.
+struct GainTags {
+    std::optional<float> trackGain, albumGain, trackPeak, albumPeak;
+    bool operator==(const GainTags &) const = default;
+};
+
 class Decoder {
 public:
     // An interface owned through unique_ptr: never copied or sliced.
@@ -53,11 +61,12 @@ public:
     // Seeks to an absolute PCM frame. Returns false on failure.
     [[nodiscard]] virtual bool seek(std::uint64_t frame) = 0;
     // ReplayGain track gain in dB, if the file carries one (see tags.cpp).
-    [[nodiscard]] virtual std::optional<float> trackGainDb() const { return gain_; }
+    [[nodiscard]] virtual std::optional<float> trackGainDb() const { return gain_.trackGain; }
+    [[nodiscard]] const GainTags &replayGain() const { return gain_; }
     const Tags &tags() const { return tags_; }
 
 protected:
-    std::optional<float> gain_;
+    GainTags gain_;
     Tags tags_;
     std::string error_;
 };

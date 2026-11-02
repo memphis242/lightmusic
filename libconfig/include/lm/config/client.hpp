@@ -26,6 +26,8 @@ struct ClientSettings {
     // playback (hot: volume, gapSeconds, repeat, shuffle)
     int volume = 100; // percent, 0..150 (above 100: software gain, as the volume keys)
     ReplayGain replayGain = ReplayGain::Off;
+    double replayGainPreampDb = 0; // -15..15 dB, added to the tagged gain (tagged files only)
+    bool replayGainPreventClipping = true; // cap the gain by the tagged peak
     double gapSeconds = 0; // silence between tracks, 0..30 (0: gapless)
     RepeatMode repeat = RepeatMode::Off;
     bool shuffle = false;

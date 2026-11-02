@@ -17,6 +17,13 @@ std::unique_ptr<Decoder> openMp3(std::unique_ptr<ByteSource> src, std::string *e
 [[nodiscard]] std::optional<float> parseVorbisCommentGain(std::string_view comment);
 // "-6.50 dB" -> -6.5
 [[nodiscard]] std::optional<float> parseGainValue(std::string_view value);
+// One "KEY=value" comment (or ID3 TXXX description/value) into the ReplayGain tags:
+// REPLAYGAIN_{TRACK,ALBUM}_{GAIN,PEAK}, case-insensitive; the first valid value of each
+// wins. Returns true if the key is one of them.
+bool applyGainField(std::string_view key, std::string_view value, GainTags &g);
+bool applyGainComment(std::string_view comment, GainTags &g);
+// "0.98" -> 0.98: a finite linear peak in (0, 10].
+[[nodiscard]] std::optional<float> parsePeakValue(std::string_view value);
 // Raw ID3v2 tag (header included) -> TXXX:REPLAYGAIN_TRACK_GAIN, if present.
 std::optional<float> parseId3v2TrackGain(const unsigned char *tag, std::size_t size);
 
@@ -29,20 +36,20 @@ bool applyVorbisComment(std::string_view comment, Tags &tags);
 // track gain (if non-null). Handles UTF-16/Latin-1/UTF-8 text, whole-tag (v2.3) and
 // per-frame (v2.4) unsynchronisation, extended headers and data-length indicators.
 // Malformed input stops parsing; it never reads outside [tag, tag + size).
-void parseId3v2(const unsigned char *tag, std::size_t size, Tags *tags, std::optional<float> *gain);
+void parseId3v2(const unsigned char *tag, std::size_t size, Tags *tags, GainTags *gain);
 // 128-byte ID3v1/1.1 tag ("TAG..."), Latin-1 -> UTF-8. Returns false if not a tag.
 bool parseId3v1(const unsigned char *tag, std::size_t size, Tags &tags);
 // Vorbis comment block (vendor string, count, length-prefixed "KEY=value" entries; no
 // framing bit), as in FLAC VORBIS_COMMENT and after the Ogg packet magic. Truncated
 // input is fine: entries that do not fit are ignored. Fills the gain if non-null.
-void parseVorbisCommentBlock(const unsigned char *p, std::size_t size, Tags &tags, std::optional<float> *gain);
+void parseVorbisCommentBlock(const unsigned char *p, std::size_t size, Tags &tags, GainTags *gain);
 // Tag-only reader behind lm::readTags (also used by the MP3 decoder). Sniffs the format
 // and reads only tag bytes: MP3 the ID3v2 tag (APIC skipped by seeking, other frames
 // capped at 1 MiB) and the last 128 bytes (ID3v1, used only if ID3v2 gave nothing);
 // FLAC the VORBIS_COMMENT block (other blocks skipped); Ogg the first pages up to the
 // comment header (no seeking to the end). Returns false for an unsupported format.
 // Leaves the source position unspecified.
-[[nodiscard]] bool readTagsFrom(ByteSource &src, Tags &tags, std::optional<float> *gain);
+[[nodiscard]] bool readTagsFrom(ByteSource &src, Tags &tags, GainTags *gain);
 // Leading integer of "3/12", "2004-05-01" etc.; 0 if none or out of range.
 int parseLeadingInt(std::string_view s);
 

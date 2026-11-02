@@ -1,7 +1,8 @@
 // Lightweight tag parsing: ReplayGain track gain plus basic descriptive tags (title,
 // artist, album, track, disc, year). ID3v2.3/2.4 and ID3v1 for MP3, Vorbis comments for
 // FLAC/Vorbis/Opus. Runs when a decoder is opened (decoder/control thread) or from
-// lm::readTags (tag-only, no decoder), never on the audio thread. Album gain, peaks, ID3v2.2, APE tags and the LAME RG field are TODO.
+// lm::readTags (tag-only, no decoder), never on the audio thread. ReplayGain: track and
+// album gain and peak. ID3v2.2, APE tags and the LAME RG field are TODO.
 #include "decoders.hpp"
 
 #include <algorithm>
@@ -142,15 +143,15 @@ void setIfZero(int &dst, std::string_view v) {
 bool id(const unsigned char *f, const char *s) { return std::memcmp(f, s, 4) == 0; }
 
 void id3Frame(const unsigned char *fid, const unsigned char *body, const unsigned char *end, Tags *tags,
-              std::optional<float> *gain) {
+              GainTags *gain) {
     if (end - body < 1) return;
     const int enc = body[0];
     if (enc > 3) return;
     const unsigned char *q = body + 1;
     if (id(fid, "TXXX")) {
-        if (!gain || *gain) return;
+        if (!gain) return;
         const std::string desc = id3Text(enc, q, end);
-        if (iequals(desc, kTrackGain)) *gain = parseGainValue(id3Text(enc, q, end));
+        (void)applyGainField(desc, id3Text(enc, q, end), *gain); // other TXXX frames are ignored
         return;
     }
     if (!tags) return;
@@ -164,7 +165,7 @@ void id3Frame(const unsigned char *fid, const unsigned char *body, const unsigne
 
 // Returns false if a frame's size overran the tag (parsing stopped there).
 bool id3Frames(int ver, unsigned char tagFlags, bool syncsafeSizes, const unsigned char *p, const unsigned char *end,
-               Tags *tags, std::optional<float> *gain) {
+               Tags *tags, GainTags *gain) {
     while (end - p >= 10 && p[0] != 0) {
         const std::uint32_t fsize = syncsafeSizes ? syncsafe(p + 4) : be32(p + 4);
         const unsigned char *body = p + 10;
@@ -216,6 +217,40 @@ std::optional<float> parseGainValue(std::string_view value) {
     return g;
 }
 
+std::optional<float> parsePeakValue(std::string_view value) {
+    std::string v(value);
+    const char *s = v.c_str();
+    char *endp = nullptr;
+    const float p = std::strtof(s, &endp);
+    if (endp == s || !std::isfinite(p) || p <= 0.0f || p > 10.0f) return std::nullopt;
+    return p;
+}
+
+bool applyGainField(std::string_view key, std::string_view value, GainTags &g) {
+    struct Field {
+        std::string_view key;
+        std::optional<float> GainTags::*member;
+        bool peak;
+    };
+    static constexpr Field kFields[] = {
+        {kTrackGain, &GainTags::trackGain, false},
+        {"REPLAYGAIN_ALBUM_GAIN", &GainTags::albumGain, false},
+        {"REPLAYGAIN_TRACK_PEAK", &GainTags::trackPeak, true},
+        {"REPLAYGAIN_ALBUM_PEAK", &GainTags::albumPeak, true},
+    };
+    for (const auto &f : kFields) {
+        if (!iequals(key, f.key)) continue;
+        if (!(g.*f.member)) g.*f.member = f.peak ? parsePeakValue(value) : parseGainValue(value);
+        return true;
+    }
+    return false;
+}
+
+bool applyGainComment(std::string_view comment, GainTags &g) {
+    const auto eq = comment.find('=');
+    return eq != std::string_view::npos && applyGainField(comment.substr(0, eq), comment.substr(eq + 1), g);
+}
+
 std::optional<float> parseVorbisCommentGain(std::string_view comment) {
     const auto eq = comment.find('=');
     if (eq == std::string_view::npos || !iequals(comment.substr(0, eq), kTrackGain)) return std::nullopt;
@@ -242,7 +277,7 @@ bool applyVorbisComment(std::string_view comment, Tags &tags) {
     return true;
 }
 
-void parseId3v2(const unsigned char *tag, std::size_t size, Tags *tags, std::optional<float> *gain) {
+void parseId3v2(const unsigned char *tag, std::size_t size, Tags *tags, GainTags *gain) {
     if (!tag || size < 10 || tag[0] != 'I' || tag[1] != 'D' || tag[2] != '3') return;
     const int ver = tag[3];
     const unsigned char flags = tag[5];
@@ -269,9 +304,9 @@ void parseId3v2(const unsigned char *tag, std::size_t size, Tags *tags, std::opt
 }
 
 std::optional<float> parseId3v2TrackGain(const unsigned char *tag, std::size_t size) {
-    std::optional<float> g;
+    GainTags g;
     parseId3v2(tag, size, nullptr, &g);
-    return g;
+    return g.trackGain;
 }
 
 bool parseId3v1(const unsigned char *tag, std::size_t size, Tags &tags) {
@@ -359,7 +394,7 @@ bool isPictureKey(const unsigned char *b, std::size_t n) {
 // Streams through the comment list: each entry is read into a buffer, except pictures
 // and entries over the cap, which are skipped. Stops at the end of the data, on a
 // truncated entry, or when kMaxCommentBytes of entries have been read.
-void parseComments(CommentStream &s, Tags &tags, std::optional<float> *gain) {
+void parseComments(CommentStream &s, Tags &tags, GainTags *gain) {
     unsigned char b[4];
     if (!s.readAll(b, 4) || !s.skip(le32(b)) || !s.readAll(b, 4)) return;
     std::size_t budget = kMaxCommentBytes;
@@ -378,7 +413,7 @@ void parseComments(CommentStream &s, Tags &tags, std::optional<float> *gain) {
         c.assign(reinterpret_cast<const char *>(head), h);
         c.resize(len);
         if (!s.readAll(reinterpret_cast<unsigned char *>(c.data()) + h, len - h)) return; // truncated
-        if (gain && !*gain) *gain = parseVorbisCommentGain(c);
+        if (gain) (void)applyGainComment(c, *gain); // not a gain field: a descriptive tag below
         applyVorbisComment(c, tags);
     }
 }
@@ -511,7 +546,7 @@ private:
 
 // Reads the ID3v2 tag at the current position (header already in `hdr`) into a compact
 // copy without picture frames, capped at kMaxId3Bytes, and parses it.
-void readId3v2(ByteSource &src, const unsigned char *hdr, Tags &tags, std::optional<float> *gain) {
+void readId3v2(ByteSource &src, const unsigned char *hdr, Tags &tags, GainTags *gain) {
     const int ver = hdr[3];
     if (ver != 3 && ver != 4) return;
     const std::size_t tagSize = syncsafe(hdr + 6);
@@ -560,7 +595,7 @@ void readId3v2(ByteSource &src, const unsigned char *hdr, Tags &tags, std::optio
     parseId3v2(t.data(), t.size(), &tags, gain);
 }
 
-void readMp3Tags(ByteSource &src, Tags &tags, std::optional<float> *gain) {
+void readMp3Tags(ByteSource &src, Tags &tags, GainTags *gain) {
     unsigned char hdr[10];
     if (src.seek(0, ByteSource::Whence::Set) && readFully(src, hdr, 10) && std::memcmp(hdr, "ID3", 3) == 0)
         readId3v2(src, hdr, tags, gain);
@@ -573,7 +608,7 @@ void readMp3Tags(ByteSource &src, Tags &tags, std::optional<float> *gain) {
     }
 }
 
-void readFlacTags(ByteSource &src, Tags &tags, std::optional<float> *gain) {
+void readFlacTags(ByteSource &src, Tags &tags, GainTags *gain) {
     unsigned char b[4];
     if (!readFully(src, b, 4) || std::memcmp(b, "fLaC", 4) != 0) return;
     for (int blocks = 0; blocks < 1024 && readFully(src, b, 4); blocks++) {
@@ -594,7 +629,7 @@ void readFlacTags(ByteSource &src, Tags &tags, std::optional<float> *gain) {
 // streams through its second packet, the comment header. Pages of other streams and
 // large comments (pictures) are skipped by seeking forward; nothing past the comment
 // packet is read.
-void readOggTags(ByteSource &src, bool opus, Tags &tags, std::optional<float> *gain) {
+void readOggTags(ByteSource &src, bool opus, Tags &tags, GainTags *gain) {
     OggPackets pk(src);
     if (!pk.selectStream(opus ? std::string_view("OpusHead") : std::string_view("\x01vorbis", 7)) || !pk.nextPacket())
         return;
@@ -608,12 +643,12 @@ void readOggTags(ByteSource &src, bool opus, Tags &tags, std::optional<float> *g
 
 } // namespace
 
-void parseVorbisCommentBlock(const unsigned char *p, std::size_t size, Tags &tags, std::optional<float> *gain) {
+void parseVorbisCommentBlock(const unsigned char *p, std::size_t size, Tags &tags, GainTags *gain) {
     MemComments c(p, size);
     parseComments(c, tags, gain);
 }
 
-bool readTagsFrom(ByteSource &src, Tags &tags, std::optional<float> *gain) {
+bool readTagsFrom(ByteSource &src, Tags &tags, GainTags *gain) {
     const Format f = sniffFormat(src);
     if (f == Format::Unknown) return false;
     if (f == Format::Mp3) {

@@ -324,6 +324,19 @@ void testGapReload() {
     CHECK(r.ok && r.applied.gapSeconds == 1.0);
 }
 
+// ReplayGain preamp and clipping prevention (restart-only).
+void testReplayGainKeys() {
+    CHECK(ClientSettings{}.replayGainPreampDb == 0.0 && ClientSettings{}.replayGainPreventClipping);
+    Diags d;
+    ClientSettings s = load("playback:\n  replaygain: album\n  replaygain_preamp_db: -3.5\n"
+                            "  replaygain_prevent_clipping: false\n",
+                            d);
+    CHECK(!hasError(d) && s.replayGain == ReplayGain::Album && s.replayGainPreampDb == -3.5 && !s.replayGainPreventClipping);
+    d.clear();
+    s = load("playback:\n  replaygain_preamp_db: 16\n", d);
+    CHECK(hasError(d) && findDiag(d, "replaygain_preamp_db"));
+}
+
 // keys: a section of free-form names -> key lists (hot), validated by the frontend.
 void testKeysSection() {
     Diags d;
@@ -1116,6 +1129,7 @@ int main() {
     testGapReload();
     testPlayOrderReload();
     testKeysSection();
+    testReplayGainKeys();
     testHomeExpansion();
     testPermissions();
     testReload();
