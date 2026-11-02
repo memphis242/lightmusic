@@ -699,6 +699,50 @@ static void testBookmarks() {
     CHECK(lmtui::parseCommandLine("marks 3").kind == lmtui::CommandLine::Error);
 }
 
+static void testPlayStats() {
+    CHECK(!lmtui::countsAsPlay(29'999, 0));
+    CHECK(lmtui::countsAsPlay(30'000, 0));
+    CHECK(!lmtui::countsAsPlay(9'999, 20'000));
+    CHECK(lmtui::countsAsPlay(10'000, 20'000));
+    CHECK(lmtui::countsAsPlay(240'000, 3'600'000)); // 4 minutes is enough for a long track
+    CHECK(!lmtui::countsAsPlay(239'999, 3'600'000));
+    lmtui::PlayStats st;
+    st.recordPlay("/m/a.flac", 100, "album A");
+    st.recordPlay("/m/a.flac", 300, "queue");
+    st.recordPlay("lm://server/track/5", 200, "library");
+    st.recordPlay("", 1, "x"); // ignored
+    const lmtui::TrackStats *a = st.find("/m/a.flac");
+    CHECK(a && a->plays == 2 && a->lastPlayed == 300 && a->source == "folder" && a->context == "queue" && !a->favourite);
+    CHECK(st.find("lm://server/track/5") && st.find("lm://server/track/5")->source == "library");
+    CHECK(st.toggleFavourite("lm://server/track/5"));
+    CHECK(st.toggleFavourite("/new.mp3"));
+    CHECK(!st.toggleFavourite("/new.mp3")); // unfavourited with no plays: forgotten
+    CHECK(!st.find("/new.mp3"));
+    CHECK((st.favourites() == std::vector<std::string>{"lm://server/track/5"}));
+    CHECK((st.mostPlayed(10) == std::vector<std::string>{"/m/a.flac", "lm://server/track/5"}));
+    CHECK((st.mostPlayed(1) == std::vector<std::string>{"/m/a.flac"}));
+    CHECK((st.recentlyPlayed(10) == std::vector<std::string>{"/m/a.flac", "lm://server/track/5"}));
+    st.recordPlay("/m/tab\tname\n%x", 400, "folder /m\tx");
+    lmtui::PlayStats back;
+    std::string err;
+    CHECK(back.parse(st.format(), err));
+    CHECK_EQ(back.size(), st.size());
+    CHECK(back.find("/m/tab\tname\n%x") && back.find("/m/tab\tname\n%x")->context == "folder /m\tx");
+    CHECK(back.favourite("lm://server/track/5") && !back.favourite("/m/a.flac"));
+    for (const char *bad : {"", "lightmusic-stats 2\n", "lightmusic-stats 1\n1\t2\t0\tfolder\tq\t/a",
+                            "lightmusic-stats 1\n1\t2\t0\tfolder\t/a\n", "lightmusic-stats 1\n-1\t2\t0\tf\tq\t/a\n",
+                            "lightmusic-stats 1\n1\t2\t2\tf\tq\t/a\n", "lightmusic-stats 1\n1\tx\t0\tf\tq\t/a\n",
+                            "lightmusic-stats 1\n1\t2\t0\tf\tq\t\n", "lightmusic-stats 1\n1\t2\t0\tf\tq\t/a%z\n",
+                            "lightmusic-stats 1\n1\t2\t0\tf\tq\t/a\n1\t2\t0\tf\tq\t/a\n",
+                            "lightmusic-stats 1\n1\t2\t0\tf\tq\t/a\tx\n"}) {
+        lmtui::PlayStats d;
+        err.clear();
+        CHECK(!d.parse(bad, err) && !err.empty());
+    }
+    CHECK(lmtui::statsPath("/s/lightmusic/session") == "/s/lightmusic/stats");
+    CHECK(lmtui::Keymap().lookup(lmtui::Context::Global, "f") == Command::ToggleFavourite);
+}
+
 int main() {
     testKeyFile();
     testKeyParser();
@@ -716,5 +760,6 @@ int main() {
     testTimeLeftAndSleep();
     testSession();
     testBookmarks();
+    testPlayStats();
     return lmtest::finish("test_tui_logic");
 }

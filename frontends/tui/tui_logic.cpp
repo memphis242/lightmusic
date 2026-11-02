@@ -650,9 +650,153 @@ bool Bookmarks::parse(std::string_view text, std::string &err) {
     return true;
 }
 
+namespace {
+// Stats fields: the session escapes plus TAB (%09).
+std::string escapeField(std::string_view p) {
+    std::string r;
+    for (char c : escapeEntry(p)) {
+        if (c == '\t') r += "%09";
+        else r += c;
+    }
+    return r;
+}
+bool unescapeField(std::string_view p, std::string &out) {
+    std::string tmp;
+    tmp.reserve(p.size());
+    for (std::size_t i = 0; i < p.size(); i++) {
+        if (p.substr(i, 3) == "%09") {
+            tmp += '\t';
+            i += 2;
+        } else {
+            tmp += p[i];
+        }
+    }
+    return unescapeEntry(tmp, out);
+}
+} // namespace
+
+bool countsAsPlay(std::int64_t heardMs, std::int64_t lengthMs) {
+    if (lengthMs <= 0) return heardMs >= 30'000;
+    return heardMs >= std::min<std::int64_t>(lengthMs / 2, 240'000);
+}
+
+void PlayStats::recordPlay(const std::string &track, std::int64_t now, std::string_view context) {
+    if (track.empty() || (stats_.size() >= kMaxTracks && !stats_.contains(track))) return;
+    TrackStats &t = stats_[track];
+    t.plays++;
+    t.lastPlayed = now;
+    t.source = track.starts_with("lm://") ? "library" : "folder";
+    t.context = std::string(context);
+}
+
+bool PlayStats::toggleFavourite(const std::string &track) {
+    if (track.empty() || (stats_.size() >= kMaxTracks && !stats_.contains(track))) return false;
+    TrackStats &t = stats_[track];
+    t.favourite = !t.favourite;
+    if (!t.favourite && t.plays == 0) {
+        stats_.erase(track); // nothing left to keep
+        return false;
+    }
+    return t.favourite;
+}
+
+const TrackStats *PlayStats::find(const std::string &track) const {
+    const auto it = stats_.find(track);
+    return it == stats_.end() ? nullptr : &it->second;
+}
+
+bool PlayStats::favourite(const std::string &track) const {
+    const TrackStats *t = find(track);
+    return t && t->favourite;
+}
+
+std::vector<std::string> PlayStats::favourites() const {
+    std::vector<std::string> v;
+    for (const auto &[k, t] : stats_)
+        if (t.favourite) v.push_back(k);
+    return v;
+}
+
+std::vector<std::string> PlayStats::mostPlayed(std::size_t n) const {
+    std::vector<const std::pair<const std::string, TrackStats> *> v;
+    for (const auto &e : stats_)
+        if (e.second.plays > 0) v.push_back(&e);
+    std::stable_sort(v.begin(), v.end(), [](auto *a, auto *b) {
+        return a->second.plays != b->second.plays ? a->second.plays > b->second.plays
+                                                  : a->second.lastPlayed > b->second.lastPlayed;
+    });
+    std::vector<std::string> r;
+    for (std::size_t i = 0; i < v.size() && i < n; i++) r.push_back(v[i]->first);
+    return r;
+}
+
+std::vector<std::string> PlayStats::recentlyPlayed(std::size_t n) const {
+    std::vector<const std::pair<const std::string, TrackStats> *> v;
+    for (const auto &e : stats_)
+        if (e.second.lastPlayed > 0) v.push_back(&e);
+    std::stable_sort(v.begin(), v.end(), [](auto *a, auto *b) { return a->second.lastPlayed > b->second.lastPlayed; });
+    std::vector<std::string> r;
+    for (std::size_t i = 0; i < v.size() && i < n; i++) r.push_back(v[i]->first);
+    return r;
+}
+
+std::string PlayStats::format() const {
+    std::string r = "lightmusic-stats 1\n";
+    for (const auto &[k, t] : stats_)
+        std::format_to(std::back_inserter(r), "{}\t{}\t{}\t{}\t{}\t{}\n", t.plays, t.lastPlayed, t.favourite ? 1 : 0,
+                       escapeField(t.source), escapeField(t.context), escapeField(k));
+    return r;
+}
+
+bool PlayStats::parse(std::string_view text, std::string &err) {
+    std::map<std::string, TrackStats> out;
+    std::size_t lineNo = 0;
+    auto fail = [&](std::string_view why) {
+        err = std::format("line {}: {}", lineNo, why);
+        return false;
+    };
+    while (!text.empty()) {
+        lineNo++;
+        const auto nl = text.find('\n');
+        if (nl == std::string_view::npos) return fail("truncated (no final newline)");
+        std::string_view line = text.substr(0, nl);
+        text.remove_prefix(nl + 1);
+        if (lineNo == 1) {
+            if (line != "lightmusic-stats 1") return fail("not a lightmusic stats file (version 1)");
+            continue;
+        }
+        std::string_view f[6];
+        for (int i = 0; i < 6; i++) {
+            const auto tab = line.find('\t');
+            if ((tab == std::string_view::npos) != (i == 5)) return fail("expected 6 tab-separated fields");
+            f[i] = line.substr(0, tab);
+            line = tab == std::string_view::npos ? std::string_view() : line.substr(tab + 1);
+        }
+        TrackStats t;
+        std::int64_t fav = 0;
+        if (!parseInt64(f[0], t.plays) || t.plays < 0) return fail("bad play count");
+        if (!parseInt64(f[1], t.lastPlayed) || t.lastPlayed < 0) return fail("bad time");
+        if (!parseInt64(f[2], fav) || (fav != 0 && fav != 1)) return fail("bad favourite flag");
+        t.favourite = fav == 1;
+        std::string key;
+        if (!unescapeField(f[3], t.source) || !unescapeField(f[4], t.context) || !unescapeField(f[5], key) || key.empty())
+            return fail("bad field");
+        if (out.size() >= kMaxTracks) return fail("too many tracks");
+        if (!out.emplace(std::move(key), std::move(t)).second) return fail("duplicate track");
+    }
+    if (lineNo == 0) return fail("empty file");
+    stats_ = std::move(out);
+    return true;
+}
+
 std::string bookmarksPath(const std::string &sessionPath) {
     const auto slash = sessionPath.rfind('/');
     return (slash == std::string::npos ? std::string() : sessionPath.substr(0, slash + 1)) + "bookmarks";
+}
+
+std::string statsPath(const std::string &sessionPath) {
+    const auto slash = sessionPath.rfind('/');
+    return (slash == std::string::npos ? std::string() : sessionPath.substr(0, slash + 1)) + "stats";
 }
 
 std::string sessionPath(const std::string &home, const char *xdgStateHome) {
