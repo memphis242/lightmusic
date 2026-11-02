@@ -73,6 +73,9 @@ if [ -n "$SRV" ]; then
     SPID=$!
     wait_in "$TMP/srv.log" "^lightmusicd listening on"
     ADDR=$(sed -n 's/^lightmusicd listening on \([^ ]*\).*/\1/p' "$TMP/srv.log" | head -n1)
+    # The listener is up before the initial scan ends: a client syncing in between
+    # gets an empty library (revision 0, no tracks) and exits "no playable tracks".
+    wait_in "$TMP/srv.log" "initial scan: "
     # --no-fill: only what is played (or saved offline) gets cached.
     SARGS="--server http://$ADDR --key-file '$TMP/key' --cache-dir '$TMP/cache' --no-fill"
     S=$TMP/log2; : > "$S"
