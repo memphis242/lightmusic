@@ -8,6 +8,8 @@
 //  - decode errors become Error events; sync() from an event handler does not deadlock.
 //  - play order: repeat all/one, shuffle (stable for prev, toggle keeps the track, enqueue).
 //  - user queue: before the context, play next, edits, prev, failed entries, gapless.
+//  - stop after current: ends like an end of queue, play() resumes with the next track
+//    (context or user queue), one-shot, cleared by clearQueue, disarmed by false.
 #include "common.hpp"
 #include "lm/player.hpp"
 #include "lm/source.hpp"
@@ -1113,6 +1115,89 @@ void userQueue(const std::string &dir) {
 }
 } // namespace
 
+static void stopAfterCurrent(const std::string &dir) {
+    std::vector<std::string> t;
+    for (int i = 0; i < 4; i++) {
+        t.push_back(dir + "/stopafter" + std::to_string(i) + ".flac");
+        CHECK(lmtest::makeTone(t.back(), 44100, 44100 / 2, 300 + 50 * i, "-c:a flac -f flac"));
+    }
+    auto baseCfg = [](Recorder &rec) {
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.onEvent = std::ref(rec);
+        return cfg;
+    };
+    {
+        // Armed while track 0 plays: stops after it; play() resumes at 1, then the queue
+        // continues normally (the flag is one-shot).
+        Recorder rec;
+        lm::Player p(baseCfg(rec));
+        p.enqueue({t[0], t[1], t[2]});
+        p.setStopAfterCurrent(true);
+        p.sync();
+        CHECK(p.state().stopAfterCurrent); // (taken by the decoder at the end of track 0)
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s));
+        lm::PlayerState st = p.state();
+        CHECK(st.status == lm::Status::Stopped && st.index == -1 && st.resumable && !st.stopAfterCurrent);
+        CHECK((rec.trackIndexes() == std::vector<int>{0}));
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s, 2));
+        CHECK((rec.trackIndexes() == std::vector<int>{0, 1, 2}));
+        CHECK(!p.state().resumable);
+    }
+    {
+        // A queued track is what follows: it plays after the stop, then the context
+        // continues after track 0.
+        Recorder rec;
+        lm::Player p(baseCfg(rec));
+        p.enqueue({t[0], t[1], t[2]});
+        p.queueAdd({t[3]});
+        p.setStopAfterCurrent(true);
+        p.playIndex(0);
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s));
+        CHECK((p.state().upNext == std::vector<int>{3}));
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::TrackChanged, 15s, 3));
+        p.stop();
+        p.sync();
+        auto v = rec.trackIndexes();
+        v.resize(3);
+        CHECK((v == std::vector<int>{0, 3, 1}));
+    }
+    {
+        // Disarmed before the end: nothing stops; clearQueue clears both flags; a
+        // playIndex after the stop starts there (resume point dropped).
+        Recorder rec;
+        lm::Player p(baseCfg(rec));
+        p.enqueue({t[0], t[1]});
+        p.setStopAfterCurrent(true);
+        p.setStopAfterCurrent(false);
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s));
+        CHECK((rec.trackIndexes() == std::vector<int>{0, 1}));
+        CHECK(!p.state().resumable);
+        p.setStopAfterCurrent(true);
+        p.clearQueue();
+        p.sync();
+        CHECK(!p.state().stopAfterCurrent);
+        p.enqueue({t[0], t[1], t[2]});
+        p.setStopAfterCurrent(true);
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s, 2));
+        CHECK(p.state().resumable);
+        p.playIndex(2);
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s, 3));
+        auto v = rec.trackIndexes();
+        CHECK(v.size() == 4 && v[2] == 0 && v[3] == 2);
+        // ModeChanged reports arming (no event for a no-op).
+        const std::size_t modes = rec.count(lm::EventType::ModeChanged);
+        p.setStopAfterCurrent(false);
+        p.sync();
+        CHECK_EQ(rec.count(lm::EventType::ModeChanged), modes);
+    }
+}
+
 int main() {
     if (!lmtest::haveFfmpeg()) {
         std::println("test_player: ffmpeg not found, skipping");
@@ -1132,5 +1217,6 @@ int main() {
     everyTrackReported(dir);
     playOrder(dir);
     userQueue(dir);
+    stopAfterCurrent(dir);
     return lmtest::finish("test_player");
 }

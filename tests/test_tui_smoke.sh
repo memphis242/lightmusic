@@ -276,6 +276,32 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (filter run)"; cat "$f"; fail=1
 done
+# Stop after the current track (S), time left, and the sleep timer: a 3 s timer fades
+# the volume out and pauses, then the volume comes back.
+: > "$TMP/log11"
+w11() { n=300; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log11"; do sleep 0.05; n=$((n - 1)); done; }
+{ w11 Playing; w11 "2 more · 0:[0-9][0-9]\(+\)\? left"
+  printf 9; sleep 0.2; printf S; w11 "stop after this track"
+  w11 "stopped after the track"
+  printf ' '; w11 "Playing  2 Second\|Playing  Second"
+  printf ':sleep 3s\r'; w11 "sleep in 0:03"
+  w11 "sleep timer: paused"
+  w11 "vol  50%"
+  printf ':sleep\r'; w11 "no sleep timer"
+  printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
+    timeout 40 script -qfec "$BIN --null '$TMP/music'" "$TMP/log11" >/dev/null 2>&1
+rc=$?
+[ $rc -eq 0 ] || { echo "FAIL: stop/sleep run exit status $rc"; tail -c 1000 "$TMP/log11" | cat -v; fail=1; }
+for want in "more · " "stop after this track" "stop after" "stopped after the track" "sleep in 0:03" "sleep 0:0" \
+            "sleep timer: paused" "Paused" "no sleep timer"; do
+    grep -q -- "$want" "$TMP/log11" || { echo "FAIL: stop/sleep run: '$want' never shown"; fail=1; }
+done
+# The fade lowered the volume on the way (some value strictly between 0 and 50 %).
+grep -q "vol  [1-4][0-9]%\|vol   [1-9]%" "$TMP/log11" || { echo "FAIL: sleep timer did not fade"; fail=1; }
+for f in "$TMP"/san*; do
+    [ -e "$f" ] || continue
+    echo "FAIL: sanitizer report $f (stop/sleep run)"; cat "$f"; fail=1
+done
 # A bad binding is refused before the terminal is touched, with its line.
 printf 'keys:\n  queue_add: [a, F13]\n' > "$CFG"
 out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?

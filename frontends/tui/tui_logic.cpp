@@ -414,6 +414,28 @@ int stepFiltered(const std::vector<int> &rows, int selected, int delta) {
     return rows[static_cast<std::size_t>(pos)];
 }
 
+TimeLeft timeLeft(std::int64_t currentLeftMs, const std::vector<std::int64_t> &aheadMs) {
+    TimeLeft t;
+    t.ms = std::max<std::int64_t>(0, currentLeftMs);
+    t.tracks = aheadMs.size();
+    for (const std::int64_t ms : aheadMs) {
+        if (ms > 0) t.ms += ms;
+        else t.unknown = true;
+    }
+    return t;
+}
+
+std::string formatMs(std::int64_t ms) {
+    const std::int64_t s = std::max<std::int64_t>(0, ms) / 1000;
+    if (s >= 3600) return std::format("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60);
+    return std::format("{}:{:02}", s / 60, s % 60);
+}
+
+std::string formatTimeLeft(const TimeLeft &t) {
+    std::string r = t.tracks ? std::format("{} more · ", t.tracks) : std::string();
+    return r + formatMs(t.ms) + (t.unknown ? "+" : "") + " left";
+}
+
 StatusLine::Clock::duration StatusLine::lifetime(Level level) {
     using namespace std::chrono_literals;
     switch (level) {

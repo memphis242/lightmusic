@@ -5,6 +5,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <string>
 #include <string_view>
@@ -96,6 +97,7 @@ enum class Command {
     OpenCommandLine, // ':' opens the command line (keymap.hpp: parseCommandLine)
     OpenFilter,      // '/': fuzzy filter of the list / browser level
     JumpPlaying,     // '.': select the playing track in the list
+    ToggleStopAfter, // S: stop when the playing track ends
 };
 
 constexpr double kSeekStep = 5.0;
@@ -158,6 +160,20 @@ std::string modeLabel(int repeat, bool shuffle);
 // is visible. With delta 0 it snaps to the nearest visible row at or after `selected`
 // (else the last one).
 [[nodiscard]] int stepFiltered(const std::vector<int> &rows, int selected, int delta);
+
+// Time left in the queue: the rest of the playing track plus the tracks ahead
+// (lengths in ms, 0 = not known). `unknown` is set when any length is missing, so the
+// sum is a lower bound.
+struct TimeLeft {
+    std::int64_t ms = 0;
+    std::size_t tracks = 0; // tracks ahead, not counting the playing one
+    bool unknown = false;
+};
+[[nodiscard]] TimeLeft timeLeft(std::int64_t currentLeftMs, const std::vector<std::int64_t> &aheadMs);
+// "3 more · 12:30 left", "12:30+ left" with unknown lengths, "4:05 left" with none ahead.
+[[nodiscard]] std::string formatTimeLeft(const TimeLeft &t);
+// "m:ss" / "h:mm:ss" for a non-negative millisecond count (rounded down to seconds).
+[[nodiscard]] std::string formatMs(std::int64_t ms);
 
 // The status line's message ("toast"): errors, warnings and confirmations, each shown
 // until it expires (info 3 s, warning 6 s, error 10 s) or a newer one replaces it. The

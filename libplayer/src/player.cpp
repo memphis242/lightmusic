@@ -161,7 +161,7 @@ TrackInfo infoFor(const std::string &path, const Decoder &d) {
 struct Cmd {
     enum Kind {
         Enqueue, Clear, Play, PlayIndex, Pause, Toggle, Stop, Next, Prev, Seek, Volume, SetRepeat, SetShuffle,
-        QueueAdd, QueueAddEntries, QueueMove, QueueRemove, QueueClear, Barrier
+        QueueAdd, QueueAddEntries, QueueMove, QueueRemove, QueueClear, StopAfter, Barrier
     } kind;
     std::vector<std::string> paths{};
     int index = 0;
@@ -246,6 +246,12 @@ struct Player::Impl {
     std::size_t upNextTaken = 0;
     std::mt19937_64 rng;
     std::uint64_t modeGen = 0;
+    // Stop after the current track (Player::setStopAfterCurrent): the decoder takes the
+    // flag at the next natural track end instead of picking a successor, and records
+    // what ended in resumeAfter, so play() continues with the track that would have
+    // followed. Any other start clears resumeAfter.
+    bool stopAfter = false;
+    std::optional<Pick> resumeAfter;
 
     // Published snapshot (guarded by sm).
     mutable std::mutex sm;
@@ -525,13 +531,15 @@ struct Player::Impl {
     void publish() {
         std::size_t qsize;
         Repeat rep;
-        bool shuf, hasNext;
+        bool shuf, hasNext, stopArmed, resumable;
         {
             std::lock_guard lk(dm);
             qsize = queue.size();
             rep = repeat;
             shuf = shuffle;
             hasNext = index >= 0 && successor(curPick(), false, false).idx >= 0;
+            stopArmed = stopAfter;
+            resumable = index < 0 && resumeAfter.has_value();
             const std::size_t taken = std::min(upNextTaken, upNext.size());
             upNextSnap.assign(upNext.begin() + static_cast<std::ptrdiff_t>(taken), upNext.end());
         }
@@ -542,6 +550,8 @@ struct Player::Impl {
         snap.repeat = rep;
         snap.shuffle = shuf;
         snap.hasNext = hasNext;
+        snap.stopAfterCurrent = stopArmed;
+        snap.resumable = resumable;
         snap.status = status;
         snap.index = index;
         snap.queueSize = qsize;
@@ -639,6 +649,7 @@ struct Player::Impl {
         for (std::size_t tries = 0;; tries++, frame = 0) {
             {
                 std::lock_guard lk(dm);
+                resumeAfter.reset(); // a new start
                 upNextTaken = 0; // flushed: nothing is picked ahead
                 if (tries > 0) {
                     pk = tries < queue.size() ? successor(pk, false, true) : Pick{};
@@ -834,6 +845,8 @@ struct Player::Impl {
                 pos.clear();
                 upNext.clear();
                 upNextTaken = 0;
+                stopAfter = false;
+                resumeAfter.reset();
             }
             index = -1;
             cur = Marker{};
@@ -944,6 +957,16 @@ struct Player::Impl {
             emit(EventType::ModeChanged);
             break;
         }
+        case Cmd::StopAfter: {
+            {
+                std::lock_guard lk(dm);
+                if (stopAfter == (c.index != 0)) break;
+                stopAfter = c.index != 0;
+            }
+            publish();
+            emit(EventType::ModeChanged);
+            break;
+        }
         case Cmd::QueueAdd:
         case Cmd::QueueAddEntries:
         case Cmd::QueueMove:
@@ -1032,6 +1055,11 @@ struct Player::Impl {
     Pick startIndex() {
         if (index >= 0) return curPick();
         std::lock_guard lk(dm);
+        if (resumeAfter) { // stopped after a track: what would have followed it
+            const Pick from = *resumeAfter;
+            resumeAfter.reset();
+            if (const Pick p = successor(from, true, true); p.idx >= 0) return p;
+        }
         if (!upNext.empty()) return Pick{upNext.front(), -1, true, true};
         if (shuffle) buildShuffle({});
         const int c = contextAfter(-1, false);
@@ -1368,7 +1396,13 @@ struct Player::Impl {
                     std::lock_guard lk(dm);
                     if (gen != seen) continue; // retired: the new job decides what plays
                     lastPk = pk;
-                    pk = successor(pk, true, true);
+                    if (stopAfter) { // ends here; the control thread sees an end of queue
+                        stopAfter = false;
+                        resumeAfter = pk;
+                        pk = Pick{};
+                    } else {
+                        pk = successor(pk, true, true);
+                    }
                 }
                 startFrame = 0;
                 needOpen = true;
@@ -1458,6 +1492,7 @@ void Player::queueRemove(int position, int entry) {
 void Player::queueClearUser() { impl_->push(Cmd{Cmd::QueueClear}); }
 void Player::setRepeat(Repeat r) { impl_->push(Cmd{Cmd::SetRepeat, {}, static_cast<int>(r)}); }
 void Player::setShuffle(bool on) { impl_->push(Cmd{Cmd::SetShuffle, {}, on ? 1 : 0}); }
+void Player::setStopAfterCurrent(bool on) { impl_->push(Cmd{Cmd::StopAfter, {}, on ? 1 : 0}); }
 void Player::setGap(double seconds) {
     if (!std::isnan(seconds)) impl_->gapSec.store(clampGap(seconds), std::memory_order_relaxed);
 }

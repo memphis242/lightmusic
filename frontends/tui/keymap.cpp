@@ -39,6 +39,7 @@ constexpr std::array kActions = {
     Action{"pin", TogglePin, Context::Global, "P", "save offline / unsave (server tracks)"},
     Action{"filter", OpenFilter, Context::Global, "/", "fuzzy filter (esc clears)"},
     Action{"jump_playing", JumpPlaying, Context::Global, ".", "jump to the playing track"},
+    Action{"stop_after", ToggleStopAfter, Context::Global, "S", "stop after this track"},
     Action{"command_line", OpenCommandLine, Context::Global, ":", "command line (:q quits)"},
     Action{"help", ToggleHelp, Context::Global, "?", "this help"},
     Action{"close_help", CloseHelp, Context::Global, "escape", "close the help"},
@@ -255,7 +256,7 @@ std::vector<std::string> Keymap::helpLines() const {
     section(Context::Global, "");
     section(Context::Queue, "in the queue pane:");
     section(Context::Browser, "in the browser (also q / Q queue, P save offline):");
-    out.emplace_back(":q           quit; :seek 1:30, :seek 50%, :vol 80, :messages, :<action>");
+    out.emplace_back(":q           quit; :seek 1:30, :seek 50%, :vol 80, :sleep 30, :messages, :<action>");
     return out;
 }
 
@@ -286,6 +287,35 @@ CommandLine parseCommandLine(std::string_view text) {
     if (verb == "messages" || verb == "mes") {
         if (!arg.empty()) return fail(verb + " takes no argument");
         r.kind = CommandLine::Messages;
+        return r;
+    }
+    if (verb == "sleep") {
+        r.kind = CommandLine::Sleep;
+        if (arg.empty()) return r; // show
+        if (arg == "off") {
+            r.sleepSec = 0;
+            return r;
+        }
+        const std::string bad = "sleep: '" + arg + "' is not a time (30, 45m, 1h, 1h30, 1:30, 90s, off)";
+        std::string_view a = arg;
+        std::int64_t h = 0, m = 0, sec = 0;
+        if (const auto colon = a.find(':'); colon != std::string_view::npos) { // h:mm
+            if (!parseUint(a.substr(0, colon), h) || a.size() - colon != 3 || !parseUint(a.substr(colon + 1), m) || m >= 60)
+                return fail(bad);
+        } else if (const auto hp = a.find('h'); hp != std::string_view::npos) { // 1h, 1h30, 1h30m
+            std::string_view rest = a.substr(hp + 1);
+            if (rest.ends_with('m')) rest.remove_suffix(1);
+            if (!parseUint(a.substr(0, hp), h) || (!rest.empty() && (!parseUint(rest, m) || m >= 60))) return fail(bad);
+        } else if (a.ends_with('s')) {
+            if (!parseUint(a.substr(0, a.size() - 1), sec)) return fail(bad);
+        } else {
+            if (a.ends_with('m')) a.remove_suffix(1);
+            if (!parseUint(a, m)) return fail(bad);
+        }
+        constexpr std::int64_t kMax = std::int64_t{24} * 3600;
+        if (h > 24 || m > kMax || sec > kMax) return fail("sleep: at most 24 hours");
+        r.sleepSec = h * 3600 + m * 60 + sec;
+        if (r.sleepSec == 0 || r.sleepSec > kMax) return fail("sleep: between 1 second and 24 hours (or off)");
         return r;
     }
     if (verb == "seek") {

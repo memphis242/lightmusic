@@ -557,6 +557,39 @@ static void testFuzzy() {
     CHECK(km.lookup(lmtui::Context::Global, ".") == Command::JumpPlaying);
 }
 
+static void testTimeLeftAndSleep() {
+    auto t = lmtui::timeLeft(65'500, {60'000, 0, 120'000});
+    CHECK_EQ(t.ms, 245'500);
+    CHECK_EQ(t.tracks, 3u);
+    CHECK(t.unknown);
+    CHECK(lmtui::formatTimeLeft(t) == "3 more · 4:05+ left");
+    t = lmtui::timeLeft(-5, {});
+    CHECK(t.ms == 0 && t.tracks == 0 && !t.unknown);
+    CHECK(lmtui::formatTimeLeft(lmtui::timeLeft(3'723'999, {})) == "1:02:03 left");
+    CHECK(lmtui::formatMs(0) == "0:00");
+    CHECK(lmtui::formatMs(-10) == "0:00");
+    CHECK(lmtui::formatMs(59'999) == "0:59");
+    using CL = lmtui::CommandLine;
+    auto sec = [](const char *text) {
+        const CL c = lmtui::parseCommandLine(text);
+        return c.kind == CL::Sleep ? c.sleepSec : -2;
+    };
+    CHECK_EQ(sec("sleep 30"), 1800);
+    CHECK_EQ(sec("sleep 45m"), 2700);
+    CHECK_EQ(sec("sleep 1h"), 3600);
+    CHECK_EQ(sec("sleep 1h30"), 5400);
+    CHECK_EQ(sec("sleep 1h30m"), 5400);
+    CHECK_EQ(sec("sleep 1:30"), 5400);
+    CHECK_EQ(sec("sleep 90s"), 90);
+    CHECK_EQ(sec("sleep 24h"), 86400);
+    CHECK_EQ(sec("sleep off"), 0);
+    CHECK_EQ(sec("sleep"), -1);
+    for (const char *bad : {"sleep 0", "sleep 25h", "sleep 1:60", "sleep 1:5", "sleep x", "sleep 1h60", "sleep -5",
+                            "sleep 0s", "sleep 86401s", "sleep 1.5", "sleep h", "sleep 99999999999999999999"})
+        CHECK(lmtui::parseCommandLine(bad).kind == CL::Error);
+    CHECK(lmtui::Keymap().lookup(lmtui::Context::Global, "S") == Command::ToggleStopAfter);
+}
+
 int main() {
     testKeyFile();
     testKeyParser();
@@ -571,5 +604,6 @@ int main() {
     testCommandLine();
     testStatusLine();
     testFuzzy();
+    testTimeLeftAndSleep();
     return lmtest::finish("test_tui_logic");
 }
