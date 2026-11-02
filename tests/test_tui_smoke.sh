@@ -16,6 +16,7 @@ gen 660 20 "-c:a libopus" "$TMP/music/1 First.opus"
 echo "not audio" > "$TMP/music/notes.txt"
 # Hermetic settings: cfg.yaml in a temp XDG_CONFIG_HOME (start volume 50%).
 export XDG_CONFIG_HOME="$TMP/xdg"
+export XDG_STATE_HOME="$TMP/state" # the resumable session (not the real one)
 mkdir -p "$XDG_CONFIG_HOME/lightmusic"
 CFG="$XDG_CONFIG_HOME/lightmusic/cfg.yaml"
 printf 'playback:\n  volume: 50\n' > "$CFG"; chmod 600 "$CFG"
@@ -301,6 +302,40 @@ grep -q "vol  [1-4][0-9]%\|vol   [1-9]%" "$TMP/log11" || { echo "FAIL: sleep tim
 for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (stop/sleep run)"; cat "$f"; fail=1
+done
+# Resume: a run with files saves the session on quit (list, user queue, position); a
+# start without files restores it paused; --no-resume and a broken file start fresh.
+SESS="$XDG_STATE_HOME/lightmusic/session"
+rm -f "$SESS"
+: > "$TMP/log12"
+w12() { n=300; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log12"; do sleep 0.05; n=$((n - 1)); done; }
+{ w12 Playing; printf j; sleep 0.1; printf q; w12 "queued: "
+  printf 5; w12 "0:1[01] / 0:20"; printf ' '; w12 Paused
+  printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
+    timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log12" >/dev/null 2>&1
+[ -f "$SESS" ] && [ "$(stat -c %a "$SESS")" = 600 ] || { echo "FAIL: session not saved (0600)"; ls -l "$SESS"; fail=1; }
+grep -q "^ctx 3$" "$SESS" && grep -q "^index 0$" "$SESS" && grep -q "^upnext 1$" "$SESS" &&
+    grep -q "^position_ms 1[01][0-9][0-9][0-9]$" "$SESS" || { echo "FAIL: session content:"; cat "$SESS"; fail=1; }
+: > "$TMP/log13"
+{ n=300; while [ $n -gt 0 ] && ! grep -q "resumed: 3 tracks, 1 queued" "$TMP/log13"; do sleep 0.05; n=$((n - 1)); done
+  sleep 0.3; printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
+    timeout 30 script -qfec "$BIN --null" "$TMP/log13" >/dev/null 2>&1
+for want in "resumed: 3 tracks, 1 queued" "Paused" "0:1[01] / 0:20" "up next 1"; do
+    grep -q -- "$want" "$TMP/log13" || { echo "FAIL: resume: '$want' never shown"; fail=1; }
+done
+grep -q "Playing" "$TMP/log13" && { echo "FAIL: resume started playing"; fail=1; }
+: > "$TMP/log14"
+{ sleep 1; printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
+    timeout 30 script -qfec "$BIN --null --no-resume" "$TMP/log14" >/dev/null 2>&1
+grep -q "resumed" "$TMP/log14" && { echo "FAIL: --no-resume resumed"; fail=1; }
+printf 'lightmusic-session 1\nctx 9\n' > "$SESS"
+: > "$TMP/log15"
+{ sleep 1; printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
+    timeout 30 script -qfec "$BIN --null" "$TMP/log15" >/dev/null 2>&1
+grep -q "session.*not resumed" "$TMP/log15" || { echo "FAIL: broken session not reported"; tail -c 600 "$TMP/log15" | cat -v; fail=1; }
+for f in "$TMP"/san*; do
+    [ -e "$f" ] || continue
+    echo "FAIL: sanitizer report $f (resume runs)"; cat "$f"; fail=1
 done
 # A bad binding is refused before the terminal is touched, with its line.
 printf 'keys:\n  queue_add: [a, F13]\n' > "$CFG"

@@ -590,6 +590,70 @@ static void testTimeLeftAndSleep() {
     CHECK(lmtui::Keymap().lookup(lmtui::Context::Global, "S") == Command::ToggleStopAfter);
 }
 
+static void testSession() {
+    lmtui::Session s;
+    s.entries = {"/m/a.flac", "/m/b%c.flac", "lm://server/track/7", "/m/line\nbreak.mp3", "/q/x.opus"};
+    s.ctx = 4;
+    s.upNext = {4, 1};
+    s.index = 2;
+    s.positionMs = 61'234;
+    const std::string text = lmtui::formatSession(s);
+    CHECK(text.find("entry /m/b%25c.flac\n") != std::string::npos);
+    CHECK(text.find("entry /m/line%0Abreak.mp3\n") != std::string::npos);
+    lmtui::Session back;
+    std::string err;
+    CHECK(lmtui::parseSession(text, back, err));
+    CHECK(back == s);
+    // Empty session.
+    CHECK(lmtui::parseSession(lmtui::formatSession({}), back, err) && back.entries.empty() && back.index == -1);
+    // Untrusted input: every malformed form is refused with a reason.
+    const std::string head = "lightmusic-session 1\nctx 1\nindex 0\nposition_ms 5\nupnext\n";
+    for (const std::string &bad : {std::string("lightmusic-session 2\n"), std::string("garbage"),
+                                  head + "entry /a", // no final newline
+                                  head,                // ctx 1 but no entries
+                                  head + "entry /a\nentry \n", head + "entry /a%zz\n", head + "entry /a\nfoo 1\n",
+                                  head + "entry /a\nctx 0\n", // duplicate key
+                                  std::string("lightmusic-session 1\nctx 1\nindex 3\nposition_ms 0\nupnext\nentry /a\n"),
+                                  std::string("lightmusic-session 1\nctx 1\nindex -2\nposition_ms 0\nupnext\nentry /a\n"),
+                                  std::string("lightmusic-session 1\nctx 1\nindex 0\nposition_ms -1\nupnext\nentry /a\n"),
+                                  std::string("lightmusic-session 1\nctx 1\nindex 0\nposition_ms 0\nupnext 1\nentry /a\n"),
+                                  std::string("lightmusic-session 1\nctx 1\nindex 0\nposition_ms 0\nupnext x\nentry /a\n"),
+                                  std::string("lightmusic-session 1\nctx 1\nindex 0\nupnext\nentry /a\n")}) {
+        err.clear();
+        CHECK(!lmtui::parseSession(bad, back, err));
+        CHECK(!err.empty());
+    }
+    // Pruning: drop vanished entries, remap everything.
+    lmtui::Session p = s;
+    lmtui::pruneSession(p, [](const std::string &e) { return e != "/m/a.flac" && e != "/q/x.opus"; });
+    CHECK((p.entries == std::vector<std::string>{"/m/b%c.flac", "lm://server/track/7", "/m/line\nbreak.mp3"}));
+    CHECK_EQ(p.ctx, 3u);
+    CHECK((p.upNext == std::vector<int>{0}));
+    CHECK_EQ(p.index, 1);
+    CHECK_EQ(p.positionMs, 61'234);
+    p = s;
+    lmtui::pruneSession(p, [](const std::string &e) { return e.rfind("lm://", 0) != 0; }); // the audible one goes
+    CHECK(p.index == -1 && p.positionMs == 0 && p.ctx == 3);
+    // Compaction: entries outside the list that matter, in re-creation order.
+    lmtui::Session c;
+    c.entries = {"L0", "L1", "old", "Q1", "CUR", "Q2"};
+    c.ctx = 2;
+    c.upNext = {5, 0, 3, 5};
+    c.index = 4;
+    c.positionMs = 9;
+    lmtui::compactSession(c);
+    CHECK((c.entries == std::vector<std::string>{"L0", "L1", "CUR", "Q2", "Q1"}));
+    CHECK((c.upNext == std::vector<int>{3, 0, 4, 3}));
+    CHECK_EQ(c.index, 2);
+    CHECK_EQ(c.positionMs, 9);
+    c.index = 0;
+    lmtui::compactSession(c); // stable
+    CHECK((c.entries == std::vector<std::string>{"L0", "L1", "Q2", "Q1"}));
+    CHECK(lmtui::sessionPath("/home/u", nullptr) == "/home/u/.local/state/lightmusic/session");
+    CHECK(lmtui::sessionPath("/home/u", "relative") == "/home/u/.local/state/lightmusic/session");
+    CHECK(lmtui::sessionPath("/home/u", "/xdg") == "/xdg/lightmusic/session");
+}
+
 int main() {
     testKeyFile();
     testKeyParser();
@@ -605,5 +669,6 @@ int main() {
     testStatusLine();
     testFuzzy();
     testTimeLeftAndSleep();
+    testSession();
     return lmtest::finish("test_tui_logic");
 }

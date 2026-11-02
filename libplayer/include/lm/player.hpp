@@ -154,6 +154,10 @@ public:
     void queueClearUser();
     void play();             // resume, or start the current/first track
     void playIndex(int index);
+    // Opens entry `index` at `seconds` (clamped to the track; NaN/inf -> 0) and leaves it
+    // Paused, the device idle: play() / togglePause() start it there. For resuming a
+    // session. A failed open moves on along the play order like playIndex().
+    void cueIndex(int index, double seconds);
     void pause();
     void togglePause();
     void stop();

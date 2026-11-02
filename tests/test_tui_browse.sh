@@ -24,6 +24,7 @@ gen 550 Beta 2 "$TMP/music/Album A/02 b.flac"
 ffmpeg -hide_banner -loglevel error -y -f lavfi -i "sine=frequency=660:duration=20" -ac 2 -c:a libopus \
     "$TMP/music/loose.opus" || exit 1
 export XDG_CONFIG_HOME="$TMP/xdg"
+export XDG_STATE_HOME="$TMP/state" # the resumable session (not the real one)
 echo "XDG_MUSIC_DIR=\"$TMP/music\"" > "$XDG_CONFIG_HOME/user-dirs.dirs"
 export ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}log_path=$TMP/san"
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:+$UBSAN_OPTIONS:}log_path=$TMP/san:print_stacktrace=1"
@@ -77,7 +78,8 @@ if [ -n "$SRV" ]; then
     # gets an empty library (revision 0, no tracks) and exits "no playable tracks".
     wait_in "$TMP/srv.log" "initial scan: "
     # --no-fill: only what is played (or saved offline) gets cached.
-    SARGS="--server http://$ADDR --key-file '$TMP/key' --cache-dir '$TMP/cache' --no-fill"
+    # --no-resume: these runs test browsing from the full library, not the session.
+    SARGS="--server http://$ADDR --key-file '$TMP/key' --cache-dir '$TMP/cache' --no-fill --no-resume"
     S=$TMP/log2; : > "$S"
     { wait_in "$S" "Playing"
       printf b; wait_in "$S" "Library (server)"

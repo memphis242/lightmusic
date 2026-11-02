@@ -101,6 +101,16 @@ in order once (no shuffle or repeat), the rest of the list (`3 more · 12:30 lef
 means some lengths are not known yet). Lengths come from the library for server tracks
 and from the file headers for local files, read with the tags in the background.
 
+**Resume.** Quitting saves the session: the list, the user queue, the playing track and
+its position, in `$XDG_STATE_HOME/lightmusic/session` (else
+`~/.local/state/lightmusic/session`; a small text file, mode 0600, written atomically).
+Started without files or `--album` (with or without `--server`), lightmusic restores it
+**paused** at that position: `space` continues. Entries that are gone are dropped
+(deleted files, tracks no longer in the library, uncached tracks while offline). Repeat
+and shuffle come back from `cfg.yaml` as before. `--no-resume` (or
+`ui.resume_session: false`) starts fresh; a damaged session file is reported on stderr
+and ignored. Files or folders on the command line always start a new list.
+
 **Status line.** Errors (red), warnings (yellow) and confirmations appear in the bottom
 line and expire on their own: confirmations after 3 s, warnings after 6 s, errors after
 10 s, or sooner when a newer message replaces them. A track change no longer wipes the
@@ -203,7 +213,8 @@ ctest --test-dir build --output-on-failure
   concatenation of the decoded tracks (nothing inserted at joins), resampling of a 48 kHz
   track after 44.1 kHz ones, the command/state machine, and stop-after-current (ends
   like an end of queue, play() resumes with the next context or user-queue track,
-  one-shot, disarmed, cleared by clearQueue, dropped by playIndex). Skipped without
+  one-shot, disarmed, cleared by clearQueue, dropped by playIndex), and cueIndex (opened
+  paused at a position; NaN, past the end). Skipped without
   `ffmpeg`.
 - `test_config`: libconfig: the `keys:` section (scalar/list/empty, its place, a scalar or
   nested mapping refused, per-name layering, hot reload ignoring moved lines), defaults,
@@ -240,7 +251,9 @@ ctest --test-dir build --output-on-failure
   (quit forms, actions, `seek` positions, `vol`, `messages`, errors) and its editing, the
   fuzzy matching (subsequence per word, any word order, ASCII case folding) and moving
   within filtered rows (from a hidden row, clamping), the status line (expiry per level, rounding up, replacement, history of 50 with repeats
-  stored once, no timer when empty), time left (unknown lengths, formatting), `:sleep`
+  stored once, no timer when empty), the session file (round trip with escaped paths,
+  14 malformed forms refused, pruning and compaction remaps, path), time left (unknown
+  lengths, formatting), `:sleep`
   forms and limits, time/volume formatting.
 - `test_server_range`: Range header decisions (suffix, open-ended, past EOF, reversed,
   multiple ranges, overflow, empty file).
@@ -267,7 +280,9 @@ ctest --test-dir build --output-on-failure
   `:` command line (`:vol`, `:seek 50%`, an unknown command, backspace editing), a status
   message expiring after 3 s, the `:messages` overlay, the `/` filter (typing narrows the
   list and hides other rows, no match, enter keeps, esc clears), `.`, stop after the track
-  (`S`, then space continues), the time left, a 3 s sleep timer fading the volume and
+  (`S`, then space continues), the time left, the session saved on quit (0600, content)
+  and resumed paused at its position without files (not with `--no-resume`; a damaged
+  file reported), a 3 s sleep timer fading the volume and
   pausing with the volume restored, and bad
   bindings (unknown key, one key on two actions) refused with exit status 2; with a temp `XDG_CONFIG_HOME`:
   `cfg.yaml`'s volume applied at start, a live edit (volume hot-applied, replaygain
@@ -781,6 +796,8 @@ ui:
                                     # from ~/.config/user-dirs.dirs, else ~/Music
   save_settings: true               # write volume/repeat/shuffle changes made in the
                                     # UI (or over MPRIS) back here
+  resume_session: true              # started without files: restore the last list,
+                                    # queue and position (paused); --no-resume
 keys:                               # (hot) action: key or [keys]; replaces that
   queue_add: a                      # action's default keys; [] unbinds it
   quit: [ctrl-c, ctrl-q]
@@ -803,6 +820,7 @@ keys:                               # (hot) action: key or [keys]; replaces that
 | `ui.show_cache_markers` | – | true | restart |
 | `ui.music_dir` | – | `$XDG_MUSIC_DIR`, else `~/Music` | yes (next time the browser opens at the top) |
 | `ui.save_settings` | – | true | yes |
+| `ui.resume_session` | `--no-resume` (= false) | true | restart |
 | `keys.<action>` | – | see below | yes |
 
 #### Keybindings

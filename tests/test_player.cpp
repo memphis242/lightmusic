@@ -10,6 +10,7 @@
 //  - user queue: before the context, play next, edits, prev, failed entries, gapless.
 //  - stop after current: ends like an end of queue, play() resumes with the next track
 //    (context or user queue), one-shot, cleared by clearQueue, disarmed by false.
+//  - cueIndex: opened paused at a position (resume), NaN and past-the-end handled.
 #include "common.hpp"
 #include "lm/player.hpp"
 #include "lm/source.hpp"
@@ -1190,6 +1191,20 @@ static void stopAfterCurrent(const std::string &dir) {
         CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s, 3));
         auto v = rec.trackIndexes();
         CHECK(v.size() == 4 && v[2] == 0 && v[3] == 2);
+        // cueIndex: opened paused at the position, nothing played until play().
+        p.cueIndex(1, 0.25);
+        p.sync();
+        const lm::PlayerState cs = p.state();
+        CHECK(cs.status == lm::Status::Paused && cs.index == 1);
+        CHECK(cs.position >= 0.24 && cs.position <= 0.26);
+        p.play();
+        CHECK(rec.waitFor(lm::EventType::EndOfQueue, 15s, 4));
+        p.cueIndex(0, std::numeric_limits<double>::quiet_NaN()); // -> 0
+        p.sync();
+        CHECK(p.state().status == lm::Status::Paused && p.state().index == 0 && p.state().position < 0.01);
+        p.cueIndex(0, 99.0); // past the end: clamped
+        p.sync();
+        CHECK(p.state().status == lm::Status::Paused && p.state().index == 0);
         // ModeChanged reports arming (no event for a no-op).
         const std::size_t modes = rec.count(lm::EventType::ModeChanged);
         p.setStopAfterCurrent(false);

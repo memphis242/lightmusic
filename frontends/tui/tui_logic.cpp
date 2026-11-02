@@ -5,6 +5,8 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <charconv>
+#include <iterator>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -434,6 +436,143 @@ std::string formatMs(std::int64_t ms) {
 std::string formatTimeLeft(const TimeLeft &t) {
     std::string r = t.tracks ? std::format("{} more · ", t.tracks) : std::string();
     return r + formatMs(t.ms) + (t.unknown ? "+" : "") + " left";
+}
+
+namespace {
+std::string escapeEntry(std::string_view p) {
+    std::string r;
+    r.reserve(p.size());
+    for (char c : p) {
+        if (c == '%') r += "%25";
+        else if (c == '\n') r += "%0A";
+        else if (c == '\r') r += "%0D";
+        else r += c;
+    }
+    return r;
+}
+bool unescapeEntry(std::string_view p, std::string &out) {
+    out.clear();
+    for (std::size_t i = 0; i < p.size(); i++) {
+        if (p[i] != '%') {
+            out += p[i];
+            continue;
+        }
+        const std::string_view code = p.substr(i + 1, 2);
+        if (code == "25") out += '%';
+        else if (code == "0A") out += '\n';
+        else if (code == "0D") out += '\r';
+        else return false;
+        i += 2;
+    }
+    return true;
+}
+bool parseInt64(std::string_view s, std::int64_t &v) {
+    if (s.empty()) return false;
+    const auto r = std::from_chars(s.data(), s.data() + s.size(), v);
+    return r.ec == std::errc() && r.ptr == s.data() + s.size();
+}
+} // namespace
+
+std::string formatSession(const Session &s) {
+    std::string r = std::format("lightmusic-session 1\nctx {}\nindex {}\nposition_ms {}\nupnext", s.ctx, s.index,
+                                s.positionMs);
+    for (int e : s.upNext) std::format_to(std::back_inserter(r), " {}", e);
+    r += '\n';
+    for (const auto &e : s.entries) r += "entry " + escapeEntry(e) + "\n";
+    return r;
+}
+
+bool parseSession(std::string_view text, Session &out, std::string &err) {
+    Session s;
+    std::int64_t ctx = -1;
+    bool sawIndex = false, sawPos = false, sawUp = false;
+    std::size_t lineNo = 0;
+    auto fail = [&](std::string_view why) {
+        err = std::format("line {}: {}", lineNo, why);
+        return false;
+    };
+    while (!text.empty()) {
+        lineNo++;
+        const auto nl = text.find('\n');
+        if (nl == std::string_view::npos) return fail("truncated (no final newline)");
+        const std::string_view line = text.substr(0, nl);
+        text.remove_prefix(nl + 1);
+        if (lineNo == 1) {
+            if (line != "lightmusic-session 1") return fail("not a lightmusic session (version 1)");
+            continue;
+        }
+        const auto sp = line.find(' ');
+        const std::string_view key = line.substr(0, sp), val = sp == std::string_view::npos ? std::string_view() : line.substr(sp + 1);
+        std::int64_t v = 0;
+        if (key == "entry") {
+            if (s.entries.size() >= kMaxSessionEntries) return fail("too many entries");
+            std::string e;
+            if (val.empty() || !unescapeEntry(val, e)) return fail("bad entry");
+            s.entries.push_back(std::move(e));
+        } else if (key == "ctx" && ctx < 0) {
+            if (!parseInt64(val, ctx) || ctx < 0) return fail("bad ctx");
+        } else if (key == "index" && !sawIndex) {
+            if (!parseInt64(val, v) || v < -1 || v > static_cast<std::int64_t>(kMaxSessionEntries)) return fail("bad index");
+            s.index = static_cast<int>(v);
+            sawIndex = true;
+        } else if (key == "position_ms" && !sawPos) {
+            if (!parseInt64(val, v) || v < 0 || v > std::int64_t{1} << 40) return fail("bad position_ms");
+            s.positionMs = v;
+            sawPos = true;
+        } else if (key == "upnext" && !sawUp) {
+            sawUp = true;
+            std::string_view rest = val;
+            while (!rest.empty()) {
+                const auto b = rest.find(' ');
+                if (!parseInt64(rest.substr(0, b), v) || v < 0 || v >= static_cast<std::int64_t>(kMaxSessionEntries))
+                    return fail("bad upnext entry");
+                if (s.upNext.size() >= kMaxSessionEntries) return fail("upnext too long");
+                s.upNext.push_back(static_cast<int>(v));
+                rest = b == std::string_view::npos ? std::string_view() : rest.substr(b + 1);
+            }
+        } else {
+            return fail(std::format("unexpected '{}'", key));
+        }
+    }
+    auto bad = [&](std::string_view why) {
+        err = std::string(why);
+        return false;
+    };
+    if (ctx < 0 || !sawIndex || !sawPos || !sawUp) return bad("missing ctx/index/position_ms/upnext");
+    if (static_cast<std::size_t>(ctx) > s.entries.size()) return bad("ctx beyond the entries");
+    s.ctx = static_cast<std::size_t>(ctx);
+    if (s.index >= static_cast<int>(s.entries.size())) return bad("index beyond the entries");
+    for (int e : s.upNext)
+        if (static_cast<std::size_t>(e) >= s.entries.size()) return bad("upnext entry beyond the entries");
+    out = std::move(s);
+    return true;
+}
+
+void compactSession(Session &s) {
+    s.ctx = std::min(s.ctx, s.entries.size());
+    std::vector<int> map(s.entries.size(), -1);
+    for (std::size_t i = 0; i < s.ctx; i++) map[i] = static_cast<int>(i);
+    std::vector<std::string> extra;
+    auto take = [&](int e) {
+        if (e < 0 || static_cast<std::size_t>(e) >= s.entries.size() || map[static_cast<std::size_t>(e)] >= 0) return;
+        map[static_cast<std::size_t>(e)] = static_cast<int>(s.ctx + extra.size());
+        extra.push_back(std::move(s.entries[static_cast<std::size_t>(e)]));
+    };
+    take(s.index);
+    for (int e : s.upNext) take(e);
+    s.entries.resize(s.ctx);
+    for (auto &e : extra) s.entries.push_back(std::move(e));
+    std::vector<int> up;
+    for (int e : s.upNext)
+        if (e >= 0 && static_cast<std::size_t>(e) < map.size()) up.push_back(map[static_cast<std::size_t>(e)]);
+    s.upNext = std::move(up);
+    if (s.index >= 0) s.index = static_cast<std::size_t>(s.index) < map.size() ? map[static_cast<std::size_t>(s.index)] : -1;
+    if (s.index < 0) s.positionMs = 0;
+}
+
+std::string sessionPath(const std::string &home, const char *xdgStateHome) {
+    if (xdgStateHome && *xdgStateHome == '/') return std::string(xdgStateHome) + "/lightmusic/session";
+    return home + "/.local/state/lightmusic/session";
 }
 
 StatusLine::Clock::duration StatusLine::lifetime(Level level) {

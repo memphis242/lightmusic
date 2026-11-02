@@ -161,7 +161,7 @@ TrackInfo infoFor(const std::string &path, const Decoder &d) {
 struct Cmd {
     enum Kind {
         Enqueue, Clear, Play, PlayIndex, Pause, Toggle, Stop, Next, Prev, Seek, Volume, SetRepeat, SetShuffle,
-        QueueAdd, QueueAddEntries, QueueMove, QueueRemove, QueueClear, StopAfter, Barrier
+        QueueAdd, QueueAddEntries, QueueMove, QueueRemove, QueueClear, StopAfter, Cue, Barrier
     } kind;
     std::vector<std::string> paths{};
     int index = 0;
@@ -374,7 +374,7 @@ struct Player::Impl {
     void push(Cmd c) {
         bool supersedes = false;
         switch (c.kind) {
-        case Cmd::Clear: case Cmd::PlayIndex: case Cmd::Stop: case Cmd::Next: case Cmd::Prev: case Cmd::Seek:
+        case Cmd::Clear: case Cmd::PlayIndex: case Cmd::Cue: case Cmd::Stop: case Cmd::Next: case Cmd::Prev: case Cmd::Seek:
             supersedes = true;
             break;
         default: break;
@@ -859,7 +859,8 @@ struct Player::Impl {
             if (status == Status::Paused) resume();
             else if (status == Status::Stopped) startAt(startIndex(), 0, Status::Playing);
             break;
-        case Cmd::PlayIndex: {
+        case Cmd::PlayIndex:
+        case Cmd::Cue: {
             Pick pk{c.index, c.index, false, false};
             {
                 std::lock_guard lk(dm);
@@ -869,7 +870,8 @@ struct Player::Impl {
                     pk.user = true;
                 }
             }
-            startAt(pk, 0, Status::Playing);
+            if (c.kind == Cmd::Cue) startAt(pk, 0, Status::Paused, std::max(0.0, c.value));
+            else startAt(pk, 0, Status::Playing);
             break;
         }
         case Cmd::Pause:
@@ -1464,6 +1466,9 @@ void Player::enqueue(std::vector<std::string> paths) { impl_->push(Cmd{Cmd::Enqu
 void Player::clearQueue() { impl_->push(Cmd{Cmd::Clear}); }
 void Player::play() { impl_->push(Cmd{Cmd::Play}); }
 void Player::playIndex(int index) { impl_->push(Cmd{Cmd::PlayIndex, {}, index}); }
+void Player::cueIndex(int index, double seconds) {
+    impl_->push(Cmd{Cmd::Cue, {}, index, std::isfinite(seconds) ? seconds : 0.0});
+}
 void Player::pause() { impl_->push(Cmd{Cmd::Pause}); }
 void Player::togglePause() { impl_->push(Cmd{Cmd::Toggle}); }
 void Player::stop() { impl_->push(Cmd{Cmd::Stop}); }
