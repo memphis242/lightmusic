@@ -2162,7 +2162,7 @@ int run(int argc, char **argv) {
                 std::string err;
                 const std::string dir = sessionFile.substr(0, sessionFile.rfind('/'));
                 std::error_code ec;
-                std::filesystem::create_directories(dir, ec); // best effort; the write reports
+                (void)std::filesystem::create_directories(dir, ec); // best effort: the write below reports
                 if (!lm::config::writeFileAtomic(sessionFile, lmtui::formatSession(out), 0600, &err))
                     sessionSaveErr = err;
             }
