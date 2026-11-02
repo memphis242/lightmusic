@@ -96,6 +96,7 @@ enum class EventType {
                    // fails to open or stops on a decode error is reported, then skipped)
     Log,           // informational (device info, reroutes)
     ModeChanged,   // repeat, shuffle or stop-after-current changed
+    DeviceChanged, // the output moved or went away and playback paused / resumed (message set)
 };
 const char *eventName(EventType t);
 
@@ -113,6 +114,13 @@ struct PlayerConfig {
     GainMode replayGain = GainMode::Off; // apply ReplayGain (+preamp) when tagged
     float replayGainPreampDb = 0.0f;     // clamped to [-15, 15] dB
     bool replayGainPreventClipping = true; // cap the gain by the tagged peak (see replayGainFactor)
+    // When the output goes away while playing (the stream is rerouted to another device,
+    // e.g. headphones unplugged or Bluetooth dropped, or the device stops), pause instead
+    // of carrying on there (DeviceChanged / Error event). With resumeOnDeviceReturn, a
+    // later reroute while still paused by it (the device is back) resumes; any play,
+    // pause or stop by the user cancels that.
+    bool pauseOnDeviceLoss = true;
+    bool resumeOnDeviceReturn = false;
     // Silence between tracks that follow each other naturally (one ends, the queue
     // continues): exactly round(gapSeconds * device rate) zero frames. 0 = sample-exact
     // gapless. Not inserted after the last track or on next/prev/seek/playIndex jumps.
@@ -201,6 +209,10 @@ public:
     // applies to the first track not yet fully decoded: armed in the last
     // PlayerConfig::ringSeconds of a track, it stops after the next one.
     void setStopAfterCurrent(bool on);
+    // Test hook: acts as if the audio backend reported a reroute (the stream moved to
+    // another device) or an unexpected device stop. The Null backend reports neither.
+    enum class DeviceEvent { Rerouted, Lost };
+    void simulateDeviceEvent(DeviceEvent e);
 
     PlayerState state() const;
     // Blocks until every command issued before it has been handled. From an onEvent

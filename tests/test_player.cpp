@@ -12,6 +12,7 @@
 //    (context or user queue), one-shot, cleared by clearQueue, disarmed by false.
 //  - cueIndex: opened paused at a position (resume), NaN and past-the-end handled.
 //  - ReplayGain modes on a tagged file: album/track gain, preamp clamp, peak cap.
+//  - device loss (simulated reroute / stop): pause, optional resume, user override.
 #include "common.hpp"
 #include "lm/player.hpp"
 #include "lm/source.hpp"
@@ -1265,6 +1266,86 @@ static void replayGainModes(const std::string &dir) {
     }
 }
 
+// Output device loss (simulated: the Null backend reports none): pause on a reroute or
+// an unexpected stop, resume on the return only when asked and not overridden.
+static void deviceLoss(const std::string &dir) {
+    const std::string f = dir + "/device.flac";
+    CHECK(lmtest::makeTone(f, 44100, 44100 * 20, 440, "-c:a flac -f flac"));
+    auto waitStatus = [](lm::Player &p, lm::Status want) {
+        for (int i = 0; i < 300 && p.state().status != want; i++) std::this_thread::sleep_for(10ms);
+        return p.state().status == want;
+    };
+    using DE = lm::Player::DeviceEvent;
+    {
+        Recorder rec;
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.onEvent = std::ref(rec);
+        lm::Player p(cfg); // defaults: pause on loss, no resume
+        p.enqueue({f});
+        p.play();
+        CHECK(waitStatus(p, lm::Status::Playing));
+        p.simulateDeviceEvent(DE::Rerouted);
+        CHECK(waitStatus(p, lm::Status::Paused));
+        CHECK(rec.waitFor(lm::EventType::DeviceChanged, 5s));
+        p.simulateDeviceEvent(DE::Rerouted); // back: no resume by default
+        p.sync();
+        std::this_thread::sleep_for(100ms);
+        CHECK(p.state().status == lm::Status::Paused);
+        CHECK_EQ(rec.count(lm::EventType::DeviceChanged), 1u);
+        p.play();
+        CHECK(waitStatus(p, lm::Status::Playing));
+        p.simulateDeviceEvent(DE::Lost); // the device stops: reopened, paused
+        CHECK(waitStatus(p, lm::Status::Paused));
+        CHECK(rec.waitFor(lm::EventType::Error, 5s));
+        p.play(); // the reopened device works
+        CHECK(waitStatus(p, lm::Status::Playing));
+        const double at = p.state().position;
+        std::this_thread::sleep_for(300ms);
+        CHECK(p.state().position > at);
+    }
+    {
+        Recorder rec;
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.onEvent = std::ref(rec);
+        cfg.resumeOnDeviceReturn = true;
+        lm::Player p(cfg);
+        p.enqueue({f});
+        p.play();
+        CHECK(waitStatus(p, lm::Status::Playing));
+        p.simulateDeviceEvent(DE::Rerouted);
+        CHECK(waitStatus(p, lm::Status::Paused));
+        p.simulateDeviceEvent(DE::Rerouted); // the device is back
+        CHECK(waitStatus(p, lm::Status::Playing));
+        CHECK(rec.waitFor(lm::EventType::DeviceChanged, 5s, 2));
+        // Gone again, then the user pauses: the return no longer resumes.
+        p.simulateDeviceEvent(DE::Rerouted);
+        CHECK(waitStatus(p, lm::Status::Paused));
+        p.pause();
+        p.simulateDeviceEvent(DE::Rerouted);
+        p.sync();
+        std::this_thread::sleep_for(100ms);
+        CHECK(p.state().status == lm::Status::Paused);
+        // Paused by the user, a reroute does nothing either.
+        CHECK_EQ(rec.count(lm::EventType::DeviceChanged), 3u);
+    }
+    {
+        lm::PlayerConfig cfg;
+        cfg.nullBackend = true;
+        cfg.pauseOnDeviceLoss = false; // the old behaviour: carry on
+        lm::Player p(cfg);
+        p.enqueue({f});
+        p.play();
+        CHECK(waitStatus(p, lm::Status::Playing));
+        p.simulateDeviceEvent(DE::Rerouted);
+        p.simulateDeviceEvent(DE::Lost);
+        p.sync();
+        std::this_thread::sleep_for(200ms);
+        CHECK(p.state().status == lm::Status::Playing);
+    }
+}
+
 int main() {
     if (!lmtest::haveFfmpeg()) {
         std::println("test_player: ffmpeg not found, skipping");
@@ -1286,5 +1367,6 @@ int main() {
     userQueue(dir);
     stopAfterCurrent(dir);
     replayGainModes(dir);
+    deviceLoss(dir);
     return lmtest::finish("test_player");
 }

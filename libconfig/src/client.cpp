@@ -34,6 +34,8 @@ const Schema<ClientSettings> &clientSchema() {
                          {{"off", ReplayGain::Off}, {"track", ReplayGain::Track}, {"album", ReplayGain::Album}}),
             floatField<S>("playback.replaygain_preamp_db", &S::replayGainPreampDb, -15.0, 15.0),
             boolField<S>("playback.replaygain_prevent_clipping", &S::replayGainPreventClipping),
+            boolField<S>("playback.pause_on_device_loss", &S::pauseOnDeviceLoss),
+            boolField<S>("playback.resume_on_device_return", &S::resumeOnDeviceReturn),
             floatField<S>("playback.gap_seconds", &S::gapSeconds, 0.0, 30.0, true),
             enumField<S>("playback.repeat", &S::repeat,
                          {{"off", RepeatMode::Off}, {"all", RepeatMode::All}, {"one", RepeatMode::One}}, true),

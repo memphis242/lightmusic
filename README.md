@@ -122,6 +122,15 @@ and shuffle come back from `cfg.yaml` as before. `--no-resume` (or
 `ui.resume_session: false`) starts fresh; a damaged session file is reported on stderr
 and ignored. Files or folders on the command line always start a new list.
 
+**Output device loss.** When the stream is moved to another device while playing
+(headphones unplugged, a Bluetooth headset dropping: PipeWire/PulseAudio reroute it) or
+the device stops, playback pauses and the status line says so
+(`playback.pause_on_device_loss`, default on; off restores the old behaviour of carrying
+on wherever the sound server put the stream). With `playback.resume_on_device_return:
+true`, the next reroute while still paused by it (the device came back) resumes; pausing,
+playing or stopping yourself in between cancels that. Without such notifications from the
+backend (e.g. ALSA direct, the Null backend), nothing changes.
+
 **Status line.** Errors (red), warnings (yellow) and confirmations appear in the bottom
 line and expire on their own: confirmations after 3 s, warnings after 6 s, errors after
 10 s, or sooner when a newer message replaces them. A track change no longer wipes the
@@ -228,7 +237,9 @@ ctest --test-dir build --output-on-failure
   like an end of queue, play() resumes with the next context or user-queue track,
   one-shot, disarmed, cleared by clearQueue, dropped by playIndex), cueIndex (opened
   paused at a position; NaN, past the end), and ReplayGain on a tagged FLAC (album and
-  track gain, preamp clamp, the album peak capping the gain, measured at the device). Skipped without
+  track gain, preamp clamp, the album peak capping the gain, measured at the device), and
+  output device loss (simulated reroute and stop: paused, the device reopened, resume on
+  return only when enabled and not after a user pause, the old carry-on behaviour). Skipped without
   `ffmpeg`.
 - `test_config`: libconfig: the ReplayGain preamp/limiter keys (defaults, values, range),
   the `keys:` section (scalar/list/empty, its place, a scalar or
@@ -829,6 +840,9 @@ playback:
                                     # the track gain)
   replaygain_preamp_db: 0           # -15..15 dB added to the tagged gain
   replaygain_prevent_clipping: true # limiter: cap the gain by the tagged peak
+  pause_on_device_loss: true        # pause when the output goes away (headphones
+                                    # unplugged, Bluetooth dropped, device stopped)
+  resume_on_device_return: false    # ... and resume when the stream moves back
   gap_seconds: 0                    # silence between tracks, 0..30 (hot, from the
                                     # next track change); 0 = sample-exact gapless
   repeat: off                       # off | all | one (hot; also the r key)
@@ -860,6 +874,8 @@ keys:                               # (hot) action: key or [keys]; replaces that
 | `playback.replaygain` | `--rg` (= `track`), `--rg-album` (= `album`) | off | restart |
 | `playback.replaygain_preamp_db` | – | 0 | restart |
 | `playback.replaygain_prevent_clipping` | – | true | restart |
+| `playback.pause_on_device_loss` | – | true | restart |
+| `playback.resume_on_device_return` | – | false | restart |
 | `playback.gap_seconds` | `--gap SECONDS` | 0 (gapless) | yes (next transition) |
 | `playback.repeat` | – (`r` key) | off | yes |
 | `playback.shuffle` | – (`s` key) | false | yes |
