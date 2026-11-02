@@ -27,10 +27,36 @@ namespace lmtui {
 // Expands command-line arguments into a play queue. Files are kept as given (the core
 // sniffs the format by magic bytes, so an explicitly named file is never filtered).
 // Directories are scanned recursively, keeping files with an audio extension, sorted
-// naturally by path; symlinks to directories are not followed. Argument order is
-// preserved. Missing arguments and directory read errors are reported in `errors`
+// naturally by path; symlinks to directories are not followed. A file argument named
+// *.m3u / *.m3u8 is expanded to its entries (parseM3u). Argument order is preserved. Missing arguments and directory read errors are reported in `errors`
 // (with the system's message); an error in one subdirectory does not stop the scan.
 std::vector<std::string> collectTracks(const std::vector<std::string> &args, std::vector<std::string> *errors);
+
+// Playlists (M3U / extended M3U, UTF-8). parseM3u: one entry per non-comment line;
+// relative paths are resolved against `baseDir` (the playlist's directory), file://
+// URLs are decoded, lm:// URIs kept; other URLs (http://...) are reported in `errors` and
+// skipped. #EXTINF:<seconds>,<title> gives the next entry's length and title. CR/LF,
+// a UTF-8 BOM and blank lines are fine. At most kMaxPlaylistEntries entries.
+struct M3uEntry {
+    std::string path;
+    std::string title;      // "" if none
+    std::int64_t durMs = 0; // 0 if unknown
+    bool operator==(const M3uEntry &) const = default;
+};
+constexpr std::size_t kMaxPlaylistEntries = 100000;
+[[nodiscard]] std::vector<M3uEntry> parseM3u(std::string_view text, const std::string &baseDir,
+                                             std::vector<std::string> *errors);
+// #EXTM3U with #EXTINF lines; paths written as given (newlines are not representable:
+// such entries are skipped and counted in `skipped`).
+[[nodiscard]] std::string formatM3u(const std::vector<M3uEntry> &entries, std::size_t *skipped = nullptr);
+// Reads and parses a playlist file (at most 16 MiB). False with `err` if unreadable.
+[[nodiscard]] bool readM3u(const std::string &path, std::vector<M3uEntry> &out, std::vector<std::string> *errors,
+                           std::string &err);
+[[nodiscard]] bool isPlaylistPath(std::string_view path); // .m3u / .m3u8, case-insensitive
+// A saved playlist's name: 1..100 bytes, no '/', no leading '.', no control characters.
+[[nodiscard]] bool validPlaylistName(std::string_view name, std::string &err);
+// $XDG_DATA_HOME/lightmusic/playlists (absolute only), else <home>/.local/share/lightmusic/playlists.
+[[nodiscard]] std::string playlistDir(const std::string &home, const char *xdgDataHome);
 
 // One directory level for the folder browser: subdirectories first, then files with an
 // audio extension, each group in natural order. Hidden entries (".name") are skipped;

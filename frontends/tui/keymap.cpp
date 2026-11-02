@@ -262,7 +262,8 @@ std::vector<std::string> Keymap::helpLines() const {
     section(Context::Global, "");
     section(Context::Queue, "in the queue pane:");
     section(Context::Browser, "in the browser (also q / Q queue, P save offline):");
-    out.emplace_back(":q           quit; :seek 1:30, :seek 50%, :vol 80, :sleep 30, :marks, :delmarks, :messages, :<action>");
+    out.emplace_back(":q           quit; :seek 1:30, :seek 50%, :vol 80, :sleep 30, :save/:load NAME,");
+    out.emplace_back("             :export/:import PATH, :marks, :delmarks, :messages, :<action>");
     return out;
 }
 
@@ -288,6 +289,16 @@ CommandLine parseCommandLine(std::string_view text) {
         if (!arg.empty()) return fail(verb + " takes no argument");
         r.kind = CommandLine::Run;
         r.cmd = Command::Quit;
+        return r;
+    }
+    if (verb == "save" || verb == "load" || verb == "export" || verb == "import") {
+        if (arg.empty()) return fail(verb + (verb == "save" || verb == "load" ? " needs a playlist name" : " needs a file path"));
+        r.kind = verb == "save" ? CommandLine::Save : verb == "load" ? CommandLine::Load : verb == "export" ? CommandLine::Export : CommandLine::Import;
+        r.arg = arg;
+        if ((r.kind == CommandLine::Save || r.kind == CommandLine::Load)) {
+            std::string err;
+            if (!validPlaylistName(arg, err)) return fail(err);
+        }
         return r;
     }
     if (verb == "marks" || verb == "delmarks") {

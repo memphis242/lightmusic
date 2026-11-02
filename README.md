@@ -139,6 +139,18 @@ folders: newest files) and Random album (an album of the library or a folder, pi
 random), each opened as a list of tracks (enter plays from a track, `o` plays it all,
 `q`/`Q` queue it), at most 500 rows.
 
+**Playlists** (M3U / M3U8). `:save NAME` stores the list (not the user queue) as
+`$XDG_DATA_HOME/lightmusic/playlists/NAME.m3u8` (else `~/.local/share/...`), with
+`#EXTINF` lengths and labels; `:load NAME` opens it as the list, and the browser's top level
+has **Playlists** with each saved one (enter plays from a track, `o` plays it all).
+`:export PATH` / `:import PATH` write and read any M3U file (`~/` expanded), and a `.m3u`
+/ `.m3u8` file on the command line is expanded to its tracks. Reading: one entry per
+non-comment line, relative paths against the playlist's folder, `file://` URLs decoded,
+server URIs (`lm://server/track/N`) kept when the library knows them; other URLs
+(`http://...`) and missing files are skipped and reported; a UTF-8 BOM and CRLF are fine;
+at most 100000 entries, 16 MiB. Paths containing a newline cannot be written to M3U and
+are skipped with a note.
+
 **A–B repeat and bookmarks.** `[` sets A at the current position, `]` sets B (more than
 1 s after A; without A the loop starts at 0:00) and loops A..B on this track until `\`
 clears it or another track plays; the mode area shows `A-B 0:30–0:45`. The loop runs on a
@@ -312,7 +324,10 @@ ctest --test-dir build --output-on-failure
   round trip, 10 malformed files refused, normalisation), play stats (the counting rule,
   counts, favourites, forgetting an unfavourited never-played track, most/recently
   played order, round trip with tabs and newlines in paths, 11 malformed files refused),
-  time/volume formatting.
+  playlists (M3U parsing: BOM, CRLF, `#EXTINF`, relative/absolute paths, `file://`
+  decoding, server URIs, unsupported URLs reported; writing with skipped entries and a
+  round trip; names; the `:save/:load/:export/:import` commands; a playlist expanded by
+  `collectTracks`), time/volume formatting.
 - `test_server_range`: Range header decisions (suffix, open-ended, past EOF, reversed,
   multiple ranges, overflow, empty file).
 - `test_server_auth`: SHA-256 test vectors, key generation, constant-time compare, the
@@ -344,7 +359,9 @@ ctest --test-dir build --output-on-failure
   pausing with the volume restored, A–B repeat looping instead of running past B,
   bookmarks saved and jumped to in a later run (`:marks`, `:delmarks`), a play counted
   and a favourite saved (stats file 0600) and shown in the Favourites and Most played
-  smart lists, and bad
+  smart lists, playlists (`:save` writes M3U8, `:export`, a missing `:import` reported,
+  a relative playlist on the command line with an unsupported URL, `:load`, the browser's
+  Playlists level), and bad
   bindings (unknown key, one key on two actions) refused with exit status 2; with a temp `XDG_CONFIG_HOME`:
   `cfg.yaml`'s volume applied at start, a live edit (volume hot-applied, replaygain
   reported as restart-required), and a group-writable file / an `api_key` refused;

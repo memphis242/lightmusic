@@ -83,6 +83,13 @@ std::vector<std::string> collectTracks(const std::vector<std::string> &args, std
             continue;
         }
         if (!fs::is_directory(st)) {
+            if (isPlaylistPath(arg)) {
+                std::vector<M3uEntry> pl;
+                std::string err;
+                if (!readM3u(arg, pl, errors, err)) report(err);
+                for (auto &e : pl) out.push_back(std::move(e.path));
+                continue;
+            }
             out.push_back(arg);
             continue;
         }
@@ -802,6 +809,153 @@ std::string statsPath(const std::string &sessionPath) {
 std::string sessionPath(const std::string &home, const char *xdgStateHome) {
     if (xdgStateHome && *xdgStateHome == '/') return std::string(xdgStateHome) + "/lightmusic/session";
     return home + "/.local/state/lightmusic/session";
+}
+
+bool isPlaylistPath(std::string_view path) {
+    auto ends = [&](std::string_view ext) {
+        if (path.size() < ext.size()) return false;
+        for (std::size_t i = 0; i < ext.size(); i++)
+            if (lowerAscii(path[path.size() - ext.size() + i]) != ext[i]) return false;
+        return true;
+    };
+    return ends(".m3u") || ends(".m3u8");
+}
+
+namespace {
+// file:///a%20b -> /a b (percent-decoded; false if malformed or not an absolute path).
+bool fileUrlPath(std::string_view url, std::string &out) {
+    url.remove_prefix(7); // "file://"
+    if (url.starts_with("localhost/")) url.remove_prefix(9);
+    if (url.empty() || url[0] != '/') return false;
+    out.clear();
+    for (std::size_t i = 0; i < url.size(); i++) {
+        if (url[i] != '%') {
+            out += url[i];
+            continue;
+        }
+        if (i + 2 >= url.size()) return false; // needs two hex digits
+        int v = 0;
+        for (int k = 1; k <= 2; k++) {
+            const char c = url[i + static_cast<std::size_t>(k)];
+            const int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+            if (d < 0) return false;
+            v = v * 16 + d;
+        }
+        if (v == 0) return false;
+        out += static_cast<char>(v);
+        i += 2;
+    }
+    return true;
+}
+} // namespace
+
+std::vector<M3uEntry> parseM3u(std::string_view text, const std::string &baseDir, std::vector<std::string> *errors) {
+    std::vector<M3uEntry> out;
+    if (text.starts_with("\xEF\xBB\xBF")) text.remove_prefix(3);
+    M3uEntry pending;
+    std::size_t lineNo = 0;
+    while (!text.empty() && out.size() < kMaxPlaylistEntries) {
+        lineNo++;
+        const auto nl = text.find('\n');
+        std::string_view line = text.substr(0, nl);
+        text = nl == std::string_view::npos ? std::string_view() : text.substr(nl + 1);
+        if (line.ends_with('\r')) line.remove_suffix(1);
+        if (line.empty()) continue;
+        if (line[0] == '#') {
+            if (line.starts_with("#EXTINF:")) {
+                const std::string_view info = line.substr(8);
+                const auto comma = info.find(',');
+                std::int64_t secs = 0;
+                const std::string_view num = info.substr(0, comma);
+                const auto r = std::from_chars(num.data(), num.data() + num.size(), secs);
+                pending.durMs = r.ec == std::errc() && secs > 0 && secs < (std::int64_t{1} << 31) ? secs * 1000 : 0;
+                pending.title = comma == std::string_view::npos ? std::string() : std::string(info.substr(comma + 1));
+            }
+            continue;
+        }
+        std::string path;
+        if (line.starts_with("file://")) {
+            if (!fileUrlPath(line, path)) {
+                if (errors) errors->push_back(std::format("playlist line {}: bad file URL", lineNo));
+                pending = {};
+                continue;
+            }
+        } else if (line.starts_with("lm://") || line[0] == '/') {
+            path = std::string(line);
+        } else if (line.find("://") != std::string_view::npos) {
+            if (errors) errors->push_back(std::format("playlist line {}: unsupported URL {}", lineNo, line));
+            pending = {};
+            continue;
+        } else {
+            path = (baseDir.empty() || baseDir == "/" ? baseDir : baseDir + "/") + std::string(line);
+        }
+        pending.path = std::move(path);
+        out.push_back(std::move(pending));
+        pending = {};
+    }
+    return out;
+}
+
+std::string formatM3u(const std::vector<M3uEntry> &entries, std::size_t *skipped) {
+    std::string r = "#EXTM3U\n";
+    std::size_t skip = 0;
+    for (const auto &e : entries) {
+        if (e.path.empty() || e.path.find_first_of("\r\n") != std::string::npos) {
+            skip++;
+            continue;
+        }
+        std::string title = e.title;
+        std::replace(title.begin(), title.end(), '\n', ' ');
+        std::replace(title.begin(), title.end(), '\r', ' ');
+        std::format_to(std::back_inserter(r), "#EXTINF:{},{}\n{}\n", e.durMs > 0 ? e.durMs / 1000 : -1, title, e.path);
+    }
+    if (skipped) *skipped = skip;
+    return r;
+}
+
+bool readM3u(const std::string &path, std::vector<M3uEntry> &out, std::vector<std::string> *errors, std::string &err) {
+    constexpr std::uintmax_t kMax = 16u << 20;
+    std::error_code ec;
+    const auto size = fs::file_size(path, ec);
+    if (ec) {
+        err = path + ": " + ec.message();
+        return false;
+    }
+    if (size > kMax) {
+        err = path + ": playlist larger than 16 MiB";
+        return false;
+    }
+    std::FILE *f = std::fopen(path.c_str(), "rbe");
+    if (!f) {
+        err = path + ": " + std::strerror(errno);
+        return false;
+    }
+    std::string text(static_cast<std::size_t>(size), '\0');
+    const std::size_t got = std::fread(text.data(), 1, text.size(), f);
+    const bool readErr = std::ferror(f) != 0;
+    (void)std::fclose(f); // read-only: nothing to flush
+    if (readErr) {
+        err = path + ": read error";
+        return false;
+    }
+    text.resize(got);
+    out = parseM3u(text, fs::path(path).parent_path().string(), errors);
+    return true;
+}
+
+bool validPlaylistName(std::string_view name, std::string &err) {
+    if (name.empty() || name.size() > 100) err = "a playlist name has 1 to 100 characters";
+    else if (name.find('/') != std::string_view::npos) err = "a playlist name cannot contain '/'";
+    else if (name[0] == '.') err = "a playlist name cannot start with '.'";
+    else if (std::any_of(name.begin(), name.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20 || c == 0x7f; }))
+        err = "a playlist name cannot contain control characters";
+    else return true;
+    return false;
+}
+
+std::string playlistDir(const std::string &home, const char *xdgDataHome) {
+    if (xdgDataHome && *xdgDataHome == '/') return std::string(xdgDataHome) + "/lightmusic/playlists";
+    return home + "/.local/share/lightmusic/playlists";
 }
 
 StatusLine::Clock::duration StatusLine::lifetime(Level level) {

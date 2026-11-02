@@ -70,11 +70,12 @@ private:
 // `messages` (`mes`) shows the recent status messages; `sleep 30` (minutes), `sleep 45m`,
 // `sleep 1h`, `sleep 1h30`, `sleep 1:30` (h:mm), `sleep 90s` set the sleep timer (up to 24 h),
 // `sleep off` cancels it, `sleep` alone shows it; `marks` lists the playing track's
-// bookmarks, `delmarks` deletes them; any
+// bookmarks, `delmarks` deletes them; `save NAME` / `load NAME` store and open a saved
+// playlist, `export PATH` / `import PATH` write and read an M3U file; any
 // action name runs that action; `seek POS` (m:ss, h:mm:ss, seconds, N%; a leading + or -
 // is relative) and `volume N` / `vol N` (0..150 %) take an argument.
 struct CommandLine {
-    enum Kind { Error, Run, Seek, Volume, Messages, Sleep, Marks, DelMarks } kind = Error;
+    enum Kind { Error, Run, Seek, Volume, Messages, Sleep, Marks, DelMarks, Save, Load, Export, Import } kind = Error;
     Command cmd = Command::None; // Run
     Context ctx = Context::Global; // Run: where the action applies
     std::string error;           // Error: shown on the status line
@@ -86,6 +87,7 @@ struct CommandLine {
     int volume = 0; // Volume: percent
     // Sleep: seconds until playback fades out and pauses; 0 = off, -1 = show the timer.
     std::int64_t sleepSec = -1;
+    std::string arg; // Save/Load: a playlist name; Export/Import: a file path
 };
 [[nodiscard]] CommandLine parseCommandLine(std::string_view text);
 
