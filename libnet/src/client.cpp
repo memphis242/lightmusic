@@ -544,9 +544,9 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
 
     // Evicts LRU unpinned, unused entries until `need` more unpinned bytes fit. Pinned
     // bytes are not counted. cm held.
-    bool makeRoomLocked(std::int64_t need, std::int64_t exclude) {
+    bool makeRoomLocked(std::int64_t need, std::int64_t exclude) { return makeRoomLocked(need, exclude, cap()); }
+    bool makeRoomLocked(std::int64_t need, std::int64_t exclude, std::int64_t limit) {
         std::int64_t usage = db.usage() - db.pinnedUsage();
-        const auto limit = cap();
         if (usage + need <= limit) return true;
         for (const auto &row : db.entries()) { // oldest access first
             if (usage + need <= limit) break;
@@ -735,7 +735,12 @@ struct Client::Core : std::enable_shared_from_this<Client::Core> {
             if (row && (!t || t->etag != row->etag || !strongEtag(row->etag))) removeEntryLocked(id);
             // A cap shrink still waiting out capTrimDelayMs is trimmed by the loop when the
             // delay ends (or never, if the cap is raised first): do not evict early here.
-            if (!trimAt && shrinksInFlight.load() == 0) makeRoomLocked(0, -1);
+            // setCacheSettings() announces a shrink (shrinksInFlight) before it lowers the
+            // cap, so read the cap first: if the check then sees no shrink, that cap is
+            // not a lowered one. (Checking first and reading the cap inside
+            // makeRoomLocked let a shrink land in between and evict at once.)
+            const auto limit = cap();
+            if (!trimAt && shrinksInFlight.load() == 0) makeRoomLocked(0, -1, limit);
         });
     }
 

@@ -32,17 +32,20 @@ fail=0
 # has LOG TEXT: TEXT on the screen log with the colour/attribute escapes removed.
 ESC=$(printf '\033')
 has() { sed "s/$ESC\[[0-9;?]*[A-Za-z]//g" "$1" | grep -q -- "$2"; }
-# wait_in LOG TEXT: poll the pty log until TEXT appears (10 s).
-wait_in() { n=200; while [ $n -gt 0 ] && ! has "$1" "$2"; do sleep 0.05; n=$((n - 1)); done
+# wait_in LOG TEXT: poll the pty log until TEXT appears (30 s deadline, by the clock: a
+# loaded machine running the TUI under TSan can take well over 10 s for a step).
+wait_in() { end=$(( $(date +%s) + 30 ))
+            while [ "$(date +%s)" -lt $end ] && ! has "$1" "$2"; do sleep 0.05; done
             has "$1" "$2" || echo "timeout waiting for '$2'" >&2; }
 tui() { # LOG ARGS...: runs the TUI with keys from stdin
     log=$1; shift
     LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
-        timeout 40 script -qfec "$BIN --null $*" "$log" >/dev/null 2>&1
+        timeout 150 script -qfec "$BIN --null $*" "$log" >/dev/null 2>&1
 }
 expect() { # LOG TEXT WHAT
-    has "$1" "$2" || { echo "FAIL: $3 ('$2' never shown)"; fail=1; }
+    has "$1" "$2" || { echo "FAIL: $3 ('$2' never shown)"; fail=1; failed_logs="$failed_logs $1"; }
 }
+failed_logs=
 
 # ---- local folders
 L=$TMP/log1; : > "$L"
@@ -101,7 +104,10 @@ if [ -n "$SRV" ]; then
     kill $SPID; wait $SPID 2>/dev/null; SPID=
     # Offline: the mirror still browses; cached tracks show as cached.
     O=$TMP/log3; : > "$O"
-    { wait_in "$O" "offline"
+    # Wait for the drawn footer: the "...; using the offline mirror" line printed before
+    # the UI starts also says "offline", and a key sent then is discarded when the TUI
+    # switches the terminal to raw mode (TCSAFLUSH).
+    { wait_in "$O" "offline · cache"
       printf b; wait_in "$O" "Library (server)"
       printf '\r'; wait_in "$O" "Library: artists"
       printf '\r'; wait_in "$O" "cached"
@@ -117,5 +123,11 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f"; cat "$f"; fail=1
 done
+# Self-describing failures: the last screen text of each log with a missing step.
+for f in $(printf '%s\n' $failed_logs | sort -u); do
+    echo "---- last screen text of $(basename "$f"):"
+    sed "s/$ESC\[[0-9;?]*[A-Za-z]//g" "$f" | tr '\r' '\n' | grep -v '^[[:space:]]*$' | tail -n 30
+done
+[ -n "$SRV" ] && [ $fail -ne 0 ] && { echo "---- server log:"; tail -n 20 "$TMP/srv.log"; }
 [ $fail -eq 0 ] && echo "test_tui_browse: OK"
 exit $fail

@@ -45,7 +45,7 @@ if(TARGET lightmusic)
   else()
     add_test(NAME test_tui_browse COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/test_tui_browse.sh $<TARGET_FILE:lightmusic>)
   endif()
-  set_tests_properties(test_tui_browse PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+  set_tests_properties(test_tui_browse PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 600)
 endif()
 
 if(TARGET lightmusicd)

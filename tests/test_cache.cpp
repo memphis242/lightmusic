@@ -119,20 +119,28 @@ void crashConsistency() {
     FakeServer srv;
     const std::string data = FakeServer::randomBytes(6 << 20, 7);
     srv.setTrack(1, data, "\"v1\"");
-    srv.bytesPerSec = 1 << 20; // ~6 s for the whole track; killed after ~1 s each round
+    srv.bytesPerSec = 1 << 20; // ~6 s for the whole track; killed after ~0.5-1 s of it each round
     const std::string dir = tempDir("crash");
     std::mt19937 rng(42);
     std::uint64_t prevCovered = 0;
     for (int round = 0; round < 3; round++) {
+        const std::uint64_t sent0 = srv.sent.load();
         const pid_t pid = fork();
         if (pid == 0) {
             execl(g_self.c_str(), g_self.c_str(), "child", srv.url().c_str(), dir.c_str(), "1", static_cast<char *>(nullptr));
             _exit(127);
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(500 + rng() % 600));
+        // Kill at a random point once the child is into the download (512 KiB sent: two
+        // 256 KiB commits); a fixed delay from fork() could end before a loaded (TSan)
+        // child had even synced. The server stalls first, so however late the kill lands
+        // on a loaded machine, the child cannot finish the track (it must die mid-way).
+        CHECK(waitUntil([&] { return srv.sent.load() - sent0 >= (512u << 10); }, 60s));
+        std::this_thread::sleep_for(std::chrono::milliseconds(rng() % 500));
+        srv.stall = true;
         (void)kill(pid, SIGKILL);
         int st = 0;
         (void)waitpid(pid, &st, 0);
+        srv.stall = false;
         CHECK(WIFSIGNALED(st));
         // Inspect what the killed process left behind.
         auto c = open(baseCfg(srv.url(), dir));
@@ -1410,6 +1418,58 @@ void trimOnRelease() {
     fs::remove_all(dir);
 }
 
+// Regression: released() checked "no shrink pending" and then trimmed to the cap read
+// afterwards, so a setCacheSettings() shrink landing in between evicted at once instead
+// of capTrimDelayMs later. Races the last release of an entry against a shrink, many
+// times (a stress test: the window is narrow, so it catches the bug only now and then;
+// the TSan suite under load hit it in hotSettings()). The trim delay is long, so nothing
+// may ever be evicted here.
+void trimReleaseRace() {
+    FakeServer srv;
+    srv.setTrack(1, FakeServer::randomBytes(300000, 63), "\"q1\"");
+    srv.setTrack(2, FakeServer::randomBytes(300000, 64), "\"q2\"");
+    const std::string dir = tempDir("trimrace");
+    auto cfg = baseCfg(srv.url(), dir);
+    cfg.cacheMaxBytes = 1000000;
+    cfg.backgroundFill = false;
+    cfg.capTrimDelayMs = 600000;
+    int evicted = 0;
+    for (int round = 0; round < 25 && evicted == 0; ++round) {
+        auto c = open(cfg);
+        CHECK(c && syncOk(*c));
+        if (!c) break;
+        for (int id : {1, 2}) {
+            std::string err;
+            auto s = c->openTrack(id, &err);
+            CHECK(s && readAll(*s).size() == 300000);
+        }
+        CHECK(waitUntil([&] {
+            return c->cacheInfo(1).state == CacheState::Cached && c->cacheInfo(2).state == CacheState::Cached;
+        }, 10s));
+        for (int i = 0; i < 20; ++i) {
+            std::string err;
+            auto s = c->openTrack(1 + i % 2, &err);
+            CHECK(s != nullptr);
+            std::atomic<bool> go{false};
+            std::thread rel([&] {
+                while (!go) {
+                }
+                s.reset(); // last reference: released() runs on the network thread
+            });
+            go = true;
+            c->setCacheSettings(400000, false, false);
+            rel.join();
+            c->setCacheSettings(1000000, false, false);
+        }
+        // let pending releases run (the trim itself is 10 minutes away)
+        std::this_thread::sleep_for(200ms);
+        if (c->stats().usage != 600000) ++evicted;
+        c.reset();
+    }
+    CHECK_EQ(evicted, 0);
+    fs::remove_all(dir);
+}
+
 // Default cap is 1 GB.
 void defaultCap() {
     lm::net::ClientConfig c;
@@ -1461,7 +1521,7 @@ int main(int argc, char **argv) {
         {"names", namesAndCollisions},   {"rename", renameOnSync},          {"migrate", migrateOldLayout},
         {"renamecrash", renameCrash},    {"remap", idRemap},                {"otherurl", restartOtherUrl},
         {"cycle", interruptedCycle},
-        {"hot", hotSettings},            {"trimrelease", trimOnRelease},            {"diskfloor", diskFloor},          {"defaultcap", defaultCap},
+        {"hot", hotSettings},            {"trimrelease", trimOnRelease}, {"trimrace", trimReleaseRace},            {"diskfloor", diskFloor},          {"defaultcap", defaultCap},
     };
     for (auto &[name, fn] : tests) {
         if (!only.empty() && only != name) continue;

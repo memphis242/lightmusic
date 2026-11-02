@@ -344,7 +344,9 @@ int main() {
     CHECK(sd_bus_set_property(c.bus, kName, kPath, kPlayer, "Volume", &e, "d", 0.5) >= 0);
     sd_bus_error_free(&e);
     CHECK(c.waitFor([&] { return c.sawChanged("Volume"); }));
-    CHECK_NEAR(player.state().volume, 0.5, 1e-6);
+    // The setter publishes (and signals) the new value at once; the player applies its
+    // command asynchronously, so its own state may still lag here.
+    CHECK(c.waitFor([&] { return std::abs(player.state().volume - 0.5f) < 1e-6f; }));
     CHECK_NEAR(c.getT<double>("Volume", 'd', -1), 0.5, 1e-6);
     // Set then an immediate Get returns the new value (no waiting for the player event).
     {
@@ -404,7 +406,9 @@ int main() {
     c.seen.changed.clear();
     CHECK_EQ(c.call0(kPlayer, "Next") >= 0, true);
     CHECK(c.waitFor([&] { return c.metadata().trackid == "/org/lightmusic/track/1"; }));
-    CHECK(c.sawChanged("Metadata"));
+    // The PropertiesChanged signal precedes the Get reply that showed the new track, but
+    // sd_bus_call() only queues it; it is dispatched by the next pump(), so wait for it.
+    CHECK(c.waitFor([&] { return c.sawChanged("Metadata"); }));
     CHECK(c.metadata().title == "Song2");
     CHECK_EQ(c.call0(kPlayer, "Previous") >= 0, true);
     CHECK(c.waitFor([&] { return c.metadata().trackid == "/org/lightmusic/track/0"; }));

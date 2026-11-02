@@ -56,10 +56,15 @@ ESC=$(printf '\033')
 # discards the stop, but the terminal must still be released and re-taken), quit.
 keys() {
     wait_for "Playing" || { printf q; return; }
-    for k in '?' '?' ' ' ' ' '\033[C' '\033[D' '+' '-' 'n' 'p' 'j' 'k' 'j' '\r'; do
+    for k in '?' '?' ' '; do
         printf "$k"; sleep 0.1
     done
+    # Pause shows "Paused" before the resume key goes out: with both keys queued, a
+    # loaded TUI could handle pause and resume in one frame and never draw it.
     wait_for "Paused"
+    for k in ' ' '\033[C' '\033[D' '+' '-' 'n' 'p' 'j' 'k' 'j' '\r'; do
+        printf "$k"; sleep 0.1
+    done
     # Live reload of cfg.yaml: volume is hot, replaygain needs a restart.
     printf 'playback:\n  volume: 30\n  replaygain: track\n' > "$CFG.new"; chmod 600 "$CFG.new"
     mv "$CFG.new" "$CFG"
