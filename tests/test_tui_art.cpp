@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -99,8 +100,11 @@ static void worker(const std::string &tmp) {
     CHECK(lmtest::writeBytes(c + "/folder.jpg", lmtest::bytes(64, 0x11))); // corrupt image
     auto spawn = [](std::function<void()> fn) { std::thread(std::move(fn)).detach(); };
     {
-        Waiter w;
-        lmtui::ArtWorker art(covers, [&w] { w.notify(); }, spawn);
+        // Shared with the notify callback: the (detached) worker may still be inside it
+        // after this scope has seen the result and ended.
+        auto wp = std::make_shared<Waiter>();
+        Waiter &w = *wp;
+        lmtui::ArtWorker art(covers, [wp] { wp->notify(); }, spawn);
         art.prefetch({a + "/t1.mp3", a + "/t1.mp3", b + "/t2.mp3", c + "/x.mp3"});
         std::vector<lmtui::ArtWorker::Result> got;
         art.want({a + "/t1.mp3", b + "/t2.mp3"});
@@ -134,8 +138,11 @@ static void worker(const std::string &tmp) {
     }
     {
         // A second run loads A from the cache: same thumbnail, nothing reported again for C.
-        Waiter w;
-        lmtui::ArtWorker art(covers, [&w] { w.notify(); }, spawn);
+        // Shared with the notify callback: the (detached) worker may still be inside it
+        // after this scope has seen the result and ended.
+        auto wp = std::make_shared<Waiter>();
+        Waiter &w = *wp;
+        lmtui::ArtWorker art(covers, [wp] { wp->notify(); }, spawn);
         art.want({a + "/t1.mp3", c + "/y.mp3"});
         std::vector<lmtui::ArtWorker::Result> got;
         const bool ok4 = waitFor(w, [&] {
@@ -152,8 +159,11 @@ static void worker(const std::string &tmp) {
     {
         // A replaced cover is picked up (new size and time: new stamp).
         CHECK(lmtest::writeBytes(a + "/cover.png", lmtest::makePng(2, 2, lmtest::solid(2, 2, 90, 80, 70))));
-        Waiter w;
-        lmtui::ArtWorker art(covers, [&w] { w.notify(); }, spawn);
+        // Shared with the notify callback: the (detached) worker may still be inside it
+        // after this scope has seen the result and ended.
+        auto wp = std::make_shared<Waiter>();
+        Waiter &w = *wp;
+        lmtui::ArtWorker art(covers, [wp] { wp->notify(); }, spawn);
         art.want({a + "/t1.mp3"});
         std::vector<lmtui::ArtWorker::Result> got;
         const bool ok5 = waitFor(w, [&] {
@@ -202,8 +212,11 @@ static void remote(const std::string &tmp) {
             std::lock_guard lk(script->m);
             script->answers = std::move(answers);
         }
-        Waiter w;
-        lmtui::ArtWorker art(covers, [&w] { w.notify(); }, spawn);
+        // Shared with the notify callback: the (detached) worker may still be inside it
+        // after this scope has seen the result and ended.
+        auto wp = std::make_shared<Waiter>();
+        Waiter &w = *wp;
+        lmtui::ArtWorker art(covers, [wp] { wp->notify(); }, spawn);
         art.setRemote(rt);
         art.want({"lm://server/track/1"});
         std::vector<lmtui::ArtWorker::Result> got;
