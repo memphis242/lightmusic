@@ -33,6 +33,7 @@ struct ClientSettings {
     bool showCacheMarkers = true;
     std::string musicDir; // folder browser root (hot); empty: $XDG_MUSIC_DIR, else ~/Music
     bool saveSettings = true; // write UI changes (volume, repeat, shuffle) back into cfg.yaml
+    bool resumeSession = true; // started without files: restore the last list, queue and position
     // keys (hot): action name -> keys bound to it, replacing that action's defaults
     // (keys.queue_add: [q], keys.quit: []). Names and keys are checked by the frontend.
     std::map<std::string, NamedList> keys;

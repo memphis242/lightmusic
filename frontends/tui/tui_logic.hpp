@@ -5,6 +5,7 @@
 #pragma once
 
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <deque>
 #include <string>
@@ -174,6 +175,58 @@ struct TimeLeft {
 [[nodiscard]] std::string formatTimeLeft(const TimeLeft &t);
 // "m:ss" / "h:mm:ss" for a non-negative millisecond count (rounded down to seconds).
 [[nodiscard]] std::string formatMs(std::int64_t ms);
+
+// The last session (resumed on the next start without files): the entries (paths or
+// lm:// URIs; the first `ctx` are the list, the rest were queued from outside it), the
+// user queue, the audible entry and its position. Stored as a small text file:
+//   lightmusic-session 1
+//   ctx N / index I / position_ms P / upnext E E ... / entry PATH (one per entry)
+// with '%', CR and LF in paths written as %25, %0D, %0A.
+struct Session {
+    std::vector<std::string> entries;
+    std::size_t ctx = 0;
+    std::vector<int> upNext;
+    int index = -1;
+    std::int64_t positionMs = 0;
+    bool operator==(const Session &) const = default;
+};
+constexpr std::size_t kMaxSessionEntries = 200000;
+[[nodiscard]] std::string formatSession(const Session &s);
+// The file is untrusted: any malformed line, count or index fails with `err` set.
+[[nodiscard]] bool parseSession(std::string_view text, Session &out, std::string &err);
+// Drops entries `keep` rejects (vanished files, tracks no longer in the library),
+// remapping ctx, the user queue and the index (-1 if the audible entry is dropped, which
+// also resets the position).
+template <class Pred>
+    requires std::predicate<Pred &, const std::string &>
+void pruneSession(Session &s, Pred keep) {
+    std::vector<int> map(s.entries.size(), -1);
+    std::vector<std::string> kept;
+    std::size_t ctx = 0;
+    for (std::size_t i = 0; i < s.entries.size(); i++)
+        if (keep(s.entries[i])) {
+            map[i] = static_cast<int>(kept.size());
+            kept.push_back(std::move(s.entries[i]));
+            if (i < s.ctx) ctx++;
+        }
+    std::vector<int> up;
+    for (int e : s.upNext)
+        if (e >= 0 && static_cast<std::size_t>(e) < map.size() && map[static_cast<std::size_t>(e)] >= 0)
+            up.push_back(map[static_cast<std::size_t>(e)]);
+    const int idx = s.index >= 0 && static_cast<std::size_t>(s.index) < map.size() ? map[static_cast<std::size_t>(s.index)] : -1;
+    if (idx < 0) s.positionMs = 0;
+    s.entries = std::move(kept);
+    s.ctx = ctx;
+    s.upNext = std::move(up);
+    s.index = idx;
+}
+// Keeps only the entries after the list that still matter, in the order a restore
+// re-creates them: the audible one (if it is outside the list) first, then those in the
+// user queue in order of first appearance.
+void compactSession(Session &s);
+// $XDG_STATE_HOME/lightmusic/session (absolute $XDG_STATE_HOME only), else
+// <home>/.local/state/lightmusic/session.
+[[nodiscard]] std::string sessionPath(const std::string &home, const char *xdgStateHome);
 
 // The status line's message ("toast"): errors, warnings and confirmations, each shown
 // until it expires (info 3 s, warning 6 s, error 10 s) or a newer one replaces it. The

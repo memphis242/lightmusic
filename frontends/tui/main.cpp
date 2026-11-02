@@ -59,6 +59,7 @@
 #include <sys/prctl.h>
 #include <signal.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -75,6 +76,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <format>
 #include <memory>
 #include <mutex>
@@ -759,7 +761,8 @@ void usage(FILE *f) {
                "  --config PATH  settings file (default $XDG_CONFIG_HOME/lightmusic/cfg.yaml);\n"
                "                 command-line flags override it\n"
                "  --no-config    ignore the settings file\n"
-               "  --no-server    do not connect to the server named in the settings file\n");
+               "  --no-server    do not connect to the server named in the settings file\n"
+               "  --no-resume    start fresh instead of restoring the last session\n");
 }
 
 #ifdef LM_TUI_NET
@@ -833,7 +836,7 @@ int run(int argc, char **argv) {
     // settings file: defaults < cfg.yaml < (ui-overrides.yaml, future) < flags.
     Live live;
     live.cli.name = "command line";
-    bool listOnly = false, noConfig = false, noServer = false;
+    bool listOnly = false, noConfig = false, noServer = false, noResume = false;
     std::string configPath;
     std::vector<std::int64_t> albumIds;
     for (int i = 1; i < argc; i++) {
@@ -854,6 +857,7 @@ int run(int argc, char **argv) {
         else if (!std::strcmp(argv[i], "--config")) configPath = value("--config");
         else if (!std::strcmp(argv[i], "--no-config")) noConfig = true;
         else if (!std::strcmp(argv[i], "--no-server")) noServer = true;
+        else if (!std::strcmp(argv[i], "--no-resume")) noResume = true;
         else if (!std::strcmp(argv[i], "--album")) {
             char *end = nullptr;
             const long long id = std::strtoll(value("--album"), &end, 10);
@@ -899,7 +903,7 @@ int run(int argc, char **argv) {
         lm::diagln(stderr, "lightmusic: playback.replaygain: album gain is not supported yet; using track gain");
     if (std::getenv("LM_NULL_BACKEND")) cfg.nullBackend = true;
     // No files and no server: start with an empty list in the folder browser.
-    const bool browseAtStart = args.empty() && server.empty();
+    bool browseAtStart = args.empty() && server.empty();
     if (server.empty() != keyFile.empty() && !server.empty()) {
         lm::diagln(stderr, "lightmusic: --server and --key-file go together (server.url needs server.key_file)");
         return 2;
@@ -1028,9 +1032,70 @@ int run(int argc, char **argv) {
             return 2;
         }
     }
+    // Resume: started without files or albums, the last session's list, user queue and
+    // position come back (paused). Entries that are gone (deleted files, tracks no longer
+    // in the library, uncached ones offline) are dropped. A broken file is reported and
+    // ignored: the program starts as without it.
+    const char *homeEnv = std::getenv("HOME");
+    const std::string sessionFile = lmtui::sessionPath(homeEnv && *homeEnv ? homeEnv : "/", std::getenv("XDG_STATE_HOME"));
+    const bool useSession = set.resumeSession && !noResume;
+    std::optional<lmtui::Session> resumed;
+    if (useSession && args.empty() && albumIds.empty()) {
+        std::string text, err;
+        bool missing = false;
+        lm::config::Diags rd;
+        lm::config::FilePolicy pol;
+        pol.warnReadable = false;
+        pol.maxBytes = 64u << 20;
+        lmtui::Session sess;
+        if (lm::config::readConfigFile(sessionFile, pol, text, missing, rd)) {
+            if (!lmtui::parseSession(text, sess, err)) lm::diagln(stderr, "lightmusic: {}: {}; not resumed", sessionFile, err);
+            else resumed = std::move(sess);
+        } else if (!missing) {
+            for (const auto &d : rd) lm::diagln(stderr, "lightmusic: {}; not resumed", d.str());
+        }
+        if (resumed) {
+            lmtui::pruneSession(*resumed, [&](const std::string &e) {
+#ifdef LM_TUI_NET
+                if (const auto id = lm::net::Client::parseTrackUri(e)) {
+                    if (!client || !client->track(*id)) return false;
+                    return !offline || client->cacheInfo(*id).state == lm::net::CacheState::Cached;
+                }
+#endif
+                if (e.find("://") != std::string::npos) return false; // a URI this build cannot open
+                struct stat sb{};
+                return ::stat(e.c_str(), &sb) == 0 && S_ISREG(sb.st_mode);
+            });
+            if (resumed->entries.empty()) resumed.reset();
+        }
+    }
     std::vector<std::string> errors;
     Ui ui;
     ui.keymap = std::move(keymap);
+    if (resumed) {
+        browseAtStart = false;
+#ifdef LM_TUI_NET
+        remoteTracks.clear();
+#endif
+        for (const auto &e : resumed->entries) {
+            ui.paths.push_back(e);
+            std::string name = lmtui::displayName(e);
+            std::int64_t remote = 0, dur = 0;
+#ifdef LM_TUI_NET
+            if (const auto id = lm::net::Client::parseTrackUri(e); id && client)
+                if (const auto t = client->track(*id)) {
+                    remote = t->id;
+                    dur = t->durationMs;
+                    name = lmtui::trackLabel(t->artist, t->title, t->title.empty() ? e : t->title);
+                }
+#endif
+            ui.names.push_back(std::move(name));
+            ui.remote.push_back(remote);
+            ui.cache.push_back(remote ? 0 : -1);
+            ui.pinned.push_back(0);
+            ui.durMs.push_back(dur);
+        }
+    }
     ui.showCacheMarkers = set.showCacheMarkers;
     if (!args.empty()) ui.paths = lmtui::collectTracks(args, &errors);
     for (const auto &e : errors) lm::diagln(stderr, "lightmusic: {}", e);
@@ -1053,7 +1118,7 @@ int run(int argc, char **argv) {
         if (offline) ui.warn("offline: " + netNote);
     }
 #endif
-    ui.ctx = ui.paths.size();
+    ui.ctx = resumed ? resumed->ctx : ui.paths.size();
     if (ui.paths.empty() && !browseAtStart) {
         lm::diagln(stderr, "lightmusic: no playable {}", server.empty() ? "files" : "tracks");
         return 1;
@@ -1113,13 +1178,39 @@ int run(int argc, char **argv) {
         }
         (void)pthread_sigmask(SIG_SETMASK, &oldMask, nullptr); // fails only for an invalid `how` (EINVAL)
         lm::Player &player = *playerHolder;
-        player.enqueue(ui.paths);
+        if (!resumed) {
+            player.enqueue(ui.paths);
+        } else {
+            // Recreate the entries in their order (compactSession wrote them that way):
+            // the list, then the entries outside it as they are first queued.
+            const lmtui::Session &rs = *resumed;
+            player.enqueue(std::vector<std::string>(ui.paths.begin(), ui.paths.begin() + static_cast<std::ptrdiff_t>(rs.ctx)));
+            std::size_t created = rs.ctx;
+            auto add = [&](int e) {
+                const auto k = static_cast<std::size_t>(e);
+                if (k < created) {
+                    player.queueAddEntries({e});
+                } else {
+                    player.queueAdd({ui.paths[k]});
+                    created = k + 1;
+                }
+            };
+            const bool curOutside = rs.index >= 0 && static_cast<std::size_t>(rs.index) >= rs.ctx;
+            if (curOutside) add(rs.index); // created first (compactSession); leaves the queue below
+            for (int e : rs.upNext) add(e);
+            if (rs.index >= 0) {
+                player.cueIndex(rs.index, static_cast<double>(rs.positionMs) / 1000.0);
+                if (curOutside) player.queueRemove(0, rs.index);
+            }
+            ui.info(std::format("resumed: {} track{}{}", ui.ctx, ui.ctx == 1 ? "" : "s",
+                                rs.upNext.empty() ? std::string() : std::format(", {} queued", rs.upNext.size())));
+        }
         if (live.running.volume != 100) {
             ui.volumeTarget = static_cast<float>(live.running.volume) / 100.0f;
             player.setVolume(*ui.volumeTarget);
         }
         ui.st = player.state();
-        if (!browseAtStart) player.play();
+        if (!browseAtStart && !resumed) player.play(); // a resumed session waits, paused
         // MPRIS (media keys); sd-bus fd joins the poll below. Diagnostics go to the status
         // line (stderr would corrupt the screen); shown on the next redraw.
         bool mprisNote = false; // a diagnostic arrived: redraw
@@ -1132,7 +1223,7 @@ int run(int argc, char **argv) {
         *uiActive = true;
 #endif
 
-        std::string quitSaveErr;
+        std::string quitSaveErr, sessionSaveErr;
         {
             Tty term;
             if (!term.ok()) {
@@ -2059,8 +2150,25 @@ int run(int argc, char **argv) {
             }
             quitSig = g_quitSignal.load();
             save(&quitSaveErr); // a volume changed less than 1 s ago (or not yet saved) is kept
+            if (useSession) { // the session for the next start without files
+                const lm::PlayerState now = player.state();
+                lmtui::Session out;
+                out.entries = ui.paths;
+                out.ctx = ui.ctx;
+                out.upNext = now.upNext;
+                out.index = now.index;
+                out.positionMs = now.index >= 0 ? std::llround(now.position * 1000.0) : 0;
+                lmtui::compactSession(out);
+                std::string err;
+                const std::string dir = sessionFile.substr(0, sessionFile.rfind('/'));
+                std::error_code ec;
+                (void)std::filesystem::create_directories(dir, ec); // best effort: the write below reports
+                if (!lm::config::writeFileAtomic(sessionFile, lmtui::formatSession(out), 0600, &err))
+                    sessionSaveErr = err;
+            }
         } // terminal restored here
         if (!quitSaveErr.empty()) lm::diagln(stderr, "lightmusic: settings {}", quitSaveErr);
+        if (!sessionSaveErr.empty()) lm::diagln(stderr, "lightmusic: session not saved: {}", sessionSaveErr);
         // A second Ctrl-C / SIGTERM during a slow player shutdown kills us outright.
         for (int sig : {SIGINT, SIGTERM, SIGHUP}) setHandler(sig, SIG_DFL);
         if (quitSig) setHandler(quitSig, SIG_DFL);
