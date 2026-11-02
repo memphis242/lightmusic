@@ -39,6 +39,7 @@
 //     armed only while such input is pending).
 // FTXUI's ScreenInteractive is not used because its loop wakes ~115 times/s while idle
 // (15 ms animation thread + 20 ms stdin select timeout).
+#include "keymap.hpp"
 #include "tui_logic.hpp"
 
 #include "lm/config/client.hpp"
@@ -445,7 +446,15 @@ struct Ui {
     // Same for repeat/shuffle (r and s can be pressed faster than ModeChanged arrives).
     std::optional<lm::Repeat> repeatTarget;
     std::optional<bool> shuffleTarget;
+    lmtui::Keymap keymap;              // defaults + cfg.yaml keys:
+    std::optional<std::string> cmdline; // the ':' command line while open (its text)
 };
+
+// "q" for an action's first key, "" if unbound (hints follow the user's bindings).
+std::string firstKey(const Ui &ui, std::string_view action) {
+    const auto k = ui.keymap.keysOf(action);
+    return k.empty() ? std::string() : lmtui::keyLabel(k.front());
+}
 
 const char *statusLabel(lm::Status s) {
     switch (s) {
@@ -481,13 +490,19 @@ Element renderUpNext(const Ui &ui, int height) {
     const int stop = std::min(total, first + visible);
     Elements rows;
     const std::string head = std::format("Up next: {} track{}", total, total == 1 ? "" : "s");
-    rows.push_back(hbox({text(head) | bold, filler(), text("J/K move  d remove  c clear  esc back") | dim}));
+    const std::string hint = std::format("{}/{} move  {} remove  {} clear  {} back", firstKey(ui, "queue_move_down"),
+                                         firstKey(ui, "queue_move_up"), firstKey(ui, "queue_remove"),
+                                         firstKey(ui, "queue_clear"), firstKey(ui, "queue_close"));
+    rows.push_back(hbox({text(head) | bold, filler(), text(hint) | dim}));
     for (int i = first; i < stop; i++) {
         Element row = hbox({text("  "), text(std::format("{:3} ", i + 1)) | dim, text(nameOf(ui, q[static_cast<std::size_t>(i)]))});
         if (i == ui.qselected) row = row | inverted;
         rows.push_back(std::move(row));
     }
-    if (q.empty()) rows.push_back(text("  (empty: a adds the selected track, A plays it next)") | dim);
+    if (q.empty())
+        rows.push_back(text(std::format("  (empty: {} adds the selected track, {} plays it next)", firstKey(ui, "queue_add"),
+                                        firstKey(ui, "play_next"))) |
+                       dim);
     return vbox(std::move(rows)) | yframe | flex;
 }
 
@@ -497,8 +512,10 @@ Element renderBrowser(const Ui &ui, TagWorker &tags, int height) {
     Elements rows;
     if (ui.browser.stack.empty()) return text("");
     const BrowseLevel &lv = ui.browser.stack.back();
-    rows.push_back(hbox({text(lv.title) | bold, filler(),
-                         text("enter open  o play  a/A queue  ⌫ up  esc back") | dim}));
+    const std::string hint = std::format("enter open  {} play  {}/{} queue  {} up  {} back", firstKey(ui, "browse_play"),
+                                         firstKey(ui, "queue_add"), firstKey(ui, "play_next"),
+                                         firstKey(ui, "browse_up"), firstKey(ui, "browser_close"));
+    rows.push_back(hbox({text(lv.title) | bold, filler(), text(hint) | dim}));
     const int total = static_cast<int>(lv.rows.size());
     const int visible = std::max(1, queueRows(height) - 1);
     const int first = std::clamp(lv.selected - visible / 2, 0, std::max(0, total - visible));
@@ -581,21 +598,26 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
                                         ui.shuffleTarget.value_or(st.shuffle));
     if (!mode.empty()) mode = "  " + mode;
 
+    // Footer: the command line while open, else the last message (or the key hint).
+    Element footer =
+        ui.cmdline ? hbox({text(":" + *ui.cmdline), text(" ") | inverted, filler()})
+                   : hbox({text(ui.message.empty() ? ui.keymap.hint() : ui.message) | dim, filler(),
+                           text(st.upNext.empty() || ui.queueView ? std::string()
+                                                                  : "up next " + std::to_string(st.upNext.size()) + "  ") |
+                               color(Color::Yellow),
+                           text(ui.net) | dim});
     Element now = vbox({
         hbox({text(std::string(statusGlyph(st.status)) + " "), text(statusLabel(st.status)) | bold, text("  "),
               text(title) | bold, text(sub) | dim, filler(), text(mode) | color(Color::Yellow), text(" "),
               text(pos) | dim}),
         hbox({text(times + " "), gauge(frac) | flex, text(" "), text(vol)}),
-        hbox({text(ui.message.empty() ? std::string("? help  q quit") : ui.message) | dim, filler(),
-              text(st.upNext.empty() || ui.queueView ? std::string() : "up next " + std::to_string(st.upNext.size()) + "  ") |
-                  color(Color::Yellow),
-              text(ui.net) | dim}),
+        std::move(footer),
     });
 
     Element main = vbox({queue, separator(), now}) | border;
     if (!ui.help) return main;
     Elements help;
-    for (const auto &l : lmtui::helpLines()) help.push_back(text(l));
+    for (const auto &l : ui.keymap.helpLines()) help.push_back(text(l));
     return dbox({main, vbox(std::move(help)) | border | bgcolor(Color::Black) | clear_under | center});
 }
 
@@ -708,7 +730,7 @@ int run(int argc, char **argv) {
         else if (!std::strcmp(argv[i], "--list")) listOnly = true;
         else if (!std::strcmp(argv[i], "-h") || !std::strcmp(argv[i], "--help")) {
             usage(stdout);
-            for (const auto &l : lmtui::helpLines()) lm::diagln(stdout, "  {}", l);
+            for (const auto &l : lmtui::Keymap().helpLines()) lm::diagln(stdout, "  {}", l);
             return 0;
         } else args.emplace_back(argv[i]);
     }
@@ -720,6 +742,14 @@ int run(int argc, char **argv) {
                                                   !configPath.empty(), nullptr, live.cli, live.running, diags);
         for (const auto &d : diags) lm::diagln(stderr, "lightmusic: {}", d.str());
         if (lm::config::hasError(diags)) return 2;
+    }
+    lmtui::Keymap keymap;
+    {
+        std::vector<std::string> keyErrors;
+        if (!keymap.apply(live.running.keys, keyErrors)) {
+            for (const auto &e : keyErrors) lm::diagln(stderr, "lightmusic: {}", e);
+            return 2;
+        }
     }
     const lm::config::ClientSettings &set = live.running;
     std::string server = noServer && live.cli.find("server.url") == nullptr ? std::string() : set.serverUrl;
@@ -863,6 +893,7 @@ int run(int argc, char **argv) {
     }
     std::vector<std::string> errors;
     Ui ui;
+    ui.keymap = std::move(keymap);
     ui.showCacheMarkers = set.showCacheMarkers;
     if (!args.empty()) ui.paths = lmtui::collectTracks(args, &errors);
     for (const auto &e : errors) lm::diagln(stderr, "lightmusic: {}", e);
@@ -1052,6 +1083,15 @@ int run(int argc, char **argv) {
                     } else if (k == "playback.shuffle") {
                         ui.shuffleTarget = n.shuffle;
                         player.setShuffle(n.shuffle);
+                    } else if (k == "keys") {
+                        lmtui::Keymap km;
+                        std::vector<std::string> errs;
+                        if (!km.apply(n.keys, errs)) {
+                            ui.message = "keys not reloaded: " + errs.front();
+                            live.running = n;
+                            return;
+                        }
+                        ui.keymap = std::move(km);
                     }
                 }
 #ifdef LM_TUI_NET
@@ -1392,10 +1432,14 @@ int run(int argc, char **argv) {
                 const auto k = static_cast<std::size_t>(ui.qselected);
                 return k < ui.st.upNext.size() ? ui.st.upNext[k] : -1;
             };
-            auto handleKey = [&](const std::string &key) {
-                const lmtui::Command cmd = ui.browser.open ? lmtui::mapBrowserKey(key)
-                                           : ui.queueView  ? lmtui::mapQueueKey(key)
-                                                           : lmtui::mapKey(key);
+            auto paneContext = [&] {
+                return ui.browser.open ? lmtui::Context::Browser
+                       : ui.queueView  ? lmtui::Context::Queue
+                                       : lmtui::Context::Global;
+            };
+            // Runs one command (from a key, or the command line; `key` is the key that
+            // was pressed, for SeekPercent).
+            auto runCommand = [&](lmtui::Command cmd, const std::string &key) {
                 if (cmd == lmtui::Command::None) return;
                 dirty = true;
                 if (cmd == lmtui::Command::Suspend) {
@@ -1561,6 +1605,57 @@ int run(int argc, char **argv) {
                 case lmtui::Command::CloseHelp:
                     ui.help = false;
                     break;
+                case lmtui::Command::OpenCommandLine:
+                    ui.cmdline = std::string();
+                    break;
+                }
+            };
+            auto runCommandLine = [&](const std::string &text) {
+                const lmtui::CommandLine c = lmtui::parseCommandLine(text);
+                switch (c.kind) {
+                case lmtui::CommandLine::Error: ui.message = c.error; break;
+                case lmtui::CommandLine::Run:
+                    if (c.ctx != lmtui::Context::Global && c.ctx != paneContext()) {
+                        ui.message = text + ": only in the " +
+                                     (c.ctx == lmtui::Context::Queue ? "queue pane" : "browser");
+                        break;
+                    }
+                    runCommand(c.cmd, std::string());
+                    break;
+                case lmtui::CommandLine::Seek: {
+                    const lm::PlayerState now = player.state();
+                    const double dur = now.track.duration;
+                    if (now.status == lm::Status::Stopped) {
+                        ui.message = "seek: nothing is playing";
+                        break;
+                    }
+                    if (c.percent >= 0 && dur <= 0) {
+                        ui.message = "seek: the track length is unknown";
+                        break;
+                    }
+                    const double secs = static_cast<double>(c.ms) / 1000.0;
+                    const double to = c.percent >= 0 ? dur * c.percent / 100.0 : c.relative ? now.position + secs : secs;
+                    player.seek(std::max(0.0, to));
+                    break;
+                }
+                case lmtui::CommandLine::Volume:
+                    ui.volumeTarget = static_cast<float>(c.volume) / 100.0f;
+                    player.setVolume(*ui.volumeTarget);
+                    saveDue = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                    break;
+                }
+            };
+            auto handleKey = [&](const std::string &key) {
+                if (!ui.cmdline) return runCommand(ui.keymap.lookup(paneContext(), key), key);
+                dirty = true;
+                if (ui.keymap.lookup(lmtui::Context::Global, key) == lmtui::Command::Quit) running = false;
+                else if (key == "escape") ui.cmdline.reset();
+                else if (key == "enter") {
+                    const std::string t = std::move(*ui.cmdline);
+                    ui.cmdline.reset();
+                    runCommandLine(t);
+                } else if (!lmtui::editCommandLine(*ui.cmdline, key)) {
+                    ui.cmdline.reset(); // backspace on an empty line
                 }
             };
 

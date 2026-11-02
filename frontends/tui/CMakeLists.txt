@@ -23,10 +23,10 @@ else()
 endif()
 
 # Non-UI logic, unit-tested without FTXUI.
-add_library(tui_logic STATIC tui_logic.cpp)
+add_library(tui_logic STATIC tui_logic.cpp keymap.cpp)
 add_library(lm::tui_logic ALIAS tui_logic)
 target_include_directories(tui_logic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(tui_logic PRIVATE lm_warnings_app)
+target_link_libraries(tui_logic PUBLIC lm::config PRIVATE lm_warnings_app)
 
 add_executable(lightmusic main.cpp)
 lm_release_link_options(lightmusic)

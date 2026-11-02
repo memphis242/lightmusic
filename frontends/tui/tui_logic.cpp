@@ -212,56 +212,6 @@ std::string formatTime(double seconds) {
     return std::format("{}:{:02}", t / 60, t % 60);
 }
 
-Command mapKey(std::string_view k) {
-    if (k == " ") return Command::TogglePause;
-    if (k == "n") return Command::Next;
-    if (k == "p") return Command::Prev;
-    if (k == "left") return Command::SeekBack;
-    if (k == "right") return Command::SeekForward;
-    if (k == "+" || k == "=") return Command::VolumeUp;
-    if (k == "-" || k == "_") return Command::VolumeDown;
-    if (k == "enter") return Command::PlaySelected;
-    if (k == "k" || k == "up") return Command::SelectUp;
-    if (k == "j" || k == "down") return Command::SelectDown;
-    if (k == "g") return Command::SelectFirst;
-    if (k == "G") return Command::SelectLast;
-    if (k == "home") return Command::SeekStart;
-    if (k == "end") return Command::SeekEnd;
-    if (percentKey(k) >= 0) return Command::SeekPercent;
-    if (k == "pageup") return Command::PageUp;
-    if (k == "pagedown") return Command::PageDown;
-    if (k == "q" || k == "ctrl-c") return Command::Quit;
-    if (k == "ctrl-z") return Command::Suspend;
-    if (k == "?") return Command::ToggleHelp;
-    if (k == "escape") return Command::CloseHelp;
-    if (k == "P") return Command::TogglePin;
-    if (k == "r") return Command::CycleRepeat;
-    if (k == "s") return Command::ToggleShuffle;
-    if (k == "a") return Command::QueueAdd;
-    if (k == "A") return Command::QueuePlayNext;
-    if (k == "v") return Command::ToggleQueueView;
-    if (k == "b") return Command::ToggleBrowser;
-    return Command::None;
-}
-
-Command mapBrowserKey(std::string_view k) {
-    if (k == "l") return Command::PlaySelected;
-    if (k == "backspace" || k == "h") return Command::BrowseUp;
-    if (k == "o") return Command::BrowsePlay;
-    if (k == "escape") return Command::ToggleBrowser;
-    return mapKey(k);
-}
-
-Command mapQueueKey(std::string_view k) {
-    if (k == "K") return Command::QueueMoveUp;
-    if (k == "J") return Command::QueueMoveDown;
-    if (k == "d" || k == "delete") return Command::QueueRemove;
-    if (k == "c") return Command::QueueClear;
-    if (k == "escape") return Command::ToggleQueueView;
-    if (k == "a" || k == "A") return Command::None; // the queue holds what is queued already
-    return mapKey(k);
-}
-
 int percentKey(std::string_view k) { return k.size() == 1 && k[0] >= '0' && k[0] <= '9' ? (k[0] - '0') * 10 : -1; }
 
 double endSeekTarget(double duration) { return duration > 0 ? std::max(0.0, duration - kEndSeek) : -1; }
@@ -352,10 +302,10 @@ std::vector<std::string> KeyParser::parse(bool final) {
             continue;
         }
         if (c == '\r' || c == '\n') out.emplace_back("enter");
-        else if (c == 3) out.emplace_back("ctrl-c");
         else if (c == 0x7f || c == 0x08) out.emplace_back("backspace");
+        else if (c == '\t') out.emplace_back("tab");
+        else if (c >= 1 && c <= 26) out.push_back(std::string("ctrl-") + static_cast<char>('a' + c - 1));
         else if (c >= 0x20 && c < 0x7f) out.emplace_back(1, static_cast<char>(c));
-        else if (c == 0x1a) out.emplace_back("ctrl-z");
         else if (c >= 0xc0 && c < 0xf8) { // UTF-8 lead byte: pass the whole sequence through
             const std::size_t len = c >= 0xf0 ? 4 : c >= 0xe0 ? 3 : 2;
             std::size_t k = 1;
@@ -422,35 +372,6 @@ bool readKeyFile(const std::string &path, std::string &key, std::string &err) {
 std::string cacheGlyph(int state, bool pinned) {
     const char *g = state == 2 ? "●" : state == 1 ? "◐" : state == 0 ? "○" : "";
     return std::string(g) + (pinned && state >= 0 ? "*" : "");
-}
-
-const std::vector<std::string> &helpLines() {
-    static const std::vector<std::string> lines = {
-        "space      play / pause",
-        "n / p      next / previous track",
-        "← / →      seek -5 s / +5 s",
-        "Home / End start of the track / its last 5 s",
-        "0 … 9      seek to 0% … 90%",
-        "+ / -      volume up / down",
-        "enter      play selected track",
-        "j k ↑ ↓    move selection",
-        "g G        first / last row",
-        "r          repeat: off → all → one",
-        "s          shuffle on / off",
-        "a / A      add selected to the queue / play it next",
-        "v          show the queue (up next); in it:",
-        "  J / K      move down / up   d del  remove",
-        "  c          clear the queue  enter  play now",
-        "  esc / v    back to the list",
-        "P          save offline / unsave (remote; not counted in the cache limit)",
-        "b          browse: library (server) / folders; in it:",
-        "  enter l    open / play from this track  ⌫ h  up",
-        "  o          play the selection now       a A  queue / play next",
-        "  P          save offline (server)        esc  back",
-        "?  esc     toggle / close this help",
-        "q          quit",
-    };
-    return lines;
 }
 
 } // namespace lmtui

@@ -1,5 +1,6 @@
 // UI-independent pieces of the lightmusic TUI (unit-tested in tests/test_tui_logic.cpp):
-// argument scanning + natural sort, terminal key parsing, key -> command mapping,
+// argument scanning + natural sort, terminal key parsing, commands (bound to keys in
+// keymap.hpp),
 // time/volume formatting.
 #pragma once
 
@@ -90,19 +91,8 @@ enum class Command {
     ToggleBrowser, // b: the library/folder browser, or back to the list
     BrowseUp,      // browser: parent level (backspace, h)
     BrowsePlay,    // browser: play the selected folder/album/artist now (o)
+    OpenCommandLine, // ':' opens the command line (keymap.hpp: parseCommandLine)
 };
-
-// Maps a key name to a command. Printable keys are the character itself (" " for
-// space); special keys use: left right up down enter escape home end pageup pagedown
-// delete ctrl-c ctrl-z.
-Command mapKey(std::string_view key);
-// Keys while the queue pane has the focus: J/K move the selected entry, d/delete remove
-// it, c clears the queue, esc closes the pane; a/A do nothing; everything else as
-// mapKey() (j/k/enter/... act on the queue selection).
-Command mapQueueKey(std::string_view key);
-// Keys in the browser: enter opens (a track: plays its folder/album from it), l opens,
-// backspace/h go up, o plays the selection, a/A queue it, esc/b close; else mapKey().
-Command mapBrowserKey(std::string_view key);
 
 constexpr double kSeekStep = 5.0;
 constexpr double kEndSeek = 5.0; // End leaves this much of the track
@@ -118,7 +108,8 @@ float stepVolume(float v, int dir);
 
 // Incremental decoder for terminal input bytes -> key names understood by mapKey().
 // Recognises CSI/SS3 cursor keys (ESC [ A, ESC O A, ...), ESC [ n ~ (home/end/page),
-// Enter (CR or LF), Ctrl-C, Ctrl-Z, printable ASCII and well-formed UTF-8 sequences
+// Enter (CR or LF), Tab, Backspace (DEL or ^H), other control bytes as ctrl-a..ctrl-z,
+// printable ASCII and well-formed UTF-8 sequences
 // (passed through). Malformed escape sequences yield "escape" and the following bytes
 // are reparsed; invalid UTF-8 bytes (bad continuation, 0xf8..0xff) are dropped.
 // A lone ESC is ambiguous until more input arrives: pending() reports it and the caller
@@ -150,8 +141,5 @@ int nextRepeat(int repeat);
 // Play-order indicator for the status line: "", "repeat", "repeat one", "shuffle",
 // "repeat · shuffle", ...
 std::string modeLabel(int repeat, bool shuffle);
-
-// Help text lines shown by '?'.
-const std::vector<std::string> &helpLines();
 
 } // namespace lmtui

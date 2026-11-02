@@ -59,9 +59,19 @@ inserts that much silence between tracks (`playback.gap_seconds`).
 | Home / End | seek to the start / the last 5 s | 0 … 9 | seek to 0 % … 90 % |
 | + / - | volume ±5 % | ? / Esc | help / close help |
 | r | repeat: off → all → one | s | shuffle on / off |
-| a / A | queue selected / play it next | v | show the queue (up next) |
+| q / Q | queue selected / play it next | v | show the queue (up next) |
 | b | browse library / folders | P | save offline (remote tracks) |
-| q | quit (also Ctrl-C) | | |
+| : | command line (`:q` quits) | Ctrl-C | quit |
+
+A bare `q` does not quit: it queues. Quit with `:q` (or `:quit`) or Ctrl-C. Every key
+can be rebound in `cfg.yaml` (see **Keybindings** below); the help overlay (`?`) is
+generated from the active bindings.
+
+**Command line** (`:`). Type a command and press enter; `esc` (or backspace on an empty
+line) cancels. `:q`, `:quit`, `:q!`, `:qa` quit; `:help`; `:seek 1:30`, `:seek 90`,
+`:seek 1:02:03`, `:seek 50%`, `:seek +10`, `:seek -5` (relative); `:vol 80` /
+`:volume 80` (0..150 %); and any action name below runs it (`:next`, `:shuffle`,
+`:queue_clear` in the queue pane). Unknown commands are reported on the status line.
 
 In the queue pane (`v`): `j`/`k` select, `J`/`K` move the entry down/up, `d` or Delete
 removes it, `c` clears the queue, `enter` plays it now, `Esc`/`v` returns to the list.
@@ -75,7 +85,7 @@ from the client's mirror, so it works offline too, with the cache markers (`●`
 `◐` partial, `○` remote, `*` saved offline) and each album's cached share (`3/12
 cached`) — and **Folders**. Keys: `enter`/`l` opens a folder, artist or album; on a track
 it plays that folder's files (or the album) from it, replacing the list; `o` plays the
-selected folder (recursively), album or artist now; `a`/`A` add it to the user queue
+selected folder (recursively), album or artist now; `q`/`Q` add it to the user queue
 (end / next) without touching the list; `P` saves a server track or a whole album
 offline (again: unsave); `esc`/`b` returns to the list (the browser keeps its place).
 Started without files (and without a server), the TUI opens in the browser with an empty
@@ -86,12 +96,12 @@ background thread, only for visible rows (newest first, at most 64 waiting, up t
 labels cached), so a large folder costs nothing until it is scrolled through. An idle
 browser has no timers or threads that wake up.
 
-**User queue ("up next")** (`a`, `A`, `v`). The list you started (the folder, album or
+**User queue ("up next")** (`q`, `Q`, `v`). The list you started (the folder, album or
 library: the *context*) and your own queue are kept apart. Queued tracks play before
 the context continues, in queue order, each once: a track leaves the queue when it
 starts. When the queue is empty the context carries on after the context track that
-played last, so queued tracks are an interlude, not a jump. `a` adds the selected row
-at the end, `A` puts it first ("play next"); rows in the queue show their place
+played last, so queued tracks are an interlude, not a jump. `q` adds the selected row
+at the end, `Q` puts it first ("play next"); rows in the queue show their place
 (`+1` plays next) and the status line counts them (`up next 2`). Shuffle and repeat-all
 apply to the context only (the queue is never shuffled or repeated); repeat-one repeats
 whatever track is playing, a queued one too. `p` on a queued track goes back to the
@@ -157,7 +167,9 @@ ctest --test-dir build --output-on-failure
 - `test_player`: on miniaudio's Null backend: the frames sent to the device equal the
   concatenation of the decoded tracks (nothing inserted at joins), resampling of a 48 kHz
   track after 44.1 kHz ones, and the command/state machine. Skipped without `ffmpeg`.
-- `test_config`: libconfig: defaults, every client key from a full file (relative and
+- `test_config`: libconfig: the `keys:` section (scalar/list/empty, its place, a scalar or
+  nested mapping refused, per-name layering, hot reload ignoring moved lines), defaults,
+  every client key from a full file (relative and
   `~` paths), precedence defaults < file < overrides layer < flags, unknown keys
   (warnings with line numbers), type/range/shape errors with line:col, duplicate and
   dotted keys, `api_key` refusal in any spelling (`API_KEY`, `apiKey`, `api-key`; value
@@ -183,8 +195,12 @@ ctest --test-dir build --output-on-failure
   music paths, flags overriding (lists replaced), defaults, errors with line numbers,
   unknown keys, loopback/proxy checks on the merged result, missing and world-writable
   files.
-- `test_tui_logic`: directory scanning, natural sort, terminal key parsing, key mapping,
-  time/volume formatting.
+- `test_tui_logic`: directory scanning, natural sort, terminal key parsing (ctrl-letters,
+  tab), the default keymap per context, `keys:` overrides (replacing defaults, unbinding,
+  user keys taking default ones, digits, conflicts, unknown actions/keys with their
+  place), the help and hint generated from the bindings, the `:` command line parser
+  (quit forms, actions, `seek` positions, `vol`, errors) and its editing, time/volume
+  formatting.
 - `test_server_range`: Range header decisions (suffix, open-ended, past EOF, reversed,
   multiple ranges, overflow, empty file).
 - `test_server_auth`: SHA-256 test vectors, key generation, constant-time compare, the
@@ -204,8 +220,11 @@ ctest --test-dir build --output-on-failure
   blocked), `X-Forwarded-For` through `--trusted-proxy`, `--listen` refusal. Skipped
   without `ffmpeg`.
 - `test_tui_smoke`: runs `lightmusic` in a pty (`script`) on the Null backend with
-  generated files, sends keys, expects a clean exit on `q` and a restored terminal; also
-  that `q` exits promptly with a FIFO in the queue; with a temp `XDG_CONFIG_HOME`:
+  generated files, sends keys, expects a clean exit on Ctrl-C / `:q` and a restored
+  terminal; also that `:q` exits promptly with a FIFO in the queue; keybindings from
+  `cfg.yaml` (a rebound `q` no longer queues, the hint and help follow the bindings), the
+  `:` command line (`:vol`, `:seek 50%`, an unknown command, backspace editing), and bad
+  bindings (unknown key, one key on two actions) refused with exit status 2; with a temp `XDG_CONFIG_HOME`:
   `cfg.yaml`'s volume applied at start, a live edit (volume hot-applied, replaygain
   reported as restart-required), and a group-writable file / an `api_key` refused;
   volume keys saved into `cfg.yaml` (debounced and on quit) with its comments intact,
@@ -717,6 +736,9 @@ ui:
                                     # from ~/.config/user-dirs.dirs, else ~/Music
   save_settings: true               # write volume/repeat/shuffle changes made in the
                                     # UI (or over MPRIS) back here
+keys:                               # (hot) action: key or [keys]; replaces that
+  queue_add: a                      # action's default keys; [] unbinds it
+  quit: [ctrl-c, ctrl-q]
 ```
 
 | Key | Flag | Default | Hot |
@@ -736,6 +758,26 @@ ui:
 | `ui.show_cache_markers` | – | true | restart |
 | `ui.music_dir` | – | `$XDG_MUSIC_DIR`, else `~/Music` | yes (next time the browser opens at the top) |
 | `ui.save_settings` | – | true | yes |
+| `keys.<action>` | – | see below | yes |
+
+#### Keybindings
+
+`keys.<action>` takes one key or a list. Key names: a single character (`q`, `Q`, `?`,
+`€`; quote YAML-special ones: `"?"`, `":"`, `"-"`), `space`, `enter`, `escape`, `tab`,
+`backspace`, `delete`, `left`, `right`, `up`, `down`, `home`, `end`, `pageup`,
+`pagedown`, `ctrl-a` … `ctrl-z` (not `ctrl-h`/`i`/`j`/`m`, which terminals send as
+backspace, tab and enter). A listed action's keys replace its defaults, and a key you
+bind is taken from any other action's *default* of the same context; binding one key to
+two listed actions of one context is an error (with its line), as are unknown actions
+and keys: the program exits with status 2, or a reload keeps the old bindings. The
+digits seek by percent unless bound. Queue-pane and browser actions win over global
+ones while their pane is open.
+
+| context | action (default keys) |
+|---|---|
+| global | `toggle_pause` (space), `next` (n), `prev` (p), `seek_back` (←), `seek_forward` (→), `seek_start` (Home), `seek_end` (End), `volume_up` (+ =), `volume_down` (- _), `play_selected` (enter), `select_up` (k ↑), `select_down` (j ↓), `select_first` (g), `select_last` (G), `page_up` (PgUp), `page_down` (PgDn), `repeat` (r), `shuffle` (s), `queue_add` (q), `play_next` (Q), `queue_view` (v), `browser` (b), `pin` (P), `command_line` (:), `help` (?), `close_help` (esc), `suspend` (Ctrl-Z), `quit` (Ctrl-C) |
+| queue pane | `queue_move_up` (K), `queue_move_down` (J), `queue_remove` (d Del), `queue_clear` (c), `queue_close` (esc) |
+| browser | `browse_open` (l), `browse_up` (⌫ h), `browse_play` (o), `browser_close` (esc) |
 
 **Value forms.** Numbers are plain decimal integers: an optional sign and digits, no
 leading zeros (`010` is an error, since YAML 1.1 reads it as octal), no `_`, `0x`,
