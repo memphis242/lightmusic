@@ -220,15 +220,20 @@ private:
 // either needs it.
 class LabelBox {
 public:
-    void push(std::size_t i, std::string label) {
+    struct Item {
+        std::size_t index;
+        std::string label;      // "" if the file has no title tag
+        std::int64_t durMs = 0; // 0 if unknown
+    };
+    void push(Item it) {
         {
             std::lock_guard lk(m_);
             if (stop_) return;
-            labels_.emplace_back(i, std::move(label));
+            labels_.push_back(std::move(it));
         }
         wake();
     }
-    std::vector<std::pair<std::size_t, std::string>> take() {
+    std::vector<Item> take() {
         std::lock_guard lk(m_);
         return std::exchange(labels_, {});
     }
@@ -244,7 +249,7 @@ public:
 private:
     std::mutex m_;
     bool stop_ = false;
-    std::vector<std::pair<std::size_t, std::string>> labels_;
+    std::vector<Item> labels_;
 };
 
 // Starts a detached helper thread with the asynchronous signals blocked (they belong to
@@ -353,6 +358,7 @@ private:
 struct Spec {
     std::string path, name;
     std::int64_t remote = 0;
+    std::int64_t durMs = 0; // 0: unknown (local files: read in the background)
 };
 
 // In-app browser: a stack of levels (folder browser, or library Artists -> Albums ->
@@ -431,6 +437,7 @@ struct Ui {
     std::vector<std::int64_t> remote;
     std::vector<int> cache;
     std::vector<char> pinned;
+    std::vector<std::int64_t> durMs; // per row: length in ms, 0 if not known (yet)
     std::string net; // "offline", cache usage, ... (empty without --server)
     lm::PlayerState st;
     lmtui::StatusLine status; // the status line's message (expires; see StatusLine)
@@ -455,6 +462,12 @@ struct Ui {
     // Same for repeat/shuffle (r and s can be pressed faster than ModeChanged arrives).
     std::optional<lm::Repeat> repeatTarget;
     std::optional<bool> shuffleTarget;
+    std::optional<bool> stopAfterTarget;
+    // Sleep timer (:sleep): playback fades out over the last kSleepFade and pauses at
+    // sleepAt; fadeBase is the volume before the fade (restored after the pause, and
+    // what gets saved meanwhile).
+    std::optional<std::chrono::steady_clock::time_point> sleepAt;
+    std::optional<float> fadeBase;
     // Fuzzy filter (/): the active query ("" = none), for the list or (filterBrowser)
     // the browser level it was typed in; filterInput is the prompt while typing.
     std::string filter;
@@ -532,6 +545,25 @@ Window window(const std::vector<int> *rows, int total, int selected, int visible
     }
     const int first = std::clamp(pos - visible / 2, 0, std::max(0, total - visible));
     return {first, std::min(total, first + visible)};
+}
+
+// "3 more · 12:30 left": the rest of the playing track, the user queue and, when the
+// context plays in order once (no shuffle, no repeat), the list after it.
+std::string timeLeftLabel(const Ui &ui) {
+    const auto &st = ui.st;
+    std::vector<std::int64_t> ahead;
+    ahead.reserve(st.upNext.size() + (ui.ctx > static_cast<std::size_t>(std::max(0, st.contextIndex + 1))
+                                          ? ui.ctx - static_cast<std::size_t>(std::max(0, st.contextIndex + 1))
+                                          : 0));
+    auto dur = [&](int e) { return e >= 0 && static_cast<std::size_t>(e) < ui.durMs.size() ? ui.durMs[static_cast<std::size_t>(e)] : 0; };
+    for (int e : st.upNext) ahead.push_back(dur(e));
+    if (!st.shuffle && st.repeat == lm::Repeat::Off && !st.stopAfterCurrent)
+        for (std::size_t i = static_cast<std::size_t>(std::max(0, st.contextIndex + 1)); i < ui.ctx; i++)
+            ahead.push_back(dur(static_cast<int>(i)));
+    if (st.stopAfterCurrent) ahead.clear(); // nothing plays after this track
+    const std::int64_t curLeft =
+        st.track.duration > 0 ? std::llround((st.track.duration - st.position) * 1000.0) : 0;
+    return lmtui::formatTimeLeft(lmtui::timeLeft(curLeft, ahead));
 }
 
 // The status line: the current message, coloured by level, or the key hint.
@@ -669,9 +701,15 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
     const float frac = dur > 0 ? static_cast<float>(std::clamp(st.position / dur, 0.0, 1.0)) : 0.0f;
     const std::string times = lmtui::formatTime(st.position) + " / " + (dur > 0 ? lmtui::formatTime(dur) : "?:??");
     const std::string vol = std::format("vol {:3}%", std::lround(st.volume * 100.0f));
-    const std::string pos = std::format("{}/{}", st.index + 1, st.queueSize);
+    std::string pos = std::format("{}/{}", st.index + 1, st.queueSize);
+    if (st.index >= 0 && st.status != lm::Status::Stopped) pos = timeLeftLabel(ui) + "  " + pos;
     std::string mode = lmtui::modeLabel(static_cast<int>(ui.repeatTarget.value_or(st.repeat)),
                                         ui.shuffleTarget.value_or(st.shuffle));
+    if (ui.stopAfterTarget.value_or(st.stopAfterCurrent)) mode += mode.empty() ? "stop after" : " · stop after";
+    if (ui.sleepAt) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(*ui.sleepAt - std::chrono::steady_clock::now());
+        mode += (mode.empty() ? "sleep " : " · sleep ") + lmtui::formatMs(left.count());
+    }
     if (!mode.empty()) mode = "  " + mode;
 
     // Footer: the command line while open, else the last message (or the key hint).
@@ -757,18 +795,25 @@ void apply(Ui &ui, const lm::Event &ev) {
     if (ui.volumeTarget && ev.state.volume == *ui.volumeTarget) ui.volumeTarget.reset();
     if (ui.repeatTarget && ev.state.repeat == *ui.repeatTarget) ui.repeatTarget.reset();
     if (ui.shuffleTarget && ev.state.shuffle == *ui.shuffleTarget) ui.shuffleTarget.reset();
+    if (ui.stopAfterTarget && ev.state.stopAfterCurrent == *ui.stopAfterTarget) ui.stopAfterTarget.reset();
     switch (ev.type) {
     case lm::EventType::Error: ui.error("error: " + ev.message); break;
     case lm::EventType::TrackChanged:
         // The message stays until it expires: an error that made the player skip a
         // track must not vanish with the skip.
         if (ev.state.index >= 0 && static_cast<std::size_t>(ev.state.index) < ui.ctx) ui.selected = ev.state.index;
+        if (ev.state.index >= 0 && static_cast<std::size_t>(ev.state.index) < ui.durMs.size() &&
+            ui.durMs[static_cast<std::size_t>(ev.state.index)] == 0 && ev.state.track.duration > 0)
+            ui.durMs[static_cast<std::size_t>(ev.state.index)] = std::llround(ev.state.track.duration * 1000.0);
         if (ev.state.index >= 0 && static_cast<std::size_t>(ev.state.index) < ui.names.size() &&
             ev.state.track.path == ui.paths[static_cast<std::size_t>(ev.state.index)])
             ui.names[static_cast<std::size_t>(ev.state.index)] =
                 lmtui::trackLabel(ev.state.track.tags.artist, ev.state.track.tags.title, ev.state.track.path);
         break;
-    case lm::EventType::EndOfQueue: ui.info("end of queue"); break;
+    case lm::EventType::EndOfQueue:
+        ui.stopAfterTarget.reset(); // fired (one-shot)
+        ui.info(ev.state.resumable ? "stopped after the track (play continues with the next)" : "end of queue");
+        break;
     default: break;
     }
     ui.qselected = std::clamp(ui.qselected, 0, std::max(0, static_cast<int>(ui.st.upNext.size()) - 1));
@@ -993,6 +1038,7 @@ int run(int argc, char **argv) {
     ui.remote.assign(ui.paths.size(), 0);
     ui.cache.assign(ui.paths.size(), -1);
     ui.pinned.assign(ui.paths.size(), 0);
+    ui.durMs.assign(ui.paths.size(), 0);
 #ifdef LM_TUI_NET
     for (const auto &t : remoteTracks) {
         ui.paths.push_back(lm::net::Client::trackUri(t.id));
@@ -1000,6 +1046,7 @@ int run(int argc, char **argv) {
         ui.remote.push_back(t.id);
         ui.cache.push_back(0);
         ui.pinned.push_back(0);
+        ui.durMs.push_back(t.durationMs);
     }
     if (client) {
         refreshCache(ui, *client, offline);
@@ -1041,8 +1088,13 @@ int run(int argc, char **argv) {
                 for (std::size_t i = 0; i < paths.size() && !box->stopped(); i++) {
                     if (remote[i]) continue; // labelled from the library mirror
                     lm::Tags t;
-                    if (lm::readTags(paths[i], t) && !t.title.empty())
-                        box->push(from + i, lmtui::trackLabel(t.artist, t.title, paths[i]));
+                    if (!lm::readTags(paths[i], t)) continue; // also: not a regular file
+                    // Length from the headers (time left in the queue); a decoder that
+                    // cannot open it leaves it unknown.
+                    std::int64_t ms = 0;
+                    if (auto d = lm::openDecoderForFile(paths[i]); d && d->sampleRate() > 0)
+                        ms = static_cast<std::int64_t>(d->totalFrames() * 1000 / d->sampleRate());
+                    box->push({from + i, t.title.empty() ? std::string() : lmtui::trackLabel(t.artist, t.title, paths[i]), ms});
                 }
             });
         };
@@ -1107,8 +1159,49 @@ int run(int argc, char **argv) {
             // inotify event of our own save is recognised and reloads silently.
             std::string lastWritten;
             std::optional<std::chrono::steady_clock::time_point> saveDue;
-            auto volumePct = [&] {
-                return static_cast<int>(std::lround(ui.volumeTarget.value_or(player.state().volume) * 100.0f));
+            auto volumePct = [&] { // during a sleep fade: the volume before it
+                return static_cast<int>(
+                    std::lround(ui.fadeBase.value_or(ui.volumeTarget.value_or(player.state().volume)) * 100.0f));
+            };
+            // Sleep timer: cancel (restoring the volume a fade lowered) and service.
+            constexpr auto kSleepFade = std::chrono::seconds(30);
+            constexpr auto kFadeStep = std::chrono::milliseconds(500);
+            auto cancelSleep = [&] {
+                ui.sleepAt.reset();
+                if (ui.fadeBase) {
+                    ui.volumeTarget = ui.fadeBase;
+                    player.setVolume(*ui.volumeTarget);
+                    ui.fadeBase.reset();
+                }
+            };
+            auto serviceSleep = [&] {
+                if (!ui.sleepAt) return;
+                const auto now = std::chrono::steady_clock::now();
+                if (now >= *ui.sleepAt) {
+                    const bool playing = player.state().status == lm::Status::Playing;
+                    if (playing) player.pause();
+                    cancelSleep(); // the volume comes back for the next play
+                    ui.info(playing ? "sleep timer: paused" : "sleep timer: ended");
+                    dirty = true;
+                    return;
+                }
+                if (now < *ui.sleepAt - kSleepFade) return;
+                if (!ui.fadeBase) ui.fadeBase = ui.volumeTarget.value_or(player.state().volume);
+                const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(*ui.sleepAt - now);
+                const float f = static_cast<float>(left.count()) / static_cast<float>(std::chrono::milliseconds(kSleepFade).count());
+                ui.volumeTarget = *ui.fadeBase * std::clamp(f, 0.0f, 1.0f);
+                player.setVolume(*ui.volumeTarget);
+                dirty = true;
+            };
+            auto sleepTimeoutMs = [&]() -> int {
+                if (!ui.sleepAt) return -1;
+                const auto now = std::chrono::steady_clock::now();
+                const auto fadeAt = *ui.sleepAt - kSleepFade;
+                // Before the fade: wake when it starts (the footer countdown redraws with
+                // the position events); during it: every step.
+                const auto next = now < fadeAt ? fadeAt : std::min(*ui.sleepAt, now + kFadeStep);
+                const auto ms = std::chrono::ceil<std::chrono::milliseconds>(next - now).count();
+                return static_cast<int>(std::clamp<long long>(ms, 0, 24LL * 3600 * 1000));
             };
             auto save = [&](std::string *quitErr = nullptr) {
                 saveDue.reset();
@@ -1308,7 +1401,7 @@ int run(int argc, char **argv) {
             };
             auto remoteSpec = [](const lm::net::Track &t) {
                 return Spec{lm::net::Client::trackUri(t.id),
-                            lmtui::trackLabel(t.artist, t.title, t.title.empty() ? "?" : t.title), t.id};
+                            lmtui::trackLabel(t.artist, t.title, t.title.empty() ? "?" : t.title), t.id, t.durationMs};
             };
             // Cache glyphs and album shares of the open level (after a cache change).
             auto refreshBrowser = [&] {
@@ -1371,8 +1464,9 @@ int run(int argc, char **argv) {
                 ui.remote.push_back(sp.remote);
                 ui.cache.push_back(sp.remote ? 0 : -1);
                 ui.pinned.push_back(0);
+                ui.durMs.push_back(sp.durMs);
             };
-            auto specOf = [&](std::size_t e) { return Spec{ui.paths[e], ui.names[e], ui.remote[e]}; };
+            auto specOf = [&](std::size_t e) { return Spec{ui.paths[e], ui.names[e], ui.remote[e], ui.durMs[e]}; };
             // Makes `specs` the new list (context) and plays it from `start`. The user
             // queue is kept: its tracks are re-added after the new list.
             auto replaceContext = [&](std::vector<Spec> specs, int start) {
@@ -1388,6 +1482,7 @@ int run(int argc, char **argv) {
                 ui.remote.clear();
                 ui.cache.clear();
                 ui.pinned.clear();
+                ui.durMs.clear();
                 std::vector<std::string> ctxPaths, keepPaths;
                 for (auto &sp : specs) {
                     ctxPaths.push_back(sp.path);
@@ -1574,6 +1669,7 @@ int run(int argc, char **argv) {
                 case lmtui::Command::Suspend: break;
                 case lmtui::Command::TogglePause:
                     if (ui.st.status != lm::Status::Stopped) player.togglePause();
+                    else if (ui.st.resumable) player.play(); // after stop-after: the next track
                     else if (ui.st.index < 0 && static_cast<std::size_t>(ui.selected) < ui.ctx) player.playIndex(ui.selected);
                     else player.play(); // the current track, or the user queue with an empty list
                     break;
@@ -1601,6 +1697,10 @@ int run(int argc, char **argv) {
                 // repeat would lose steps.
                 case lmtui::Command::VolumeUp:
                 case lmtui::Command::VolumeDown: {
+                    if (ui.fadeBase) { // touching the volume during the fade cancels the timer
+                        cancelSleep();
+                        ui.info("sleep timer cancelled");
+                    }
                     const float base = ui.volumeTarget.value_or(player.state().volume);
                     ui.volumeTarget = lmtui::stepVolume(base, cmd == lmtui::Command::VolumeUp ? +1 : -1);
                     player.setVolume(*ui.volumeTarget);
@@ -1744,6 +1844,11 @@ int run(int argc, char **argv) {
                     if (!filterOn(ui)) ui.filter.clear();
                     ui.filterInput = ui.filter; // edit the active query
                     break;
+                case lmtui::Command::ToggleStopAfter:
+                    ui.stopAfterTarget = !ui.stopAfterTarget.value_or(ui.st.stopAfterCurrent);
+                    player.setStopAfterCurrent(*ui.stopAfterTarget);
+                    ui.info(*ui.stopAfterTarget ? "stop after this track" : "stop after: off");
+                    break;
                 case lmtui::Command::JumpPlaying: {
                     const int idx = ui.st.index;
                     if (ui.st.status == lm::Status::Stopped || idx < 0) {
@@ -1792,6 +1897,23 @@ int run(int argc, char **argv) {
                     break;
                 }
                 case lmtui::CommandLine::Messages: ui.showMessages = true; break;
+                case lmtui::CommandLine::Sleep:
+                    if (c.sleepSec == 0) {
+                        const bool was = ui.sleepAt.has_value();
+                        cancelSleep();
+                        ui.info(was ? "sleep timer off" : "no sleep timer");
+                    } else if (c.sleepSec > 0) {
+                        cancelSleep();
+                        ui.sleepAt = std::chrono::steady_clock::now() + std::chrono::seconds(c.sleepSec);
+                        ui.info(std::format("sleep in {} (fades out over the last 30 s)", lmtui::formatMs(c.sleepSec * 1000)));
+                    } else if (ui.sleepAt) {
+                        ui.info("sleep in " + lmtui::formatMs(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                                  *ui.sleepAt - std::chrono::steady_clock::now())
+                                                                  .count()));
+                    } else {
+                        ui.info("no sleep timer (:sleep 30 sets one)");
+                    }
+                    break;
                 case lmtui::CommandLine::Volume:
                     ui.volumeTarget = static_cast<float>(c.volume) / 100.0f;
                     player.setVolume(*ui.volumeTarget);
@@ -1846,6 +1968,7 @@ int run(int argc, char **argv) {
                     Tty::size(width, height);
                     dirty = true;
                 }
+                serviceSleep();
                 if (ui.status.expire(lmtui::StatusLine::Clock::now())) dirty = true;
                 if (dirty) {
                     auto screen = Screen::Create(Dimension::Fixed(width), Dimension::Fixed(height));
@@ -1861,6 +1984,7 @@ int run(int argc, char **argv) {
                 if (watcher && watcher->timeoutMs() >= 0) // settings reload debounce
                     timeout = timeout < 0 ? watcher->timeoutMs() : std::min(timeout, watcher->timeoutMs());
                 if (saveDue) timeout = timeout < 0 ? saveTimeoutMs() : std::min(timeout, saveTimeoutMs());
+                if (const int sl = sleepTimeoutMs(); sl >= 0) timeout = timeout < 0 ? sl : std::min(timeout, sl);
                 // The status message's expiry (only while one is shown).
                 if (const int st = ui.status.timeoutMs(lmtui::StatusLine::Clock::now()); st >= 0)
                     timeout = timeout < 0 ? st : std::min(timeout, st);
@@ -1909,8 +2033,9 @@ int run(int argc, char **argv) {
                     }
 #endif
                     if (tagWorker.drain()) dirty = true;
-                    for (auto &[i, label] : labels->take()) {
-                        if (i < ui.names.size()) ui.names[i] = std::move(label);
+                    for (auto &it : labels->take()) {
+                        if (it.index < ui.names.size() && !it.label.empty()) ui.names[it.index] = std::move(it.label);
+                        if (it.index < ui.durMs.size() && it.durMs > 0) ui.durMs[it.index] = it.durMs;
                         dirty = true;
                     }
                     if (g_resized.exchange(0)) {

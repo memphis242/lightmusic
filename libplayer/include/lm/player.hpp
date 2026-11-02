@@ -68,6 +68,8 @@ struct PlayerState {
     std::vector<int> upNext;
     bool fromUserQueue = false; // the audible track came from the user queue
     int contextIndex = -1;      // context entry the context continues after (see Player)
+    bool stopAfterCurrent = false; // armed (Player::setStopAfterCurrent)
+    bool resumable = false; // stopped after a track: play() continues with the next one
 };
 
 enum class EventType {
@@ -81,7 +83,7 @@ enum class EventType {
     Error,         // message set; playback continues if possible (e.g. a track that
                    // fails to open or stops on a decode error is reported, then skipped)
     Log,           // informational (device info, reroutes)
-    ModeChanged,   // repeat or shuffle changed
+    ModeChanged,   // repeat, shuffle or stop-after-current changed
 };
 const char *eventName(EventType t);
 
@@ -175,6 +177,13 @@ public:
     // can apply from the track after next. Gapless transitions and the gap are unchanged.
     void setRepeat(Repeat r);
     void setShuffle(bool on);
+    // Stop when the track playing ends naturally, instead of moving on (one-shot: the
+    // flag clears when it fires; next/prev/seek do not fire it). Playback ends like an
+    // end of queue (EndOfQueue, Stopped, index -1) with PlayerState::resumable set, and
+    // play() then continues with the track that would have followed. Like setRepeat, it
+    // applies to the first track not yet fully decoded: armed in the last
+    // PlayerConfig::ringSeconds of a track, it stops after the next one.
+    void setStopAfterCurrent(bool on);
 
     PlayerState state() const;
     // Blocks until every command issued before it has been handled. From an onEvent

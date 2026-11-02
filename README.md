@@ -62,6 +62,7 @@ inserts that much silence between tracks (`playback.gap_seconds`).
 | q / Q | queue selected / play it next | v | show the queue (up next) |
 | b | browse library / folders | P | save offline (remote tracks) |
 | / | fuzzy filter (esc clears) | . | jump to the playing track |
+| S | stop after this track | `:sleep 30` | sleep timer (fades out) |
 | : | command line (`:q` quits) | Ctrl-C | quit |
 
 A bare `q` does not quit: it queues. Quit with `:q` (or `:quit`) or Ctrl-C. Every key
@@ -84,6 +85,21 @@ read, their tag label. While filtered, `j`/`k`/`g`/`G`/PgUp/PgDn move among the 
 backspace on an empty query) clears it. Switching panes, opening another browser level
 or replacing the list clears it too. `.` selects the playing track in the list, closing
 the browser or queue pane and clearing a filter that would hide it.
+
+**Stop after this track** (`S`), **sleep timer** (`:sleep`), **time left.** `S` arms a
+one-shot stop at the natural end of the playing track (the mode area shows `stop after`;
+`S` again disarms it); playback ends there and `space` continues with the track that
+would have followed (the user queue's head, else the next in the list). Armed in a
+track's last half second (the decoder runs that far ahead) it stops after the next one.
+`:sleep 30` (minutes), `:sleep 45m`, `:sleep 1h30`, `:sleep 1:30`, `:sleep 90s` set a
+sleep timer (up to 24 h; the mode area counts down `sleep 29:12`): the volume fades out
+over the last 30 s (or the whole time if shorter), playback pauses, and the volume comes
+back for the next play (the saved volume is never the faded one). `:sleep off` cancels it,
+`:sleep` shows it, and a volume key during the fade cancels it. While playing, the top
+line shows the time left: the rest of the track, the user queue and, when the list plays
+in order once (no shuffle or repeat), the rest of the list (`3 more · 12:30 left`; a `+`
+means some lengths are not known yet). Lengths come from the library for server tracks
+and from the file headers for local files, read with the tags in the background.
 
 **Status line.** Errors (red), warnings (yellow) and confirmations appear in the bottom
 line and expire on their own: confirmations after 3 s, warnings after 6 s, errors after
@@ -185,7 +201,10 @@ ctest --test-dir build --output-on-failure
   files' headers. Skipped if `ffmpeg` is missing.
 - `test_player`: on miniaudio's Null backend: the frames sent to the device equal the
   concatenation of the decoded tracks (nothing inserted at joins), resampling of a 48 kHz
-  track after 44.1 kHz ones, and the command/state machine. Skipped without `ffmpeg`.
+  track after 44.1 kHz ones, the command/state machine, and stop-after-current (ends
+  like an end of queue, play() resumes with the next context or user-queue track,
+  one-shot, disarmed, cleared by clearQueue, dropped by playIndex). Skipped without
+  `ffmpeg`.
 - `test_config`: libconfig: the `keys:` section (scalar/list/empty, its place, a scalar or
   nested mapping refused, per-name layering, hot reload ignoring moved lines), defaults,
   every client key from a full file (relative and
@@ -221,7 +240,8 @@ ctest --test-dir build --output-on-failure
   (quit forms, actions, `seek` positions, `vol`, `messages`, errors) and its editing, the
   fuzzy matching (subsequence per word, any word order, ASCII case folding) and moving
   within filtered rows (from a hidden row, clamping), the status line (expiry per level, rounding up, replacement, history of 50 with repeats
-  stored once, no timer when empty), time/volume formatting.
+  stored once, no timer when empty), time left (unknown lengths, formatting), `:sleep`
+  forms and limits, time/volume formatting.
 - `test_server_range`: Range header decisions (suffix, open-ended, past EOF, reversed,
   multiple ranges, overflow, empty file).
 - `test_server_auth`: SHA-256 test vectors, key generation, constant-time compare, the
@@ -246,7 +266,9 @@ ctest --test-dir build --output-on-failure
   `cfg.yaml` (a rebound `q` no longer queues, the hint and help follow the bindings), the
   `:` command line (`:vol`, `:seek 50%`, an unknown command, backspace editing), a status
   message expiring after 3 s, the `:messages` overlay, the `/` filter (typing narrows the
-  list and hides other rows, no match, enter keeps, esc clears), `.`, and bad
+  list and hides other rows, no match, enter keeps, esc clears), `.`, stop after the track
+  (`S`, then space continues), the time left, a 3 s sleep timer fading the volume and
+  pausing with the volume restored, and bad
   bindings (unknown key, one key on two actions) refused with exit status 2; with a temp `XDG_CONFIG_HOME`:
   `cfg.yaml`'s volume applied at start, a live edit (volume hot-applied, replaygain
   reported as restart-required), and a group-writable file / an `api_key` refused;
@@ -798,7 +820,7 @@ ones while their pane is open.
 
 | context | action (default keys) |
 |---|---|
-| global | `toggle_pause` (space), `next` (n), `prev` (p), `seek_back` (←), `seek_forward` (→), `seek_start` (Home), `seek_end` (End), `volume_up` (+ =), `volume_down` (- _), `play_selected` (enter), `select_up` (k ↑), `select_down` (j ↓), `select_first` (g), `select_last` (G), `page_up` (PgUp), `page_down` (PgDn), `filter` (/), `jump_playing` (.), `repeat` (r), `shuffle` (s), `queue_add` (q), `play_next` (Q), `queue_view` (v), `browser` (b), `pin` (P), `command_line` (:), `help` (?), `close_help` (esc), `suspend` (Ctrl-Z), `quit` (Ctrl-C) |
+| global | `toggle_pause` (space), `next` (n), `prev` (p), `seek_back` (←), `seek_forward` (→), `seek_start` (Home), `seek_end` (End), `volume_up` (+ =), `volume_down` (- _), `play_selected` (enter), `select_up` (k ↑), `select_down` (j ↓), `select_first` (g), `select_last` (G), `page_up` (PgUp), `page_down` (PgDn), `filter` (/), `jump_playing` (.), `stop_after` (S), `repeat` (r), `shuffle` (s), `queue_add` (q), `play_next` (Q), `queue_view` (v), `browser` (b), `pin` (P), `command_line` (:), `help` (?), `close_help` (esc), `suspend` (Ctrl-Z), `quit` (Ctrl-C) |
 | queue pane | `queue_move_up` (K), `queue_move_down` (J), `queue_remove` (d Del), `queue_clear` (c), `queue_close` (esc) |
 | browser | `browse_open` (l), `browse_up` (⌫ h), `browse_play` (o), `browser_close` (esc) |
 
