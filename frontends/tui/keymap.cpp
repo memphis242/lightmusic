@@ -40,6 +40,11 @@ constexpr std::array kActions = {
     Action{"filter", OpenFilter, Context::Global, "/", "fuzzy filter (esc clears)"},
     Action{"jump_playing", JumpPlaying, Context::Global, ".", "jump to the playing track"},
     Action{"stop_after", ToggleStopAfter, Context::Global, "S", "stop after this track"},
+    Action{"ab_start", AbStart, Context::Global, "[", "A-B repeat: set A here"},
+    Action{"ab_end", AbEnd, Context::Global, "]", "A-B repeat: set B here (loops)"},
+    Action{"ab_clear", AbClear, Context::Global, "\\", "A-B repeat off"},
+    Action{"mark", AddMark, Context::Global, "m", "bookmark this position"},
+    Action{"next_mark", NextMark, Context::Global, "'", "to the next bookmark"},
     Action{"command_line", OpenCommandLine, Context::Global, ":", "command line (:q quits)"},
     Action{"help", ToggleHelp, Context::Global, "?", "this help"},
     Action{"close_help", CloseHelp, Context::Global, "escape", "close the help"},
@@ -256,7 +261,7 @@ std::vector<std::string> Keymap::helpLines() const {
     section(Context::Global, "");
     section(Context::Queue, "in the queue pane:");
     section(Context::Browser, "in the browser (also q / Q queue, P save offline):");
-    out.emplace_back(":q           quit; :seek 1:30, :seek 50%, :vol 80, :sleep 30, :messages, :<action>");
+    out.emplace_back(":q           quit; :seek 1:30, :seek 50%, :vol 80, :sleep 30, :marks, :delmarks, :messages, :<action>");
     return out;
 }
 
@@ -282,6 +287,11 @@ CommandLine parseCommandLine(std::string_view text) {
         if (!arg.empty()) return fail(verb + " takes no argument");
         r.kind = CommandLine::Run;
         r.cmd = Command::Quit;
+        return r;
+    }
+    if (verb == "marks" || verb == "delmarks") {
+        if (!arg.empty()) return fail(verb + " takes no argument");
+        r.kind = verb == "marks" ? CommandLine::Marks : CommandLine::DelMarks;
         return r;
     }
     if (verb == "messages" || verb == "mes") {

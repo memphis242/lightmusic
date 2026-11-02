@@ -9,6 +9,7 @@
 #include <iterator>
 #include <cerrno>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -568,6 +569,90 @@ void compactSession(Session &s) {
     s.upNext = std::move(up);
     if (s.index >= 0) s.index = static_cast<std::size_t>(s.index) < map.size() ? map[static_cast<std::size_t>(s.index)] : -1;
     if (s.index < 0) s.positionMs = 0;
+}
+
+bool Bookmarks::add(const std::string &track, std::int64_t ms) {
+    if (ms < 0 || track.empty()) return false;
+    if (marks_.size() >= kMaxTracks && !marks_.contains(track)) return false;
+    auto &v = marks_[track];
+    for (const std::int64_t m : v)
+        if (std::llabs(m - ms) < 1000) return false;
+    if (v.size() >= kMaxMarks) return false;
+    v.insert(std::upper_bound(v.begin(), v.end(), ms), ms);
+    return true;
+}
+
+bool Bookmarks::clear(const std::string &track) { return marks_.erase(track) > 0; }
+
+const std::vector<std::int64_t> &Bookmarks::marks(const std::string &track) const {
+    static const std::vector<std::int64_t> none;
+    const auto it = marks_.find(track);
+    return it == marks_.end() ? none : it->second;
+}
+
+std::int64_t Bookmarks::next(const std::string &track, std::int64_t ms) const {
+    const auto &v = marks(track);
+    if (v.empty()) return -1;
+    for (const std::int64_t m : v)
+        if (m > ms + 1000) return m;
+    return v.front();
+}
+
+std::string Bookmarks::format() const {
+    std::string r = "lightmusic-bookmarks 1\n";
+    for (const auto &[track, v] : marks_) {
+        if (v.empty()) continue;
+        for (std::size_t i = 0; i < v.size(); i++) std::format_to(std::back_inserter(r), "{}{}", i ? " " : "", v[i]);
+        r += '\t' + escapeEntry(track) + '\n';
+    }
+    return r;
+}
+
+bool Bookmarks::parse(std::string_view text, std::string &err) {
+    std::map<std::string, std::vector<std::int64_t>> out;
+    std::size_t lineNo = 0;
+    auto fail = [&](std::string_view why) {
+        err = std::format("line {}: {}", lineNo, why);
+        return false;
+    };
+    while (!text.empty()) {
+        lineNo++;
+        const auto nl = text.find('\n');
+        if (nl == std::string_view::npos) return fail("truncated (no final newline)");
+        const std::string_view line = text.substr(0, nl);
+        text.remove_prefix(nl + 1);
+        if (lineNo == 1) {
+            if (line != "lightmusic-bookmarks 1") return fail("not a lightmusic bookmarks file (version 1)");
+            continue;
+        }
+        const auto tab = line.find('\t');
+        if (tab == std::string_view::npos) return fail("no tab");
+        std::string track;
+        if (tab + 1 >= line.size() || !unescapeEntry(line.substr(tab + 1), track)) return fail("bad track");
+        if (out.size() >= kMaxTracks) return fail("too many tracks");
+        std::vector<std::int64_t> v;
+        std::string_view ms = line.substr(0, tab);
+        while (!ms.empty()) {
+            const auto sp = ms.find(' ');
+            std::int64_t m = 0;
+            if (!parseInt64(ms.substr(0, sp), m) || m < 0 || m > std::int64_t{1} << 40) return fail("bad position");
+            if (v.size() >= kMaxMarks) return fail("too many marks");
+            v.push_back(m);
+            ms = sp == std::string_view::npos ? std::string_view() : ms.substr(sp + 1);
+        }
+        if (v.empty()) return fail("no positions");
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end()), v.end());
+        if (!out.emplace(std::move(track), std::move(v)).second) return fail("duplicate track");
+    }
+    if (lineNo == 0) return fail("empty file");
+    marks_ = std::move(out);
+    return true;
+}
+
+std::string bookmarksPath(const std::string &sessionPath) {
+    const auto slash = sessionPath.rfind('/');
+    return (slash == std::string::npos ? std::string() : sessionPath.substr(0, slash + 1)) + "bookmarks";
 }
 
 std::string sessionPath(const std::string &home, const char *xdgStateHome) {

@@ -74,6 +74,8 @@ scale; samples are clamped to ±1 after it in every case.
 | b | browse library / folders | P | save offline (remote tracks) |
 | / | fuzzy filter (esc clears) | . | jump to the playing track |
 | S | stop after this track | `:sleep 30` | sleep timer (fades out) |
+| [ / ] | A-B repeat: set A / B | \\ | A-B repeat off |
+| m | bookmark this position | ' | next bookmark |
 | : | command line (`:q` quits) | Ctrl-C | quit |
 
 A bare `q` does not quit: it queues. Quit with `:q` (or `:quit`) or Ctrl-C. Every key
@@ -121,6 +123,16 @@ Started without files or `--album` (with or without `--server`), lightmusic rest
 and shuffle come back from `cfg.yaml` as before. `--no-resume` (or
 `ui.resume_session: false`) starts fresh; a damaged session file is reported on stderr
 and ignored. Files or folders on the command line always start a new list.
+
+**A–B repeat and bookmarks.** `[` sets A at the current position, `]` sets B (more than
+1 s after A; without A the loop starts at 0:00) and loops A..B on this track until `\`
+clears it or another track plays; the mode area shows `A-B 0:30–0:45`. The loop runs on a
+timer armed only while it is active and playing (the next wakeup is B's time), and
+returns to A with a seek. `m` bookmarks the current position of the playing track and
+`'` jumps to its next bookmark (more than 1 s ahead, wrapping round); `:marks` lists them
+and `:delmarks` deletes them. Bookmarks are kept per track (path or server URI), at most
+100 each, in `$XDG_STATE_HOME/lightmusic/bookmarks` (0600, written atomically on each
+change); a damaged file is reported on stderr and replaced by the next change.
 
 **Output device loss.** When the stream is moved to another device while playing
 (headphones unplugged, a Bluetooth headset dropping: PipeWire/PulseAudio reroute it) or
@@ -280,7 +292,8 @@ ctest --test-dir build --output-on-failure
   stored once, no timer when empty), the session file (round trip with escaped paths,
   14 malformed forms refused, pruning and compaction remaps, path), time left (unknown
   lengths, formatting), `:sleep`
-  forms and limits, time/volume formatting.
+  forms and limits, bookmarks (1 s dedupe, sorted, wrap-around next, 100 per track,
+  round trip, 10 malformed files refused, normalisation), time/volume formatting.
 - `test_server_range`: Range header decisions (suffix, open-ended, past EOF, reversed,
   multiple ranges, overflow, empty file).
 - `test_server_auth`: SHA-256 test vectors, key generation, constant-time compare, the
@@ -309,7 +322,8 @@ ctest --test-dir build --output-on-failure
   (`S`, then space continues), the time left, the session saved on quit (0600, content)
   and resumed paused at its position without files (not with `--no-resume`; a damaged
   file reported), a 3 s sleep timer fading the volume and
-  pausing with the volume restored, and bad
+  pausing with the volume restored, A–B repeat looping instead of running past B,
+  bookmarks saved and jumped to in a later run (`:marks`, `:delmarks`), and bad
   bindings (unknown key, one key on two actions) refused with exit status 2; with a temp `XDG_CONFIG_HOME`:
   `cfg.yaml`'s volume applied at start, a live edit (volume hot-applied, replaygain
   reported as restart-required), and a group-writable file / an `api_key` refused;
@@ -901,7 +915,7 @@ ones while their pane is open.
 
 | context | action (default keys) |
 |---|---|
-| global | `toggle_pause` (space), `next` (n), `prev` (p), `seek_back` (←), `seek_forward` (→), `seek_start` (Home), `seek_end` (End), `volume_up` (+ =), `volume_down` (- _), `play_selected` (enter), `select_up` (k ↑), `select_down` (j ↓), `select_first` (g), `select_last` (G), `page_up` (PgUp), `page_down` (PgDn), `filter` (/), `jump_playing` (.), `stop_after` (S), `repeat` (r), `shuffle` (s), `queue_add` (q), `play_next` (Q), `queue_view` (v), `browser` (b), `pin` (P), `command_line` (:), `help` (?), `close_help` (esc), `suspend` (Ctrl-Z), `quit` (Ctrl-C) |
+| global | `toggle_pause` (space), `next` (n), `prev` (p), `seek_back` (←), `seek_forward` (→), `seek_start` (Home), `seek_end` (End), `volume_up` (+ =), `volume_down` (- _), `play_selected` (enter), `select_up` (k ↑), `select_down` (j ↓), `select_first` (g), `select_last` (G), `page_up` (PgUp), `page_down` (PgDn), `filter` (/), `jump_playing` (.), `stop_after` (S), `ab_start` ([), `ab_end` (]), `ab_clear` (\\), `mark` (m), `next_mark` ('), `repeat` (r), `shuffle` (s), `queue_add` (q), `play_next` (Q), `queue_view` (v), `browser` (b), `pin` (P), `command_line` (:), `help` (?), `close_help` (esc), `suspend` (Ctrl-Z), `quit` (Ctrl-C) |
 | queue pane | `queue_move_up` (K), `queue_move_down` (J), `queue_remove` (d Del), `queue_clear` (c), `queue_close` (esc) |
 | browser | `browse_open` (l), `browse_up` (⌫ h), `browse_play` (o), `browser_close` (esc) |
 

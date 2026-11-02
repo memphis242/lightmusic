@@ -8,6 +8,7 @@
 #include <concepts>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -99,6 +100,11 @@ enum class Command {
     OpenFilter,      // '/': fuzzy filter of the list / browser level
     JumpPlaying,     // '.': select the playing track in the list
     ToggleStopAfter, // S: stop when the playing track ends
+    AbStart,         // [: A-B repeat: A = here
+    AbEnd,           // ]: B = here (loops A..B)
+    AbClear,         // \: no A-B repeat
+    AddMark,         // m: bookmark this position
+    NextMark,        // ': to the next bookmark of the track
 };
 
 constexpr double kSeekStep = 5.0;
@@ -227,6 +233,30 @@ void compactSession(Session &s);
 // $XDG_STATE_HOME/lightmusic/session (absolute $XDG_STATE_HOME only), else
 // <home>/.local/state/lightmusic/session.
 [[nodiscard]] std::string sessionPath(const std::string &home, const char *xdgStateHome);
+
+// Bookmarks: positions (ms) per track (path or lm:// URI), kept sorted and unique, at
+// most kMaxMarks per track. Stored in $XDG_STATE_HOME/lightmusic/bookmarks as
+//   lightmusic-bookmarks 1 / then one "MS MS ...<TAB>PATH" line per track
+// (paths escaped like the session file).
+class Bookmarks {
+public:
+    static constexpr std::size_t kMaxMarks = 100, kMaxTracks = 100000;
+    // Adds `ms` (a duplicate within 1 s of an existing mark is not added); false if not added.
+    bool add(const std::string &track, std::int64_t ms);
+    // Removes the marks of a track; false if it had none.
+    bool clear(const std::string &track);
+    [[nodiscard]] const std::vector<std::int64_t> &marks(const std::string &track) const;
+    // The first mark more than 1 s after `ms`, wrapping to the first one; -1 if none.
+    [[nodiscard]] std::int64_t next(const std::string &track, std::int64_t ms) const;
+    [[nodiscard]] std::string format() const;
+    [[nodiscard]] bool parse(std::string_view text, std::string &err); // untrusted file
+    [[nodiscard]] bool empty() const { return marks_.empty(); }
+
+private:
+    std::map<std::string, std::vector<std::int64_t>> marks_;
+};
+// "...lightmusic/session" -> "...lightmusic/bookmarks" (same directory).
+[[nodiscard]] std::string bookmarksPath(const std::string &sessionPath);
 
 // The status line's message ("toast"): errors, warnings and confirmations, each shown
 // until it expires (info 3 s, warning 6 s, error 10 s) or a newer one replaces it. The

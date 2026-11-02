@@ -654,6 +654,51 @@ static void testSession() {
     CHECK(lmtui::sessionPath("/home/u", "/xdg") == "/xdg/lightmusic/session");
 }
 
+static void testBookmarks() {
+    lmtui::Bookmarks b;
+    CHECK(b.empty() && b.next("/a", 0) == -1 && b.marks("/a").empty());
+    CHECK(b.add("/a", 30'000));
+    CHECK(b.add("/a", 10'000));
+    CHECK(!b.add("/a", 10'500)); // within 1 s
+    CHECK(!b.add("/a", -1));
+    CHECK(!b.add("", 5));
+    CHECK(b.add("lm://server/track/7", 0));
+    CHECK((b.marks("/a") == std::vector<std::int64_t>{10'000, 30'000}));
+    CHECK_EQ(b.next("/a", 0), 10'000);
+    CHECK_EQ(b.next("/a", 9'500), 30'000); // more than 1 s ahead
+    CHECK_EQ(b.next("/a", 29'500), 10'000); // wraps
+    CHECK_EQ(b.next("/b", 0), -1);
+    for (int i = 0; i < 200; i++) (void)b.add("/many", i * 2000);
+    CHECK_EQ(b.marks("/many").size(), lmtui::Bookmarks::kMaxMarks);
+    const std::string text = b.format();
+    lmtui::Bookmarks c;
+    std::string err;
+    CHECK(c.parse(text, err));
+    CHECK((c.marks("/a") == b.marks("/a")) && c.marks("lm://server/track/7").size() == 1);
+    CHECK(c.clear("/a") && !c.clear("/a") && c.marks("/a").empty());
+    for (const char *bad : {"", "lightmusic-bookmarks 2\n", "lightmusic-bookmarks 1\n5\t/a",
+                            "lightmusic-bookmarks 1\n5 /a\n", "lightmusic-bookmarks 1\n\t/a\n",
+                            "lightmusic-bookmarks 1\nx\t/a\n", "lightmusic-bookmarks 1\n-5\t/a\n",
+                            "lightmusic-bookmarks 1\n5\t\n", "lightmusic-bookmarks 1\n5\t/a%zz\n",
+                            "lightmusic-bookmarks 1\n5\t/a\n6\t/a\n"}) {
+        lmtui::Bookmarks d;
+        err.clear();
+        CHECK(!d.parse(bad, err) && !err.empty());
+    }
+    lmtui::Bookmarks e; // unsorted and repeated positions are normalised
+    CHECK(e.parse("lightmusic-bookmarks 1\n9 3 3\t/x\n", err) && (e.marks("/x") == std::vector<std::int64_t>{3, 9}));
+    CHECK(lmtui::bookmarksPath("/s/lightmusic/session") == "/s/lightmusic/bookmarks");
+    const lmtui::Keymap km;
+    CHECK(km.lookup(lmtui::Context::Global, "[") == Command::AbStart);
+    CHECK(km.lookup(lmtui::Context::Global, "]") == Command::AbEnd);
+    CHECK(km.lookup(lmtui::Context::Global, "\\") == Command::AbClear);
+    CHECK(km.lookup(lmtui::Context::Global, "m") == Command::AddMark);
+    CHECK(km.lookup(lmtui::Context::Global, "'") == Command::NextMark);
+    CHECK(lmtui::parseCommandLine("marks").kind == lmtui::CommandLine::Marks);
+    CHECK(lmtui::parseCommandLine("delmarks").kind == lmtui::CommandLine::DelMarks);
+    CHECK(lmtui::parseCommandLine("marks 3").kind == lmtui::CommandLine::Error);
+}
+
 int main() {
     testKeyFile();
     testKeyParser();
@@ -670,5 +715,6 @@ int main() {
     testFuzzy();
     testTimeLeftAndSleep();
     testSession();
+    testBookmarks();
     return lmtest::finish("test_tui_logic");
 }

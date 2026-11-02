@@ -337,6 +337,39 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (resume runs)"; cat "$f"; fail=1
 done
+# A-B repeat ([ ] \\) loops a stretch of the track; bookmarks (m, ') are kept across runs.
+: > "$TMP/log16"
+w16() { n=300; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log16"; do sleep 0.05; n=$((n - 1)); done; }
+{ w16 Playing; sleep 0.3
+  printf 2; w16 "0:0[45] / 0:20"; printf '['; w16 "A-B repeat: A 0:0"
+  printf 4; w16 "0:0[89] / 0:20"; printf ']'; w16 "A-B 0:0"
+  : > "$TMP/ab.mark"; cp "$TMP/log16" "$TMP/log16.before"
+  sleep 6                             # loops instead of running on to 0:14
+  cp "$TMP/log16" "$TMP/log16.after"
+  printf '\\'; w16 "A-B repeat off"
+  printf m; w16 "bookmark at 0:"
+  printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
+    timeout 40 script -qfec "$BIN --null '$TMP/music/1 First.opus'" "$TMP/log16" >/dev/null 2>&1
+rc=$?
+[ $rc -eq 0 ] || { echo "FAIL: A-B run exit status $rc"; tail -c 1000 "$TMP/log16" | cat -v; fail=1; }
+loop=$(tail -c +$(( $(wc -c < "$TMP/log16.before") + 1 )) "$TMP/log16.after")
+echo "$loop" | grep -q "0:1[0-9] / 0:20" && { echo "FAIL: A-B repeat ran past B"; fail=1; }
+echo "$loop" | grep -q "0:0[4-5] / 0:20" || { echo "FAIL: A-B repeat never went back to A"; fail=1; }
+grep -q "bookmark at 0:" "$TMP/log16" || { echo "FAIL: bookmark not added"; fail=1; }
+[ -f "$XDG_STATE_HOME/lightmusic/bookmarks" ] || { echo "FAIL: bookmarks not saved"; fail=1; }
+: > "$TMP/log17"
+{ n=300; while [ $n -gt 0 ] && ! grep -q Playing "$TMP/log17"; do sleep 0.05; n=$((n - 1)); done
+  sleep 0.3; printf "\047"; n=200; while [ $n -gt 0 ] && ! grep -q "bookmark 0:" "$TMP/log17"; do sleep 0.05; n=$((n - 1)); done
+  printf ':marks\r'; sleep 0.3; printf ':delmarks\r'; sleep 0.3
+  printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
+    timeout 30 script -qfec "$BIN --null '$TMP/music/1 First.opus'" "$TMP/log17" >/dev/null 2>&1
+for want in "bookmark 0:" "bookmarks: 0:" "bookmarks deleted"; do
+    grep -q -- "$want" "$TMP/log17" || { echo "FAIL: bookmarks run: '$want' never shown"; fail=1; }
+done
+for f in "$TMP"/san*; do
+    [ -e "$f" ] || continue
+    echo "FAIL: sanitizer report $f (A-B/bookmark runs)"; cat "$f"; fail=1
+done
 # A bad binding is refused before the terminal is touched, with its line.
 printf 'keys:\n  queue_add: [a, F13]\n' > "$CFG"
 out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?
