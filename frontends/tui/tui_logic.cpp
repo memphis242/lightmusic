@@ -374,6 +374,46 @@ std::string cacheGlyph(int state, bool pinned) {
     return std::string(g) + (pinned && state >= 0 ? "*" : "");
 }
 
+namespace {
+char lowerAscii(char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; }
+} // namespace
+
+bool fuzzyMatch(std::string_view query, std::string_view text) {
+    std::size_t i = 0;
+    while (i < query.size()) {
+        while (i < query.size() && query[i] == ' ') i++;
+        std::size_t t = 0; // each term searches the whole text
+        for (; i < query.size() && query[i] != ' '; i++) {
+            const char q = lowerAscii(query[i]);
+            while (t < text.size() && lowerAscii(text[t]) != q) t++;
+            if (t == text.size()) return false;
+            t++;
+        }
+    }
+    return true;
+}
+
+std::vector<int> filterRows(std::string_view query, const std::vector<std::string> &labels) {
+    std::vector<int> rows;
+    for (std::size_t i = 0; i < labels.size(); i++)
+        if (fuzzyMatch(query, labels[i])) rows.push_back(static_cast<int>(i));
+    return rows;
+}
+
+int stepFiltered(const std::vector<int> &rows, int selected, int delta) {
+    if (rows.empty()) return -1;
+    const auto it = std::lower_bound(rows.begin(), rows.end(), selected);
+    long pos = it - rows.begin();
+    // Off a visible row: moving up starts from the row before it.
+    if ((it == rows.end() || *it != selected) && delta < 0) pos--;
+    if (it == rows.end() && delta >= 0) pos = static_cast<long>(rows.size()) - 1;
+    if (it != rows.end() && *it == selected) pos += delta;
+    else if (delta > 0) pos += delta - 1;
+    else if (delta < 0) pos += delta + 1;
+    pos = std::clamp(pos, 0L, static_cast<long>(rows.size()) - 1);
+    return rows[static_cast<std::size_t>(pos)];
+}
+
 StatusLine::Clock::duration StatusLine::lifetime(Level level) {
     using namespace std::chrono_literals;
     switch (level) {

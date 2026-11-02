@@ -515,6 +515,48 @@ static void testStatusLine() {
     CHECK(lmtui::parseCommandLine("mes x").kind == lmtui::CommandLine::Error);
 }
 
+static void testFuzzy() {
+    CHECK(lmtui::fuzzyMatch("", "anything"));
+    CHECK(lmtui::fuzzyMatch("   ", "anything"));
+    CHECK(lmtui::fuzzyMatch("tnth", "10 Tenth"));
+    CHECK(lmtui::fuzzyMatch("TENTH", "10 tenth"));
+    CHECK(!lmtui::fuzzyMatch("htnet", "10 Tenth")); // order matters
+    CHECK(lmtui::fuzzyMatch("jga bj", "Björk — Jóga")); // terms in any order, each a subsequence
+    CHECK(lmtui::fuzzyMatch("jóga bj", "Björk — Jóga"));
+    CHECK(!lmtui::fuzzyMatch("bj x", "Björk — Jóga")); // every term must match
+    CHECK(!lmtui::fuzzyMatch("JÓGA", "Björk — Jóga")); // non-ASCII compared exactly
+    CHECK(!lmtui::fuzzyMatch("a", ""));
+    CHECK(lmtui::fuzzyMatch("aa", "banana"));
+    CHECK(!lmtui::fuzzyMatch("aaaa", "banana"));
+    const std::vector<std::string> names = {"1 First", "2 Second", "10 Tenth", "Second Coming"};
+    CHECK(lmtui::filterRows("sec", names) == (std::vector<int>{1, 3}));
+    CHECK(lmtui::filterRows("", names) == (std::vector<int>{0, 1, 2, 3}));
+    CHECK(lmtui::filterRows("zzz", names).empty());
+
+    const std::vector<int> rows = {2, 5, 9};
+    CHECK_EQ(lmtui::stepFiltered(rows, 5, +1), 9);
+    CHECK_EQ(lmtui::stepFiltered(rows, 5, -1), 2);
+    CHECK_EQ(lmtui::stepFiltered(rows, 9, +1), 9); // clamped
+    CHECK_EQ(lmtui::stepFiltered(rows, 2, -10), 2);
+    CHECK_EQ(lmtui::stepFiltered(rows, 2, +10), 9);
+    CHECK_EQ(lmtui::stepFiltered(rows, 5, 0), 5);
+    // From a hidden row: down goes to the next visible one, up to the previous one.
+    CHECK_EQ(lmtui::stepFiltered(rows, 3, +1), 5);
+    CHECK_EQ(lmtui::stepFiltered(rows, 3, -1), 2);
+    CHECK_EQ(lmtui::stepFiltered(rows, 3, 0), 5);
+    CHECK_EQ(lmtui::stepFiltered(rows, 3, +2), 9);
+    CHECK_EQ(lmtui::stepFiltered(rows, 0, -1), 2);
+    CHECK_EQ(lmtui::stepFiltered(rows, 0, 0), 2);
+    CHECK_EQ(lmtui::stepFiltered(rows, 12, 0), 9);
+    CHECK_EQ(lmtui::stepFiltered(rows, 12, +1), 9);
+    CHECK_EQ(lmtui::stepFiltered(rows, 12, -1), 9);
+    CHECK_EQ(lmtui::stepFiltered({}, 3, 1), -1);
+    const lmtui::Keymap km;
+    CHECK(km.lookup(lmtui::Context::Global, "/") == Command::OpenFilter);
+    CHECK(km.lookup(lmtui::Context::Browser, "/") == Command::OpenFilter);
+    CHECK(km.lookup(lmtui::Context::Global, ".") == Command::JumpPlaying);
+}
+
 int main() {
     testKeyFile();
     testKeyParser();
@@ -528,5 +570,6 @@ int main() {
     testHelpFromBindings();
     testCommandLine();
     testStatusLine();
+    testFuzzy();
     return lmtest::finish("test_tui_logic");
 }
