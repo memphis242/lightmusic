@@ -470,6 +470,10 @@ struct Ui {
     // what gets saved meanwhile).
     std::optional<std::chrono::steady_clock::time_point> sleepAt;
     std::optional<float> fadeBase;
+    // A-B repeat on the track abPath: positions in ms; looping once B is set.
+    std::optional<std::int64_t> abA, abB;
+    std::string abPath;
+    lmtui::Bookmarks marks;
     // Fuzzy filter (/): the active query ("" = none), for the list or (filterBrowser)
     // the browser level it was typed in; filterInput is the prompt while typing.
     std::string filter;
@@ -708,6 +712,11 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
     std::string mode = lmtui::modeLabel(static_cast<int>(ui.repeatTarget.value_or(st.repeat)),
                                         ui.shuffleTarget.value_or(st.shuffle));
     if (ui.stopAfterTarget.value_or(st.stopAfterCurrent)) mode += mode.empty() ? "stop after" : " · stop after";
+    if (ui.abA || ui.abB) {
+        std::string ab = ui.abB ? std::format("A-B {}–{}", lmtui::formatMs(ui.abA.value_or(0)), lmtui::formatMs(*ui.abB))
+                                : "A " + lmtui::formatMs(*ui.abA);
+        mode += (mode.empty() ? "" : " · ") + ab;
+    }
     if (ui.sleepAt) {
         const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(*ui.sleepAt - std::chrono::steady_clock::now());
         mode += (mode.empty() ? "sleep " : " · sleep ") + lmtui::formatMs(left.count());
@@ -805,6 +814,10 @@ void apply(Ui &ui, const lm::Event &ev) {
     case lm::EventType::Error: ui.error("error: " + ev.message); break;
     case lm::EventType::DeviceChanged: ui.warn(ev.message); break;
     case lm::EventType::TrackChanged:
+        if (ev.state.track.path != ui.abPath) { // A-B repeat belongs to its track
+            ui.abA.reset();
+            ui.abB.reset();
+        }
         // The message stays until it expires: an error that made the player skip a
         // track must not vanish with the skip.
         if (ev.state.index >= 0 && static_cast<std::size_t>(ev.state.index) < ui.ctx) ui.selected = ev.state.index;
@@ -1139,6 +1152,20 @@ int run(int argc, char **argv) {
     std::vector<std::string> errors;
     Ui ui;
     ui.keymap = std::move(keymap);
+    { // bookmarks (m / '); a damaged file is reported and replaced by the next change
+        std::string text, err;
+        bool missing = false;
+        lm::config::Diags rd;
+        lm::config::FilePolicy pol;
+        pol.warnReadable = false;
+        pol.maxBytes = 64u << 20;
+        const std::string mf = lmtui::bookmarksPath(sessionFile);
+        if (lm::config::readConfigFile(mf, pol, text, missing, rd)) {
+            if (!ui.marks.parse(text, err)) lm::diagln(stderr, "lightmusic: {}: {}; bookmarks not loaded", mf, err);
+        } else if (!missing) {
+            for (const auto &d : rd) lm::diagln(stderr, "lightmusic: {}; bookmarks not loaded", d.str());
+        }
+    }
     if (resumed) {
         browseAtStart = false;
 #ifdef LM_TUI_NET
@@ -1359,6 +1386,44 @@ int run(int argc, char **argv) {
                 ui.volumeTarget = *ui.fadeBase * std::clamp(f, 0.0f, 1.0f);
                 player.setVolume(*ui.volumeTarget);
                 dirty = true;
+            };
+            // A-B repeat: back to A when the position reaches B (only while looping and
+            // playing; the next wakeup is B's time). A seek takes a moment to show in the
+            // position, so a new one waits 250 ms.
+            std::optional<std::chrono::steady_clock::time_point> abSeekAt;
+            auto abLeftMs = [&]() -> std::optional<std::int64_t> { // ms until B while looping
+                if (!ui.abB) return std::nullopt;
+                const lm::PlayerState now = player.state();
+                if (now.status != lm::Status::Playing || now.track.path != ui.abPath) return std::nullopt;
+                return *ui.abB - std::llround(now.position * 1000.0);
+            };
+            auto abGuardMs = [&]() -> std::int64_t { // left of the 250 ms after a loop seek
+                if (!abSeekAt) return 0;
+                const auto since = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                       std::chrono::steady_clock::now() - *abSeekAt)
+                                       .count();
+                return since < 250 ? 250 - since : 0;
+            };
+            auto serviceAb = [&] {
+                const auto left = abLeftMs();
+                if (!left || *left > 15 || abGuardMs() > 0) return;
+                player.seek(static_cast<double>(ui.abA.value_or(0)) / 1000.0);
+                abSeekAt = std::chrono::steady_clock::now();
+            };
+            auto abTimeoutMs = [&]() -> int {
+                const auto left = abLeftMs();
+                if (!left) return -1;
+                if (const std::int64_t g = abGuardMs(); g > 0) return static_cast<int>(g);
+                return static_cast<int>(std::clamp<std::int64_t>(*left, 0, 3'600'000));
+            };
+            // Bookmarks file next to the session file (written on every change).
+            const std::string marksFile = lmtui::bookmarksPath(sessionFile);
+            auto saveMarks = [&] {
+                std::error_code ec;
+                (void)std::filesystem::create_directories(marksFile.substr(0, marksFile.rfind('/')), ec); // the write reports
+                std::string err;
+                if (!lm::config::writeFileAtomic(marksFile, ui.marks.format(), 0600, &err))
+                    ui.error("bookmarks not saved: " + err);
             };
             auto sleepTimeoutMs = [&]() -> int {
                 if (!ui.sleepAt) return -1;
@@ -2032,6 +2097,63 @@ int run(int argc, char **argv) {
                     player.setStopAfterCurrent(*ui.stopAfterTarget);
                     ui.info(*ui.stopAfterTarget ? "stop after this track" : "stop after: off");
                     break;
+                case lmtui::Command::AbStart:
+                case lmtui::Command::AbEnd:
+                case lmtui::Command::AbClear: {
+                    const lm::PlayerState now = player.state();
+                    if (cmd == lmtui::Command::AbClear) {
+                        ui.info(ui.abA || ui.abB ? "A-B repeat off" : "no A-B repeat");
+                        ui.abA.reset();
+                        ui.abB.reset();
+                        break;
+                    }
+                    if (now.status == lm::Status::Stopped || now.index < 0) {
+                        ui.warn("A-B repeat: nothing is playing");
+                        break;
+                    }
+                    const std::int64_t ms = std::llround(now.position * 1000.0);
+                    if (now.track.path != ui.abPath) {
+                        ui.abA.reset();
+                        ui.abB.reset();
+                        ui.abPath = now.track.path;
+                    }
+                    if (cmd == lmtui::Command::AbStart) {
+                        ui.abA = ms;
+                        if (ui.abB && *ui.abB <= ms + 1000) ui.abB.reset();
+                        ui.info("A-B repeat: A " + lmtui::formatMs(ms));
+                    } else if (ms <= ui.abA.value_or(0) + 1000) {
+                        ui.warn("A-B repeat: B must be more than 1 s after A");
+                    } else {
+                        if (!ui.abA) ui.abA = 0;
+                        ui.abB = ms;
+                        ui.info(std::format("A-B repeat: {}–{}", lmtui::formatMs(*ui.abA), lmtui::formatMs(ms)));
+                        player.seek(static_cast<double>(*ui.abA) / 1000.0);
+                    }
+                    break;
+                }
+                case lmtui::Command::AddMark:
+                case lmtui::Command::NextMark: {
+                    const lm::PlayerState now = player.state();
+                    if (now.status == lm::Status::Stopped || now.index < 0) {
+                        ui.warn("bookmarks: nothing is playing");
+                        break;
+                    }
+                    const std::int64_t ms = std::llround(now.position * 1000.0);
+                    if (cmd == lmtui::Command::AddMark) {
+                        if (ui.marks.add(now.track.path, ms)) {
+                            ui.info("bookmark at " + lmtui::formatMs(ms));
+                            saveMarks();
+                        } else {
+                            ui.warn("bookmark not added (one within 1 s, or 100 on this track)");
+                        }
+                    } else if (const std::int64_t to = ui.marks.next(now.track.path, ms); to >= 0) {
+                        player.seek(static_cast<double>(to) / 1000.0);
+                        ui.info("bookmark " + lmtui::formatMs(to));
+                    } else {
+                        ui.info("no bookmarks on this track (m adds one)");
+                    }
+                    break;
+                }
                 case lmtui::Command::JumpPlaying: {
                     const int idx = ui.st.index;
                     if (ui.st.status == lm::Status::Stopped || idx < 0) {
@@ -2080,6 +2202,27 @@ int run(int argc, char **argv) {
                     break;
                 }
                 case lmtui::CommandLine::Messages: ui.showMessages = true; break;
+                case lmtui::CommandLine::Marks:
+                case lmtui::CommandLine::DelMarks: {
+                    const lm::PlayerState now = player.state();
+                    if (now.index < 0) {
+                        ui.warn("bookmarks: nothing is playing");
+                        break;
+                    }
+                    if (c.kind == lmtui::CommandLine::DelMarks) {
+                        if (ui.marks.clear(now.track.path)) {
+                            ui.info("bookmarks deleted");
+                            saveMarks();
+                        } else {
+                            ui.info("no bookmarks on this track");
+                        }
+                        break;
+                    }
+                    std::string list;
+                    for (const std::int64_t m : ui.marks.marks(now.track.path)) list += " " + lmtui::formatMs(m);
+                    ui.info(list.empty() ? std::string("no bookmarks on this track") : "bookmarks:" + list);
+                    break;
+                }
                 case lmtui::CommandLine::Sleep:
                     if (c.sleepSec == 0) {
                         const bool was = ui.sleepAt.has_value();
@@ -2152,6 +2295,7 @@ int run(int argc, char **argv) {
                     dirty = true;
                 }
                 serviceSleep();
+                serviceAb();
                 if (ui.status.expire(lmtui::StatusLine::Clock::now())) dirty = true;
                 if (dirty) {
                     auto screen = Screen::Create(Dimension::Fixed(width), Dimension::Fixed(height));
@@ -2168,6 +2312,7 @@ int run(int argc, char **argv) {
                     timeout = timeout < 0 ? watcher->timeoutMs() : std::min(timeout, watcher->timeoutMs());
                 if (saveDue) timeout = timeout < 0 ? saveTimeoutMs() : std::min(timeout, saveTimeoutMs());
                 if (const int sl = sleepTimeoutMs(); sl >= 0) timeout = timeout < 0 ? sl : std::min(timeout, sl);
+                if (const int ab = abTimeoutMs(); ab >= 0) timeout = timeout < 0 ? ab : std::min(timeout, ab);
                 // The status message's expiry (only while one is shown).
                 if (const int st = ui.status.timeoutMs(lmtui::StatusLine::Clock::now()); st >= 0)
                     timeout = timeout < 0 ? st : std::min(timeout, st);
