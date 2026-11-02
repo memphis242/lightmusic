@@ -129,6 +129,10 @@ lm_compile_fail(cf_decoder_copy interfaces.cpp 2 "deleted" lm::player)
 # gcc names the type 'lm::Frames', clang 'Frames'.
 lm_compile_fail(cf_frames_from_int frames.cpp 1 "to '(lm::)?Frames'" lm::player)
 lm_compile_fail(cf_frames_to_int frames.cpp 2 "'(lm::)?Frames' to" lm::player)
+# gcc names the type 'lm::TrackId', clang 'lm::TrackId' or 'TrackId'.
+lm_compile_fail(cf_trackid_from_int track_id.cpp 1 "to '(const )?(lm::)?TrackId'" lm::player)
+lm_compile_fail(cf_trackid_to_int track_id.cpp 2 "'(const )?(lm::)?TrackId' to" lm::player)
+lm_compile_fail(cf_trackid_arith track_id.cpp 3 "operator\\+|invalid operands" lm::player)
 if(TARGET lightmusicd)
   lm_compile_fail(cf_json_kv_size_t interfaces.cpp 3 "JsonScalar" lm::player lm::server_core)
 endif()

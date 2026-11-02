@@ -47,6 +47,7 @@ struct Stmt {
         check(sqlite3_bind_int64(s, i, v));
         return *this;
     }
+    Stmt &bind(int i, TrackId v) { return bind(i, v.value()); }
     Stmt &bind(int i, const std::string &v) {
         check(sqlite3_bind_text(s, i, v.data(), int(v.size()), SQLITE_TRANSIENT));
         return *this;
@@ -63,6 +64,7 @@ struct Stmt {
         (void)sqlite3_clear_bindings(s);
     }
     std::int64_t i64(int c) { return sqlite3_column_int64(s, c); }
+    TrackId id(int c) { return TrackId(i64(c)); }
     std::string str(int c) {
         const auto *t = sqlite3_column_text(s, c);
         return t ? std::string(reinterpret_cast<const char *>(t), std::size_t(sqlite3_column_bytes(s, c))) : "";
@@ -74,7 +76,7 @@ constexpr const char *kTrackCols =
 
 Track trackFrom(Stmt &s) {
     Track t;
-    t.id = s.i64(0);
+    t.id = s.id(0);
     t.title = s.str(1);
     t.artist = s.str(2);
     t.albumId = s.i64(3);
@@ -95,7 +97,7 @@ constexpr const char *kEntryCols = "track_id,etag,size,complete,ranges,cached,pi
 
 EntryRow entryFrom(Stmt &s) {
     EntryRow e;
-    e.trackId = s.i64(0);
+    e.trackId = s.id(0);
     e.etag = s.str(1);
     e.size = s.i64(2);
     e.complete = s.i64(3) != 0;
@@ -207,7 +209,7 @@ bool ClientDb::applyChanges(const json::Value &v, SyncResult &out, std::string *
             std::set<std::int64_t> now;
             for (const auto &t : v.array("tracks")) now.insert(t.i64("id"));
             for (const auto &[id, etag] : before)
-                if (!now.count(id)) out.etagChanged.push_back(id);
+                if (!now.count(id)) out.etagChanged.emplace_back(id);
             exec("DELETE FROM artist; DELETE FROM album; DELETE FROM track;");
         }
         {
@@ -233,7 +235,7 @@ bool ClientDb::applyChanges(const json::Value &v, SyncResult &out, std::string *
             for (const auto &t : v.array("tracks")) {
                 const std::int64_t id = t.i64("id");
                 if (auto it = before.find(id); it != before.end() && it->second != t.s("etag"))
-                    out.etagChanged.push_back(id);
+                    out.etagChanged.emplace_back(id);
                 s.bind(1, id).bind(2, t.s("title")).bind(3, t.s("artist")).bind(4, t.i64("albumId"));
                 s.bind(5, t.s("album")).bind(6, t.s("albumArtist")).bind(7, t.i64("trackNo")).bind(8, t.i64("discNo"));
                 s.bind(9, t.i64("year")).bind(10, t.i64("durationMs")).bind(11, t.s("codec")).bind(12, t.s("suffix"));
@@ -251,7 +253,7 @@ bool ClientDb::applyChanges(const json::Value &v, SyncResult &out, std::string *
                 for (const auto &id : del->array(k)) {
                     s.bind(1, id.i).run();
                     ++out.deleted;
-                    if (std::string(k) == "tracks") out.etagChanged.push_back(id.i);
+                    if (std::string(k) == "tracks") out.etagChanged.emplace_back(id.i);
                 }
             }
         }
@@ -273,7 +275,7 @@ void ClientDb::wipe() {
          "DELETE FROM meta WHERE k IN ('revision','library'); COMMIT;");
 }
 
-std::optional<Track> ClientDb::track(std::int64_t id) {
+std::optional<Track> ClientDb::track(TrackId id) {
     std::lock_guard lk(m_);
     Stmt s(db_, (std::string("SELECT ") + kTrackCols + " FROM track WHERE id=?").c_str());
     s.bind(1, id);
@@ -281,7 +283,7 @@ std::optional<Track> ClientDb::track(std::int64_t id) {
     return trackFrom(s);
 }
 
-void ClientDb::setTrackValidator(std::int64_t id, const std::string &etag, std::int64_t size) {
+void ClientDb::setTrackValidator(TrackId id, const std::string &etag, std::int64_t size) {
     std::lock_guard lk(m_);
     Stmt(db_, "UPDATE track SET etag=?, size=? WHERE id=?").bind(1, etag).bind(2, size).bind(3, id).run();
 }
@@ -316,7 +318,7 @@ std::vector<Track> ClientDb::allTracks() {
     return out;
 }
 
-std::optional<EntryRow> ClientDb::entry(std::int64_t trackId) {
+std::optional<EntryRow> ClientDb::entry(TrackId trackId) {
     std::lock_guard lk(m_);
     Stmt s(db_, (std::string("SELECT ") + kEntryCols + " FROM cache_entry WHERE track_id=?").c_str());
     s.bind(1, trackId);
@@ -348,7 +350,7 @@ void ClientDb::putEntry(const EntryRow &e) {
         .run();
 }
 
-void ClientDb::updateRanges(std::int64_t trackId, const std::string &ranges, std::int64_t cached, bool complete) {
+void ClientDb::updateRanges(TrackId trackId, const std::string &ranges, std::int64_t cached, bool complete) {
     std::lock_guard lk(m_);
     Stmt(db_, "UPDATE cache_entry SET ranges=?, cached=?, complete=? WHERE track_id=?")
         .bind(1, ranges)
@@ -358,31 +360,31 @@ void ClientDb::updateRanges(std::int64_t trackId, const std::string &ranges, std
         .run();
 }
 
-void ClientDb::touch(std::int64_t trackId, std::int64_t when) {
+void ClientDb::touch(TrackId trackId, std::int64_t when) {
     std::lock_guard lk(m_);
     Stmt(db_, "UPDATE cache_entry SET last_access=? WHERE track_id=?").bind(1, when).bind(2, trackId).run();
 }
 
-void ClientDb::setPinned(std::int64_t trackId, bool pinned) {
+void ClientDb::setPinned(TrackId trackId, bool pinned) {
     std::lock_guard lk(m_);
     Stmt(db_, "UPDATE cache_entry SET pinned=? WHERE track_id=?").bind(1, std::int64_t(pinned)).bind(2, trackId).run();
 }
 
-void ClientDb::deleteEntry(std::int64_t trackId) {
+void ClientDb::deleteEntry(TrackId trackId) {
     std::lock_guard lk(m_);
     Stmt(db_, "DELETE FROM cache_entry WHERE track_id=?").bind(1, trackId).run();
 }
 
-void ClientDb::rekeyEntries(const std::vector<std::pair<std::int64_t, std::int64_t>> &moves) {
+void ClientDb::rekeyEntries(const std::vector<std::pair<TrackId, TrackId>> &moves) {
     if (moves.empty()) return;
     std::lock_guard lk(m_);
     exec("BEGIN IMMEDIATE");
     try {
         // Through negative ids (never used by the server) so a permutation never collides.
         Stmt park(db_, "UPDATE cache_entry SET track_id=? WHERE track_id=?");
-        for (const auto &[from, to] : moves) park.bind(1, -from).bind(2, from).run();
+        for (const auto &[from, to] : moves) park.bind(1, -from.value()).bind(2, from).run();
         Stmt place(db_, "UPDATE cache_entry SET track_id=? WHERE track_id=?");
-        for (const auto &[from, to] : moves) place.bind(1, to).bind(2, -from).run();
+        for (const auto &[from, to] : moves) place.bind(1, to).bind(2, -from.value()).run();
         exec("COMMIT");
     } catch (...) {
         (void)sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); // already failing; the error propagates
@@ -390,7 +392,7 @@ void ClientDb::rekeyEntries(const std::vector<std::pair<std::int64_t, std::int64
     }
 }
 
-void ClientDb::setEntryName(std::int64_t trackId, const std::string &name, const std::string &prevName,
+void ClientDb::setEntryName(TrackId trackId, const std::string &name, const std::string &prevName,
                             bool durable) {
     std::lock_guard lk(m_);
     if (durable) exec("PRAGMA synchronous=FULL");
@@ -407,7 +409,7 @@ void ClientDb::setEntryName(std::int64_t trackId, const std::string &name, const
     if (durable) exec("PRAGMA synchronous=NORMAL");
 }
 
-bool ClientDb::nameTaken(const std::string &name, std::int64_t except) {
+bool ClientDb::nameTaken(const std::string &name, TrackId except) {
     std::lock_guard lk(m_);
     Stmt s(db_, "SELECT 1 FROM cache_entry WHERE track_id<>? AND (name=? OR prev_name=?) LIMIT 1");
     s.bind(1, except).bind(2, name).bind(3, name);

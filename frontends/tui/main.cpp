@@ -45,6 +45,7 @@
 #include "lm/config/client.hpp"
 #include "lm/player.hpp"
 #include "lm/print.hpp"
+#include "lm/track_id.hpp"
 #include "mpris_hook.hpp"
 #ifdef LM_TUI_NET
 #include "lm/net/client.hpp"
@@ -358,10 +359,11 @@ private:
     std::unordered_map<std::string, std::string> cache_; // "" = being read
 };
 
-// A track to put into the player: path or lm:// URI, list label, remote id (0: local).
+// A track to put into the player: path or lm:// URI, list label, server track id
+// (none: a local file).
 struct Spec {
     std::string path, name;
-    std::int64_t remote = 0;
+    lm::TrackId remote;
     std::int64_t durMs = 0; // 0: unknown (local files: read in the background)
 };
 
@@ -372,10 +374,11 @@ struct BrowseRow {
     enum Kind { Dir, File, Root, Artist, Album, Track } kind = Dir;
     std::string label; // Dir/File: the entry name
     std::string path;  // Dir/File: absolute path; Root: "library"/"folders"; Artist: name
-    std::int64_t id = 0; // Album/Track
+    std::int64_t id = 0; // Album: the album id
     std::string sub;     // dim suffix: counts, duration, cached share
     int cache = -1;      // Track: cache state (see cacheGlyph)
     bool pinned = false;
+    lm::TrackId track;   // Track: the server track
 };
 struct BrowseLevel {
     std::string title;
@@ -392,7 +395,7 @@ struct Browser {
 std::string rowKey(const BrowseRow &r) {
     if (r.kind == BrowseRow::File) return r.path;
 #ifdef LM_TUI_NET
-    if (r.kind == BrowseRow::Track) return lm::net::Client::trackUri(r.id);
+    if (r.kind == BrowseRow::Track) return lm::net::Client::trackUri(r.track);
 #endif
     return {};
 }
@@ -447,7 +450,7 @@ struct Ui {
     std::vector<std::string> names;
     // Per queue row: remote track id (0 for a local file), cache state (-1 local,
     // 0 remote, 1 partial, 2 cached) and pin flag.
-    std::vector<std::int64_t> remote;
+    std::vector<lm::TrackId> remote;
     std::vector<int> cache;
     std::vector<char> pinned;
     std::vector<std::int64_t> durMs; // per row: length in ms, 0 if not known (yet)
@@ -815,7 +818,7 @@ void refreshCache(Ui &ui, lm::net::Client &client, bool offline) {
 // The next few remote tracks go to the idle fill queue: the user queue first, then the
 // list after `index`.
 void updateFillQueue(const Ui &ui, lm::net::Client &client, int index) {
-    std::vector<std::int64_t> ids;
+    std::vector<lm::TrackId> ids;
     for (int e : ui.st.upNext) {
         const auto k = static_cast<std::size_t>(e);
         if (ids.size() < 3 && e >= 0 && k < ui.remote.size() && ui.remote[k]) ids.push_back(ui.remote[k]);
@@ -1225,7 +1228,8 @@ int run(int argc, char **argv) {
         for (const auto &e : resumed->entries) {
             ui.paths.push_back(e);
             std::string name = lmtui::displayName(e);
-            std::int64_t remote = 0, dur = 0;
+            lm::TrackId remote;
+            std::int64_t dur = 0;
 #ifdef LM_TUI_NET
             if (const auto id = lm::net::Client::parseTrackUri(e); id && client)
                 if (const auto t = client->track(*id)) {
@@ -1245,7 +1249,7 @@ int run(int argc, char **argv) {
     if (!args.empty()) ui.paths = lmtui::collectTracks(args, &errors);
     for (const auto &e : errors) lm::diagln(stderr, "lightmusic: {}", e);
     for (const auto &p : ui.paths) ui.names.push_back(lmtui::displayName(p));
-    ui.remote.assign(ui.paths.size(), 0);
+    ui.remote.assign(ui.paths.size(), lm::TrackId{});
     ui.cache.assign(ui.paths.size(), -1);
     ui.pinned.assign(ui.paths.size(), 0);
     ui.durMs.assign(ui.paths.size(), 0);
@@ -1295,7 +1299,7 @@ int run(int argc, char **argv) {
         auto scanLabels = [&](std::size_t from) { // entries from `from` on
             if (from >= ui.paths.size()) return;
             spawnDetached([box = labels, from, paths = std::vector<std::string>(ui.paths.begin() + static_cast<std::ptrdiff_t>(from), ui.paths.end()),
-                           remote = std::vector<std::int64_t>(ui.remote.begin() + static_cast<std::ptrdiff_t>(from), ui.remote.end())] {
+                           remote = std::vector<lm::TrackId>(ui.remote.begin() + static_cast<std::ptrdiff_t>(from), ui.remote.end())] {
                 for (std::size_t i = 0; i < paths.size() && !box->stopped(); i++) {
                     if (remote[i]) continue; // labelled from the library mirror
                     lm::Tags t;
@@ -1683,7 +1687,7 @@ int run(int argc, char **argv) {
                 for (const auto &t : client->tracksOfAlbum(albumId)) {
                     BrowseRow r;
                     r.kind = BrowseRow::Track;
-                    r.id = t.id;
+                    r.track = t.id;
                     r.label = (t.trackNo ? std::to_string(t.trackNo) + ". " : std::string()) +
                               lmtui::trackLabel(t.artist == t.albumArtist ? std::string() : t.artist, t.title,
                                                 t.title.empty() ? "?" : t.title);
@@ -1704,7 +1708,7 @@ int run(int argc, char **argv) {
                 if (!client || ui.browser.stack.empty()) return;
                 for (auto &r : ui.browser.stack.back().rows) {
                     if (r.kind == BrowseRow::Track) {
-                        const auto ci = client->cacheInfo(r.id);
+                        const auto ci = client->cacheInfo(r.track);
                         r.cache = static_cast<int>(ci.state);
                         r.pinned = ci.pinned;
                     } else if (r.kind == BrowseRow::Album) {
@@ -1726,7 +1730,7 @@ int run(int argc, char **argv) {
                 std::sort(names.begin(), names.end(), [](const auto &a, const auto &b) { return lmtui::naturalLess(a, b); });
                 for (const auto &n : names) {
                     const std::string label = n.substr(0, n.rfind('.'));
-                    lv.rows.push_back(BrowseRow{BrowseRow::Root, label, "pl:" + plDir + "/" + n, 0, "", -1, false});
+                    lv.rows.push_back(BrowseRow{BrowseRow::Root, label, "pl:" + plDir + "/" + n, 0, "", -1, false, {}});
                 }
                 return lv;
             };
@@ -1736,18 +1740,18 @@ int run(int argc, char **argv) {
                     BrowseLevel lv;
                     lv.title = "Browse";
                     lv.rows.push_back(BrowseRow{BrowseRow::Root, "Library (server)", "library", 0,
-                                                offline ? "offline: cached tracks play" : "", -1, false});
-                    lv.rows.push_back(BrowseRow{BrowseRow::Root, "Folders", "folders", 0, musicRoot(), -1, false});
-                    lv.rows.push_back(BrowseRow{BrowseRow::Root, "Smart lists", "smart", 0, "favourites, most played, ...", -1, false});
-                    lv.rows.push_back(BrowseRow{BrowseRow::Root, "Playlists", "playlists", 0, plDir, -1, false});
+                                                offline ? "offline: cached tracks play" : "", -1, false, {}});
+                    lv.rows.push_back(BrowseRow{BrowseRow::Root, "Folders", "folders", 0, musicRoot(), -1, false, {}});
+                    lv.rows.push_back(BrowseRow{BrowseRow::Root, "Smart lists", "smart", 0, "favourites, most played, ...", -1, false, {}});
+                    lv.rows.push_back(BrowseRow{BrowseRow::Root, "Playlists", "playlists", 0, plDir, -1, false, {}});
                     return lv;
                 }
 #endif
                 // The special rows go after the folder's entries, so the selection still
                 // starts on the first folder.
                 BrowseLevel lv = folderLevel(musicRoot());
-                lv.rows.push_back(BrowseRow{BrowseRow::Root, "Playlists", "playlists", 0, plDir, -1, false});
-                lv.rows.push_back(BrowseRow{BrowseRow::Root, "Smart lists", "smart", 0, "favourites, most played, ...", -1, false});
+                lv.rows.push_back(BrowseRow{BrowseRow::Root, "Playlists", "playlists", 0, plDir, -1, false, {}});
+                lv.rows.push_back(BrowseRow{BrowseRow::Root, "Smart lists", "smart", 0, "favourites, most played, ...", -1, false, {}});
                 return lv;
             };
             // ---- smart lists (from the client's play counts, favourites and library) ----
@@ -1815,7 +1819,7 @@ int run(int argc, char **argv) {
                     if (!t) return std::nullopt;
                     BrowseRow r;
                     r.kind = BrowseRow::Track;
-                    r.id = t->id;
+                    r.track = t->id;
                     r.label = lmtui::trackLabel(t->artist, t->title, t->title.empty() ? "?" : t->title);
                     r.sub = lmtui::formatTime(static_cast<double>(t->durationMs) / 1000);
                     const auto ci = client->cacheInfo(t->id);
@@ -1840,7 +1844,7 @@ int run(int argc, char **argv) {
                 BrowseLevel lv;
                 lv.title = "Smart lists";
                 for (const auto &[id, title] : kSmart)
-                    lv.rows.push_back(BrowseRow{BrowseRow::Root, title, "smart:" + id, 0, "", -1, false});
+                    lv.rows.push_back(BrowseRow{BrowseRow::Root, title, "smart:" + id, 0, "", -1, false, {}});
                 return lv;
             };
             // A playlist's entries as tracks: server URIs through the library mirror (dropped
@@ -1866,7 +1870,7 @@ int run(int argc, char **argv) {
                         continue;
                     }
                     std::string name = e.title.empty() ? lmtui::displayName(e.path) : e.title;
-                    v.push_back(Spec{std::move(e.path), std::move(name), 0, e.durMs});
+                    v.push_back(Spec{std::move(e.path), std::move(name), {}, e.durMs});
                 }
                 return v;
             };
@@ -1891,7 +1895,7 @@ int run(int argc, char **argv) {
             auto tracksOf = [&](const BrowseRow &r) {
                 std::vector<Spec> v;
                 auto local = [&](const std::vector<std::string> &paths) {
-                    for (const auto &p : paths) v.push_back(Spec{p, lmtui::displayName(p), 0});
+                    for (const auto &p : paths) v.push_back(Spec{p, lmtui::displayName(p), {}});
                 };
                 switch (r.kind) {
                 case BrowseRow::Dir: local(lmtui::collectTracks({r.path}, nullptr)); break;
@@ -1912,7 +1916,7 @@ int run(int argc, char **argv) {
                                 continue;
                             }
 #endif
-                            if (k.find("://") == std::string::npos) v.push_back(Spec{k, lmtui::displayName(k), 0, 0});
+                            if (k.find("://") == std::string::npos) v.push_back(Spec{k, lmtui::displayName(k), {}, 0});
                         }
                     break;
 #ifdef LM_TUI_NET
@@ -1925,7 +1929,7 @@ int run(int argc, char **argv) {
                     for (const auto &t : client->tracksOfAlbum(r.id)) v.push_back(remoteSpec(t));
                     break;
                 case BrowseRow::Track:
-                    if (auto t = client->track(r.id)) v.push_back(remoteSpec(*t));
+                    if (auto t = client->track(r.track)) v.push_back(remoteSpec(*t));
                     break;
 #else
                 default: break;
@@ -2014,7 +2018,7 @@ int run(int argc, char **argv) {
                     struct stat sb{};
                     if (p.empty() || p[0] != '/' || ::stat(p.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode))
                         return "not an absolute path to a file: " + p;
-                    specs.push_back(Spec{p, lmtui::displayName(p), 0, 0});
+                    specs.push_back(Spec{p, lmtui::displayName(p), {}, 0});
                 }
                 if (specs.empty()) return "no files";
                 queueSpecs(std::move(specs), next);
@@ -2065,7 +2069,7 @@ int run(int argc, char **argv) {
                     for (const auto &x : lv.rows)
                         if (x.kind == BrowseRow::File) {
                             if (&x == r) start = static_cast<int>(v.size());
-                            v.push_back(Spec{x.path, lmtui::displayName(x.path), 0});
+                            v.push_back(Spec{x.path, lmtui::displayName(x.path), {}});
                         }
                     replaceContext(std::move(v), start, lv.dir.empty() ? lv.title : "folder " + lv.dir);
                     break;
@@ -2078,7 +2082,7 @@ int run(int argc, char **argv) {
                     std::vector<Spec> v;
                     int start = 0;
                     for (const auto &x : lv.rows)
-                        if (auto t = client->track(x.id)) {
+                        if (auto t = client->track(x.track)) {
                             if (&x == r) start = static_cast<int>(v.size());
                             v.push_back(remoteSpec(*t));
                         }
@@ -2300,8 +2304,8 @@ int run(int argc, char **argv) {
                             ui.warn("only server tracks and albums can be saved offline");
                             break;
                         }
-                        std::vector<std::int64_t> ids;
-                        if (r->kind == BrowseRow::Track) ids.push_back(r->id);
+                        std::vector<lm::TrackId> ids;
+                        if (r->kind == BrowseRow::Track) ids.push_back(r->track);
                         else
                             for (const auto &t : client->tracksOfAlbum(r->id)) ids.push_back(t.id);
                         bool all = true;

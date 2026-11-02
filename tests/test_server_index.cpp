@@ -147,14 +147,14 @@ static std::int64_t tombstones(Db &db, std::int64_t id) {
 // path -> track id of every indexed track.
 static std::map<std::string, std::int64_t> ids_of(Db &db) {
     std::map<std::string, std::int64_t> m;
-    for (auto &[path, st] : db.file_states("")) m[path] = st.id;
+    for (auto &[path, st] : db.file_states("")) m[path] = st.id.value();
     return m;
 }
 
 static std::int64_t state_id(const std::string &dbp, const std::string &p) {
     Db r(dbp, Db::Mode::Reader);
     auto s = r.state_of(p);
-    return s ? s->id : -1;
+    return s ? s->id.value() : -1;
 }
 
 static void set_mtime(const std::string &p, std::int64_t sec) {
@@ -253,23 +253,23 @@ static void test_id_stability(const std::string &tmp) {
         auto st = ix.full_scan();
         CHECK_EQ(st.failed, 1u);
         CHECK_EQ(st.removed, 0u);
-        CHECK(state(w, victim) && state(w, victim)->id == victim_id);
+        CHECK(state(w, victim) && state(w, victim)->id.value() == victim_id);
         CHECK_EQ(tombstones(w, victim_id), 0);
         fs::copy_file(g_src + "/b.flac", victim, fs::copy_options::overwrite_existing);
         st = ix.full_scan();
         CHECK_EQ(st.updated, 1u);
-        CHECK(state(w, victim) && state(w, victim)->id == victim_id);
+        CHECK(state(w, victim) && state(w, victim)->id.value() == victim_id);
         // Same through the watcher's single-file path.
         { std::ofstream(victim, std::ios::trunc) << " "; }
         ix.begin();
         ix.index_file(victim);
         ix.commit();
-        CHECK(state(w, victim) && state(w, victim)->id == victim_id);
+        CHECK(state(w, victim) && state(w, victim)->id.value() == victim_id);
         fs::copy_file(g_src + "/b.flac", victim, fs::copy_options::overwrite_existing);
         ix.begin();
         ix.index_file(victim);
         ix.commit();
-        CHECK(state(w, victim) && state(w, victim)->id == victim_id);
+        CHECK(state(w, victim) && state(w, victim)->id.value() == victim_id);
         ids = ids_of(w);
     }
     // A root with no audio files at all (unmounted disk) removes nothing; ids are the
@@ -375,7 +375,7 @@ int main() {
     CHECK_EQ(st.updated, 1u);
     CHECK_EQ(st.unchanged, 3u);
     CHECK_EQ(r.revision(), 2);
-    CHECK_EQ(state(r, lib + "/A/a.mp3")->id, a_id);
+    CHECK(state(r, lib + "/A/a.mp3")->id == a_id);
     CHECK_EQ(state(r, lib + "/A/a.mp3")->mtime_ns, 1700000000000000123LL);
     {
         auto ch = r.json_changes(1);
@@ -394,7 +394,7 @@ int main() {
     CHECK(!state(r, lib + "/A/b.flac"));
 
     // 5. delete while not watching → tombstone, album "First" survives (a.mp3)
-    auto d_id = state(r, lib + "/A/d.ogg")->id;
+    auto d_id = state(r, lib + "/A/d.ogg")->id.value();
     (void)fs::remove(lib + "/A/d.ogg");
     auto rev_before = r.revision();
     st = ix.full_scan();
@@ -444,7 +444,7 @@ int main() {
     (void)fs::create_directories(lib + "/N/deep");
     fs::copy_file(g_src + "/e.mp3", lib + "/N/deep/e.mp3");
     CHECK(wait_for([&] { return state(r, lib + "/N/deep/e.mp3").has_value(); }));
-    auto e_id = state(r, lib + "/N/deep/e.mp3") ? state(r, lib + "/N/deep/e.mp3")->id : -1;
+    auto e_id = state(r, lib + "/N/deep/e.mp3") ? state(r, lib + "/N/deep/e.mp3")->id.value() : -1;
 
     // Let the watcher finish the subtree scan before moving the directory (a scan racing
     // with the move is covered by the rescan of the new path, but would assign new ids).
@@ -453,7 +453,7 @@ int main() {
     // 6c. directory rename: ids kept, watches follow the new path
     fs::rename(lib + "/N", lib + "/M");
     CHECK(wait_for([&] { return state(r, lib + "/M/deep/e.mp3").has_value(); }));
-    CHECK(state(r, lib + "/M/deep/e.mp3") && state(r, lib + "/M/deep/e.mp3")->id == e_id);
+    CHECK(state(r, lib + "/M/deep/e.mp3") && state(r, lib + "/M/deep/e.mp3")->id.value() == e_id);
     fs::copy_file(g_src + "/d.ogg", lib + "/M/deep/d.ogg");
     CHECK(wait_for([&] { return state(r, lib + "/M/deep/d.ogg").has_value(); }));
 
@@ -469,7 +469,7 @@ int main() {
     }
 
     // 6e. delete
-    auto b_id = state(r, lib + "/B/b.flac")->id;
+    auto b_id = state(r, lib + "/B/b.flac")->id.value();
     (void)fs::remove(lib + "/B/b.flac");
     CHECK(wait_for([&] { return !state(r, lib + "/B/b.flac"); }));
     CHECK_EQ(tombstones(r, b_id), 1);

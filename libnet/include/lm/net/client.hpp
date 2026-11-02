@@ -18,6 +18,7 @@
 #pragma once
 
 #include "lm/source.hpp"
+#include "lm/track_id.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -30,7 +31,7 @@ namespace lm::net {
 
 
 struct Track {
-    std::int64_t id = 0;
+    TrackId id;
     std::string title, artist, album, albumArtist, codec, suffix, etag;
     std::int64_t albumId = 0, trackNo = 0, discNo = 0, year = 0, durationMs = 0, size = 0;
 };
@@ -128,18 +129,18 @@ public:
     std::vector<Album> albums();
     std::vector<Track> tracksOfAlbum(std::int64_t albumId);
     std::vector<Track> allTracks();
-    [[nodiscard]] std::optional<Track> track(std::int64_t id);
+    [[nodiscard]] std::optional<Track> track(TrackId id);
 
-    CacheInfo cacheInfo(std::int64_t trackId);
-    [[nodiscard]] std::optional<CacheEntryInfo> cacheEntry(std::int64_t trackId);
+    CacheInfo cacheInfo(TrackId trackId);
+    [[nodiscard]] std::optional<CacheEntryInfo> cacheEntry(TrackId trackId);
     CacheStats stats();
     // Pinned ("saved offline") tracks are never evicted, do not count toward the cap, and
     // are filled in the background. Pinning fails when the track's missing bytes would
     // leave less free disk space than the floor (ClientConfig::minFreeBytes).
-    [[nodiscard]] bool pin(std::int64_t trackId, bool pinned, std::string *err);
+    [[nodiscard]] bool pin(TrackId trackId, bool pinned, std::string *err);
     // Tracks to fill in the background next (e.g. the next few in the play queue);
     // replaces the previous list.
-    void setFillQueue(std::vector<std::int64_t> trackIds);
+    void setFillQueue(std::vector<TrackId> trackIds);
     // Hot reload (any thread): cache cap, idle fill and its metered pause. A smaller cap
     // applies to new entries at once; existing unpinned, unused entries are evicted down
     // to it lazily (capTrimDelayMs later, when no download runs; raising the cap again
@@ -149,12 +150,12 @@ public:
 
     // A ByteSource for the track (cache first, network for holes). Blocking reads;
     // decoder thread only. nullptr with *err if the track is unknown.
-    [[nodiscard]] std::unique_ptr<ByteSource> openTrack(std::int64_t trackId, std::string *err);
+    [[nodiscard]] std::unique_ptr<ByteSource> openTrack(TrackId trackId, std::string *err);
     // For lm::PlayerConfig::openSource: resolves trackUri() strings.
     std::function<std::unique_ptr<ByteSource>(const std::string &, std::string *)> sourceOpener();
 
-    static std::string trackUri(std::int64_t trackId); // "lm://server/track/<id>"
-    [[nodiscard]] static std::optional<std::int64_t> parseTrackUri(const std::string &uri);
+    static std::string trackUri(TrackId trackId); // "lm://server/track/<id>"
+    [[nodiscard]] static std::optional<TrackId> parseTrackUri(const std::string &uri);
 
     struct Core;
 

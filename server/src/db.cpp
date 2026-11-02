@@ -267,12 +267,12 @@ std::unordered_map<std::string, FileState> Db::file_states(const std::string &pr
     std::unordered_map<std::string, FileState> m;
     if (prefix.empty()) {
         Stmt s(db_, "SELECT path, id, size, mtime_ns FROM track");
-        while (s.step()) m[s.text(0)] = {s.i64(1), s.i64(2), s.i64(3)};
+        while (s.step()) m[s.text(0)] = {s.track_id(1), s.i64(2), s.i64(3)};
     } else {
         // path in [prefix + "/", prefix + "0"): '0' is the character after '/'.
         Stmt s(db_, "SELECT path, id, size, mtime_ns FROM track WHERE path >= ? AND path < ?");
         s.bind(1, prefix + "/").bind(2, prefix + "0");
-        while (s.step()) m[s.text(0)] = {s.i64(1), s.i64(2), s.i64(3)};
+        while (s.step()) m[s.text(0)] = {s.track_id(1), s.i64(2), s.i64(3)};
     }
     return m;
 }
@@ -281,7 +281,7 @@ std::optional<FileState> Db::state_of(const std::string &path) {
     Stmt s(db_, "SELECT id, size, mtime_ns FROM track WHERE path=?");
     s.bind(1, path);
     if (!s.step()) return std::nullopt;
-    return FileState{s.i64(0), s.i64(1), s.i64(2)};
+    return FileState{s.track_id(0), s.i64(1), s.i64(2)};
 }
 
 std::size_t Db::track_count() {
@@ -313,7 +313,7 @@ std::int64_t Db::album_id(std::int64_t artist, const std::string &title, int yea
     return sqlite3_last_insert_rowid(db_);
 }
 
-void Db::touch_album_of_track(std::int64_t track_id) {
+void Db::touch_album_of_track(lm::TrackId track_id) {
     Stmt(db_, "UPDATE album SET rev=?1 WHERE id=(SELECT album_id FROM track WHERE id=?2)")
         .bind(1, pending_rev_).bind(2, track_id).step();
     Stmt(db_, "UPDATE artist SET rev=?1 WHERE id=(SELECT al.artist_id FROM album al "
@@ -321,7 +321,7 @@ void Db::touch_album_of_track(std::int64_t track_id) {
         .bind(1, pending_rev_).bind(2, track_id).step();
 }
 
-std::int64_t Db::upsert_track(const TrackMeta &m) {
+lm::TrackId Db::upsert_track(const TrackMeta &m) {
     dirty_ = true;
     const std::string &aa = !m.album_artist.empty() ? m.album_artist : m.artist;
     std::int64_t ar = artist_id(aa);
@@ -341,12 +341,12 @@ std::int64_t Db::upsert_track(const TrackMeta &m) {
         .bind(13, std::int64_t(m.bitrate)).bind(14, std::int64_t(m.sample_rate))
         .bind(15, std::int64_t(m.channels)).bind(16, pending_rev_);
     s.step();
-    std::int64_t id = old ? old->id : sqlite3_last_insert_rowid(db_);
+    const lm::TrackId id = old ? old->id : lm::TrackId(sqlite3_last_insert_rowid(db_));
     touch_album_of_track(id);
     return id;
 }
 
-void Db::rename_track(std::int64_t id, const std::string &new_path) {
+void Db::rename_track(lm::TrackId id, const std::string &new_path) {
     dirty_ = true;
     // A stale row already at the destination (should not happen) loses.
     if (auto other = state_of(new_path); other && other->id != id) delete_track(other->id);
@@ -354,10 +354,10 @@ void Db::rename_track(std::int64_t id, const std::string &new_path) {
         .bind(1, new_path).bind(2, pending_rev_).bind(3, id).step();
 }
 
-void Db::delete_track(std::int64_t id) {
+void Db::delete_track(lm::TrackId id) {
     touch_album_of_track(id);
     Stmt(db_, "DELETE FROM track WHERE id=?").bind(1, id).step();
-    tombstone("track", id);
+    tombstone("track", id.value());
 }
 
 std::size_t Db::rename_prefix(const std::string &from, const std::string &to) {
@@ -374,7 +374,7 @@ std::size_t Db::delete_prefix(const std::string &dir) {
 
 // ---------------------------------------------------------------- reader
 
-std::optional<TrackFile> Db::track_file(std::int64_t id) {
+std::optional<TrackFile> Db::track_file(lm::TrackId id) {
     Stmt s(db_, "SELECT path, codec, size, mtime_ns FROM track WHERE id=?");
     s.bind(1, id);
     if (!s.step()) return std::nullopt;
@@ -576,7 +576,7 @@ std::optional<std::string> Db::json_album(std::int64_t id) {
     return j.take();
 }
 
-std::optional<std::string> Db::json_track(std::int64_t id) {
+std::optional<std::string> Db::json_track(lm::TrackId id) {
     Stmt s(db_, (std::string(kTrackSelect) + "WHERE t.id=?").c_str());
     s.bind(1, id);
     if (!s.step()) return std::nullopt;

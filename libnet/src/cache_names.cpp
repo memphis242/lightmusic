@@ -133,18 +133,18 @@ std::string slugComponent(std::string_view s, std::size_t maxBytes) {
     return o;
 }
 
-std::string cacheBaseName(std::string_view artist, std::string_view album, std::string_view title, std::int64_t id) {
+std::string cacheBaseName(std::string_view artist, std::string_view album, std::string_view title, TrackId id) {
     std::string a = slugComponent(artist), b = slugComponent(album), t = slugComponent(title);
     if (a.empty()) a = "unknown-artist";
     if (b.empty()) b = "unknown-album";
-    if (t.empty()) t = "track-" + std::to_string(id);
+    if (t.empty()) t = "track-" + std::to_string(id.value());
     std::string s = a + "-" + b + "-" + t;
     capBytes(s, kBaseMax);
     return s;
 }
 
-std::string collisionName(const std::string &base, std::int64_t id) { return base + "--" + std::to_string(id); }
+std::string collisionName(const std::string &base, TrackId id) { return base + "--" + std::to_string(id.value()); }
 
-std::string tempCacheName(std::int64_t id) { return std::string(kTempNamePrefix) + std::to_string(id); }
+std::string tempCacheName(TrackId id) { return std::string(kTempNamePrefix) + std::to_string(id.value()); }
 
 } // namespace lm::net
