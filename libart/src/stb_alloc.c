@@ -40,7 +40,7 @@ void *lm_stb_malloc(size_t n) {
          * library only knows file mappings. */
         /* cppcheck-suppress invalidFunctionArg */
         void *m = mmap(NULL, total, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (m == MAP_FAILED) return NULL;
+        if (m == MAP_FAILED || m == NULL) return NULL; /* NULL: never with addr NULL, but stay safe */
         p = m;
     } else {
         p = malloc(total);
