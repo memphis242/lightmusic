@@ -28,8 +28,9 @@ public:
     Format format() const override { return Format::Flac; }
     std::uint32_t sampleRate() const override { return flac_->sampleRate; }
     std::uint32_t channels() const override { return flac_->channels; }
-    std::uint64_t totalFrames() const override { return flac_->totalPCMFrameCount; }
-    std::uint64_t read(float *out, std::uint64_t frames) override {
+    Frames totalFrames() const override { return Frames(flac_->totalPCMFrameCount); }
+    Frames read(float *out, Frames limit) override {
+        const std::uint64_t frames = limit.count();
         const std::uint64_t n = drflac_read_pcm_frames_f32(flac_, frames, out);
         // dr_flac reports corrupt or missing frames only as a short read; with a known
         // length (STREAMINFO), stopping before it is an error, not the end.
@@ -37,9 +38,12 @@ public:
             flac_->currentPCMFrame < flac_->totalPCMFrameCount)
             error_ = "dr_flac: stream ends at frame " + std::to_string(flac_->currentPCMFrame) + " of " +
                      std::to_string(flac_->totalPCMFrameCount) + " (truncated or corrupt): " + src_->name();
-        return n;
+        return Frames(n);
     }
-    bool seek(std::uint64_t frame) override { return drflac_seek_to_pcm_frame(flac_, frame) != 0; }
+    bool seek(Frames at) override {
+        const std::uint64_t frame = at.count();
+        return drflac_seek_to_pcm_frame(flac_, frame) != 0;
+    }
 
 private:
     static size_t onRead(void *u, void *dst, size_t n) { return static_cast<FlacDecoder *>(u)->src_->read(dst, n); }

@@ -4,6 +4,7 @@
 // gaplessly.
 #pragma once
 
+#include "lm/frames.hpp"
 #include "lm/source.hpp"
 
 #include <cstdint>
@@ -49,17 +50,17 @@ public:
     virtual std::uint32_t sampleRate() const = 0;
     virtual std::uint32_t channels() const = 0;
     // Total length in PCM frames, or 0 when unknown.
-    virtual std::uint64_t totalFrames() const = 0;
+    virtual Frames totalFrames() const = 0;
     // Decodes up to `frames` frames into `out` (frames * channels() floats). Returns
     // the frames produced; 0 means the stream ended, either normally or because of an
     // unrecoverable error: check lastError() to tell the two apart.
-    virtual std::uint64_t read(float *out, std::uint64_t frames) = 0;
+    virtual Frames read(float *out, Frames frames) = 0;
     // Empty unless decoding stopped on an error (corrupt or truncated data, a chained
     // Ogg link with a different channel count or rate, ...). Set by the read() that
     // stopped early; the frames returned before it are valid.
     const std::string &lastError() const { return error_; }
     // Seeks to an absolute PCM frame. Returns false on failure.
-    [[nodiscard]] virtual bool seek(std::uint64_t frame) = 0;
+    [[nodiscard]] virtual bool seek(Frames frame) = 0;
     // ReplayGain track gain in dB, if the file carries one (see tags.cpp).
     [[nodiscard]] virtual std::optional<float> trackGainDb() const { return gain_.trackGain; }
     [[nodiscard]] const GainTags &replayGain() const { return gain_; }

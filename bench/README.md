@@ -1,5 +1,11 @@
 # lightmusic research bench
 
+`bench/lm/` (built with `-DLM_BUILD_BENCH=ON`) holds benchmarks on the project's own
+libraries: `lightmusic-bench-decode [--reps N] [--seeks N] FILE...` measures libplayer's
+Decoder interface (full decode in ns/frame, random seek + 4096-frame read in us; best
+and median of N runs). `results/frames-20261102.txt` compares the bare-integer frame API
+with `lm::Frames` (#29): no measurable difference.
+
 Re-verifies the numbers in `docs/research.md` on a real Fedora machine with PipeWire.
 
 ```sh

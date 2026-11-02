@@ -22,9 +22,9 @@ struct Dec final : lm::Decoder {
     lm::Format format() const override { return {}; }
     std::uint32_t sampleRate() const override { return 0; }
     std::uint32_t channels() const override { return 0; }
-    std::uint64_t totalFrames() const override { return 0; }
-    std::uint64_t read(float *, std::uint64_t) override { return 0; }
-    bool seek(std::uint64_t) override { return false; }
+    lm::Frames totalFrames() const override { return {}; }
+    lm::Frames read(float *, lm::Frames) override { return {}; }
+    bool seek(lm::Frames) override { return false; }
 };
 } // namespace
 

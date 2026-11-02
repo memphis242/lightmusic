@@ -46,8 +46,9 @@ public:
     Format format() const override { return Format::Opus; }
     std::uint32_t sampleRate() const override { return 48000; }
     std::uint32_t channels() const override { return 2; }
-    std::uint64_t totalFrames() const override { return total_; }
-    std::uint64_t read(float *out, std::uint64_t frames) override {
+    Frames totalFrames() const override { return Frames(total_); }
+    Frames read(float *out, Frames limit) override {
+        const std::uint64_t frames = limit.count();
         std::uint64_t done = 0;
         while (done < frames) {
             const std::uint64_t want = std::min<std::uint64_t>(frames - done, INT_MAX / 2);
@@ -60,9 +61,12 @@ public:
             if (got == 0) break;
             done += static_cast<std::uint64_t>(got);
         }
-        return done;
+        return Frames(done);
     }
-    bool seek(std::uint64_t frame) override { return op_pcm_seek(of_, static_cast<ogg_int64_t>(frame)) == 0; }
+    bool seek(Frames at) override {
+        const std::uint64_t frame = at.count();
+        return op_pcm_seek(of_, static_cast<ogg_int64_t>(frame)) == 0;
+    }
 
 private:
     static int onRead(void *u, unsigned char *dst, int n) {

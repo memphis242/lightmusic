@@ -95,7 +95,8 @@ platform: Fedora 43 (gcc 15, clang 21). See README.md for the user-facing docs.
    (owned through `unique_ptr`); implementations are `final` and every override says
    `override`. Strong types (distinct types for frames vs bytes vs seconds, track id vs
    index) only where a mix-up is plausible and the wrapper is cheap; no big refactors for
-   them.
+   them. In use: `lm::Frames` (lm/frames.hpp: decoder lengths/positions/reads, markers,
+   gaps; zero cost, see bench/results/frames-20261102.txt).
 12. **Behaviour stays unchanged when fixing warnings**: run the full test suite after each
    batch of fixes.
 13. Do not modify `third_party/` (vendored; see third_party/VERSIONS.md).

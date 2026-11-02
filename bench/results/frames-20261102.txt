@@ -1,0 +1,56 @@
+# lm::Frames (#29): decoder benchmark before/after, interleaved runs
+# lightmusic-bench-decode --reps 7 --seeks 300, gcc 13 -O3 Release, 4 alternating rounds
+# per binary (before = aa2c5f6 with the bare-integer Decoder API, after = lm::Frames).
+# 120 s stereo test files: sine + noise (FLAC, MP3 192k, Opus 128k, Vorbis q5).
+# decode: ns per frame; seek: us per seek + 4096-frame read. best = minimum over
+# all runs, med = median of the per-round medians.
+
+             decode best     decode med      seek best
+file       before  after   before  after   before  after
+t.flac       9.87   9.95    11.65  10.78      286    284
+t.mp3       19.00  18.61    21.10  20.18     1299   1304
+t.ogg       37.34  37.66    40.74  42.04      297    303
+t.opus     102.68 102.13   112.26 107.62     1061   1050
+
+# Raw output:
+
+== before
+t.flac: 5292000 frames  decode ns/frame best 10.37 median 13.88  seek+read us best 312.2 median 361.1
+t.mp3: 5292000 frames  decode ns/frame best 19.30 median 21.90  seek+read us best 1344.1 median 1473.9
+t.opus: 5760000 frames  decode ns/frame best 104.65 median 112.26  seek+read us best 1098.6 median 1149.7
+t.ogg: 5292000 frames  decode ns/frame best 39.09 median 39.75  seek+read us best 310.9 median 319.4
+== bench
+t.flac: 5292000 frames  decode ns/frame best 10.74 median 11.14  seek+read us best 299.3 median 328.1
+t.mp3: 5292000 frames  decode ns/frame best 19.90 median 20.18  seek+read us best 1317.2 median 1375.4
+t.opus: 5760000 frames  decode ns/frame best 102.13 median 103.19  seek+read us best 1050.5 median 1113.6
+t.ogg: 5292000 frames  decode ns/frame best 37.85 median 39.42  seek+read us best 306.9 median 311.3
+== before
+t.flac: 5292000 frames  decode ns/frame best 10.25 median 11.65  seek+read us best 286.9 median 320.2
+t.mp3: 5292000 frames  decode ns/frame best 19.11 median 19.52  seek+read us best 1299.3 median 1332.8
+t.opus: 5760000 frames  decode ns/frame best 102.68 median 112.54  seek+read us best 1060.6 median 1099.7
+t.ogg: 5292000 frames  decode ns/frame best 38.09 median 40.74  seek+read us best 302.5 median 315.1
+== bench
+t.flac: 5292000 frames  decode ns/frame best 10.36 median 10.78  seek+read us best 303.0 median 307.9
+t.mp3: 5292000 frames  decode ns/frame best 18.61 median 19.78  seek+read us best 1304.0 median 1350.5
+t.opus: 5760000 frames  decode ns/frame best 102.87 median 106.17  seek+read us best 1056.3 median 1112.2
+t.ogg: 5292000 frames  decode ns/frame best 37.66 median 39.09  seek+read us best 303.2 median 318.1
+== before
+t.flac: 5292000 frames  decode ns/frame best 9.87 median 11.58  seek+read us best 286.5 median 305.2
+t.mp3: 5292000 frames  decode ns/frame best 19.00 median 21.10  seek+read us best 1299.8 median 1430.8
+t.opus: 5760000 frames  decode ns/frame best 102.93 median 106.64  seek+read us best 1070.3 median 1144.1
+t.ogg: 5292000 frames  decode ns/frame best 37.34 median 39.46  seek+read us best 301.7 median 317.8
+== bench
+t.flac: 5292000 frames  decode ns/frame best 9.95 median 10.58  seek+read us best 283.8 median 300.3
+t.mp3: 5292000 frames  decode ns/frame best 19.80 median 20.02  seek+read us best 1331.6 median 1384.4
+t.opus: 5760000 frames  decode ns/frame best 107.96 median 113.41  seek+read us best 1068.2 median 1146.0
+t.ogg: 5292000 frames  decode ns/frame best 37.91 median 42.35  seek+read us best 307.4 median 349.3
+== before
+t.flac: 5292000 frames  decode ns/frame best 10.65 median 11.13  seek+read us best 315.4 median 398.3
+t.mp3: 5292000 frames  decode ns/frame best 19.47 median 21.06  seek+read us best 1378.1 median 1445.1
+t.opus: 5760000 frames  decode ns/frame best 105.78 median 111.75  seek+read us best 1080.4 median 1111.2
+t.ogg: 5292000 frames  decode ns/frame best 37.80 median 40.96  seek+read us best 297.2 median 336.9
+== bench
+t.flac: 5292000 frames  decode ns/frame best 10.20 median 10.29  seek+read us best 293.3 median 298.6
+t.mp3: 5292000 frames  decode ns/frame best 19.45 median 20.51  seek+read us best 1356.0 median 1456.1
+t.opus: 5760000 frames  decode ns/frame best 104.63 median 107.62  seek+read us best 1059.5 median 1211.1
+t.ogg: 5292000 frames  decode ns/frame best 40.77 median 42.04  seek+read us best 309.8 median 327.5

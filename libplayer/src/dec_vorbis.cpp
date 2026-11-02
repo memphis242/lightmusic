@@ -51,8 +51,9 @@ public:
     Format format() const override { return Format::Vorbis; }
     std::uint32_t sampleRate() const override { return rate_; }
     std::uint32_t channels() const override { return channels_; }
-    std::uint64_t totalFrames() const override { return total_; }
-    std::uint64_t read(float *out, std::uint64_t frames) override {
+    Frames totalFrames() const override { return Frames(total_); }
+    Frames read(float *out, Frames limit) override {
+        const std::uint64_t frames = limit.count();
         std::uint64_t done = 0;
         while (done < frames) {
             float **pcm = nullptr;
@@ -78,9 +79,12 @@ public:
                 for (std::uint32_t c = 0; c < channels_; c++) out[(done + static_cast<std::uint64_t>(f)) * channels_ + c] = pcm[c][f];
             done += static_cast<std::uint64_t>(got);
         }
-        return done;
+        return Frames(done);
     }
-    bool seek(std::uint64_t frame) override { return ov_pcm_seek(&vf_, static_cast<ogg_int64_t>(frame)) == 0; }
+    bool seek(Frames at) override {
+        const std::uint64_t frame = at.count();
+        return ov_pcm_seek(&vf_, static_cast<ogg_int64_t>(frame)) == 0;
+    }
 
 private:
     static size_t onRead(void *dst, size_t size, size_t nmemb, void *u) {

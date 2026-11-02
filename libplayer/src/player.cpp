@@ -126,13 +126,13 @@ namespace {
 using Clock = std::chrono::steady_clock;
 constexpr std::uint32_t kCh = detail::AudioOutput::kChannels;
 constexpr std::uint32_t kMaxChannels = 8;
-constexpr std::uint64_t kChunkFrames = 2048;
-constexpr std::uint64_t kConvFrames = 4096;
+constexpr Frames kChunkFrames{2048};
+constexpr Frames kConvFrames{4096};
 constexpr double kMaxGapSeconds = 30.0;
 
 // Compile-time consistency of the pipeline limits.
 static_assert(kCh >= 1 && kCh <= kMaxChannels, "device channel count within decoder limit");
-static_assert(kChunkFrames > 0 && kConvFrames >= kChunkFrames, "converter output holds a decoded chunk");
+static_assert(kChunkFrames > Frames{0} && kConvFrames >= kChunkFrames, "converter output holds a decoded chunk");
 static_assert(kMaxGapSeconds > 0 && kMaxGapSeconds * 768000.0 * kCh < 9.0e15,
               "longest gap at the highest supported rate is exact in double and fits a 64-bit frame count");
 static_assert(sizeof(std::uint64_t) == 8, "frame counters and ring positions are 64-bit");
@@ -142,9 +142,9 @@ static_assert(std::atomic<std::uint64_t>::is_always_lock_free && std::atomic<dou
 double clampGap(double s) { return std::isnan(s) ? 0.0 : std::clamp(s, 0.0, kMaxGapSeconds); }
 
 struct Marker {
-    std::uint64_t ringFrame = 0; // ring write position (frames) where the track starts
+    Frames ringFrame;  // ring write position (device-rate frames) where the track starts
     int index = -1;
-    std::uint64_t startFrame = 0; // track frame at ringFrame (non-zero after a seek)
+    Frames startFrame; // track frame at ringFrame (non-zero after a seek)
     TrackInfo info;
     int ctx = -1;          // context entry this play belongs to (see Pick)
     bool user = false;     // played from the user queue
@@ -167,7 +167,7 @@ TrackInfo infoFor(const std::string &path, const Decoder &d, const PlayerConfig 
     t.format = d.format();
     t.sampleRate = d.sampleRate();
     t.channels = d.channels();
-    t.duration = d.sampleRate() ? static_cast<double>(d.totalFrames()) / d.sampleRate() : 0;
+    t.duration = d.sampleRate() ? static_cast<double>(d.totalFrames().count()) / d.sampleRate() : 0;
     t.trackGainDb = d.trackGainDb();
     t.gain = d.replayGain();
     t.appliedGain = replayGainFactor(t.gain, cfg.replayGain, cfg.replayGainPreampDb, cfg.replayGainPreventClipping);
@@ -236,7 +236,7 @@ struct Player::Impl {
         int index = 0;
         int ctx = -1;
         bool user = false, consumes = false;
-        std::uint64_t startFrame = 0;
+        Frames startFrame;
         std::uint32_t devRate = 0;
         std::unique_ptr<Decoder> preopened; // opened by the control thread to learn the rate
     };
@@ -541,9 +541,10 @@ struct Player::Impl {
         s.volume = out.volume.load(std::memory_order_relaxed);
         if (s.status != Status::Stopped && s.index >= 0 && snapDevRate && snapMarker.info.sampleRate) {
             const std::uint64_t read = ring.totalRead() / kCh;
-            const std::uint64_t played = read > snapLatency ? read - snapLatency : 0;
-            const double into = played > snapMarker.ringFrame ? static_cast<double>(played - snapMarker.ringFrame) / snapDevRate : 0;
-            s.position = static_cast<double>(snapMarker.startFrame) / snapMarker.info.sampleRate + into;
+            const Frames played{read > snapLatency ? read - snapLatency : 0};
+            const double into =
+                played > snapMarker.ringFrame ? static_cast<double>((played - snapMarker.ringFrame).count()) / snapDevRate : 0;
+            s.position = static_cast<double>(snapMarker.startFrame.count()) / snapMarker.info.sampleRate + into;
             if (s.track.duration > 0) s.position = std::min(s.position, s.track.duration);
         }
         return s;
@@ -587,9 +588,9 @@ struct Player::Impl {
 
     // Ring frame the listener hears now: frames handed to the device minus what the
     // device still buffers. Control thread.
-    std::uint64_t audibleFrame() const {
+    Frames audibleFrame() const { // device-rate frames the device has played
         const std::uint64_t read = ring.totalRead() / kCh, lat = out.latencyFrames();
-        return read > lat ? read - lat : 0;
+        return Frames(read > lat ? read - lat : 0);
     }
 
     void emit(EventType t, std::string msg = {}) {
@@ -659,7 +660,7 @@ struct Player::Impl {
     // seekSec >= 0: start at that time instead of `frame` (the rate is known once open).
     // `pk.consumes`: pk.idx is upNext.front(); a jump to it takes it off the user queue
     // at once (only the decoder's gapless picks wait until they are audible).
-    bool startAt(Pick pk, std::uint64_t frame, Status target, double seekSec = -1) {
+    bool startAt(Pick pk, Frames frame, Status target, double seekSec = -1) {
         const Status before = status;
         openPending = false;
         flush();
@@ -668,7 +669,7 @@ struct Player::Impl {
         int i = pk.idx;
         // A track that fails to open is skipped along the play order; each queue entry
         // is tried at most once (repeat would otherwise loop over a broken queue).
-        for (std::size_t tries = 0;; tries++, frame = 0) {
+        for (std::size_t tries = 0;; tries++, frame = Frames{}) {
             {
                 std::lock_guard lk(dm);
                 resumeAfter.reset(); // a new start
@@ -742,11 +743,11 @@ struct Player::Impl {
             ring.resize(ringSamples(out.sampleRate()));
             ringRate = out.sampleRate();
         }
-        if (seekSec >= 0) frame = static_cast<std::uint64_t>(seekSec * dec->sampleRate());
+        if (seekSec >= 0) frame = Frames(static_cast<std::uint64_t>(seekSec * dec->sampleRate()));
         if (frame && dec->totalFrames()) frame = std::min(frame, dec->totalFrames());
         // The state describes the new track from here on, whether or not the prebuffer
         // fills in time; the decoder's own marker (same ring frame) confirms it later.
-        Marker m{ring.totalWritten() / kCh, i, frame, infoFor(path, *dec, cfg), pk.ctx, pk.user, pk.consumes};
+        Marker m{Frames(ring.totalWritten() / kCh), i, frame, infoFor(path, *dec, cfg), pk.ctx, pk.user, pk.consumes};
         const bool newTrack = i != index || path != cur.info.path;
         {
             std::lock_guard lk(dm);
@@ -793,7 +794,7 @@ struct Player::Impl {
     // device can have played through a short track already, and listeners (TUI, MPRIS,
     // play history) must still see it, with its own state.
     void serviceMarkers() {
-        const std::uint64_t audible = audibleFrame();
+        const Frames audible = audibleFrame();
         std::vector<std::string> errs;
         {
             std::lock_guard lk(dm);
@@ -801,7 +802,7 @@ struct Player::Impl {
         }
         for (auto &e : errs) emit(EventType::Error, e);
         for (;;) {
-            const std::uint64_t prevStart = cur.ringFrame;
+            const Frames prevStart = cur.ringFrame;
             {
                 std::lock_guard lk(dm);
                 if (markers.empty() || markers.front().ringFrame > audible) return;
@@ -884,7 +885,7 @@ struct Player::Impl {
             break;
         case Cmd::Play:
             if (status == Status::Paused) resume();
-            else if (status == Status::Stopped) startAt(startIndex(), 0, Status::Playing);
+            else if (status == Status::Stopped) startAt(startIndex(), Frames{}, Status::Playing);
             break;
         case Cmd::PlayIndex:
         case Cmd::Cue: {
@@ -897,8 +898,8 @@ struct Player::Impl {
                     pk.user = true;
                 }
             }
-            if (c.kind == Cmd::Cue) startAt(pk, 0, Status::Paused, std::max(0.0, c.value));
-            else startAt(pk, 0, Status::Playing);
+            if (c.kind == Cmd::Cue) startAt(pk, Frames{}, Status::Paused, std::max(0.0, c.value));
+            else startAt(pk, Frames{}, Status::Playing);
             break;
         }
         case Cmd::Pause:
@@ -907,7 +908,7 @@ struct Player::Impl {
         case Cmd::Toggle:
             if (status == Status::Playing) pauseNow();
             else if (status == Status::Paused) resume();
-            else startAt(startIndex(), 0, Status::Playing);
+            else startAt(startIndex(), Frames{}, Status::Playing);
             break;
         case Cmd::Stop:
             openPending = false;
@@ -925,7 +926,7 @@ struct Player::Impl {
                 n = successor(curPick(), false, true);
             }
             if (n.idx >= 0)
-                startAt(n, 0, status == Status::Paused ? Status::Paused : Status::Playing);
+                startAt(n, Frames{}, status == Status::Paused ? Status::Paused : Status::Playing);
             else if (status != Status::Stopped) endOfQueue();
             break;
         }
@@ -938,7 +939,7 @@ struct Player::Impl {
                 p = predecessor(curPick());
             }
             const bool restart = stateNow().position > 3.0 || p < 0;
-            startAt(restart ? curPick() : Pick{p, p, false, false}, 0,
+            startAt(restart ? curPick() : Pick{p, p, false, false}, Frames{},
                     status == Status::Paused ? Status::Paused : Status::Playing);
             break;
         }
@@ -946,12 +947,12 @@ struct Player::Impl {
             serviceMarkers();
             const double s = std::max(0.0, c.value);
             if (openPending && index >= 0) { // the track was never opened: open it at s
-                startAt(curPick(), 0, status, s);
+                startAt(curPick(), Frames{}, status, s);
                 emit(EventType::Seeked);
                 break;
             }
             if (status == Status::Stopped || index < 0 || !cur.info.sampleRate) break;
-            startAt(curPick(), static_cast<std::uint64_t>(s * cur.info.sampleRate), status);
+            startAt(curPick(), Frames(static_cast<std::uint64_t>(s * cur.info.sampleRate)), status);
             emit(EventType::Seeked);
             break;
         }
@@ -1192,15 +1193,15 @@ struct Player::Impl {
         if (status != Status::Playing) return Clock::time_point::max();
         Clock::time_point t = nextTick;
         const double rate = out.sampleRate() ? out.sampleRate() : 48000.0;
-        const std::uint64_t audible = audibleFrame();
+        const Frames audible = audibleFrame();
         if (draining) return std::min(t, drainDeadline);
         std::lock_guard lk(dm);
         auto at = [&](double sec) {
             return Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(sec));
         };
         if (!markers.empty()) {
-            const std::uint64_t f = markers.front().ringFrame;
-            t = std::min(t, at((f > audible ? static_cast<double>(f - audible) / rate : 0) + 0.002));
+            const Frames f = markers.front().ringFrame;
+            t = std::min(t, at((f > audible ? static_cast<double>((f - audible).count()) / rate : 0) + 0.002));
         }
         if (decoderExhausted) t = std::min(t, at(static_cast<double>(ring.readable() / kCh) / rate + 0.02)); // NOLINT(bugprone-integer-division): whole frames on purpose
         return t;
@@ -1251,7 +1252,7 @@ struct Player::Impl {
         Pick lastPk; // track before it (resume point when the order ended)
         std::size_t fails = 0; // consecutive tracks that failed to open
         std::uint64_t endGen = 0; // modeGen when the order ended
-        std::uint64_t startFrame = 0;
+        Frames startFrame;
         std::uint32_t devRate = 0;
         bool active = false, needOpen = false, exhausted = false, pokeControl = false;
         ma_data_converter conv;
@@ -1259,10 +1260,10 @@ struct Player::Impl {
         float gain = 1.0f;
         // Converter bookkeeping for the current track: frames in, frames written, and
         // leading output frames still to drop (the converter's output latency).
-        std::uint64_t trackIn = 0, trackOut = 0, convSkip = 0;
+        Frames trackIn, trackOut, convSkip;
         // Silence frames due before the next track's first frame (natural track end only).
-        std::uint64_t gapDue = 0;
-        std::vector<float> in(kChunkFrames * kMaxChannels), cv(kConvFrames * kCh);
+        Frames gapDue;
+        std::vector<float> in(kChunkFrames.samples(kMaxChannels)), cv(kConvFrames.samples(kCh));
         const auto waitDur = std::chrono::duration_cast<Clock::duration>(
             std::chrono::duration<double>(std::max(0.01, cfg.ringSeconds / 4)));
 
@@ -1292,7 +1293,7 @@ struct Player::Impl {
                         startFrame = job.startFrame;
                         devRate = job.devRate;
                         dec = std::move(job.preopened);
-                        gapDue = 0; // a jump (seek/skip/playIndex) never gets a gap
+                        gapDue = Frames{}; // a jump (seek/skip/playIndex) never gets a gap
                         needOpen = active;
                         exhausted = false;
                         dcv.notify_all();
@@ -1345,13 +1346,13 @@ struct Player::Impl {
                     err = "unsupported channel count: " + path;
                     dec.reset();
                 }
-                if (dec && startFrame && !dec->seek(startFrame)) startFrame = 0;
+                if (dec && startFrame && !dec->seek(startFrame)) startFrame = Frames{};
                 if (dec && (dec->sampleRate() != devRate || dec->channels() != kCh)) {
                     auto cfgc = ma_data_converter_config_init(ma_format_f32, ma_format_f32, dec->channels(), kCh,
                                                               dec->sampleRate(), devRate);
                     if (ma_data_converter_init(&cfgc, nullptr, &conv) == MA_SUCCESS) {
                         convInit = true;
-                        convSkip = ma_data_converter_get_output_latency(&conv);
+                        convSkip = Frames(ma_data_converter_get_output_latency(&conv));
                     }
                     else {
                         err = "cannot convert " + std::to_string(dec->sampleRate()) + " Hz: " + path;
@@ -1371,30 +1372,30 @@ struct Player::Impl {
                     }
                     lastPk = pk;
                     pk = ++fails < queue.size() ? successor(pk, false, true) : Pick{};
-                    startFrame = 0;
+                    startFrame = Frames{};
                     continue; // a pending gap carries over to the next track that opens
                 }
                 if (gapDue) {
                     // The next track exists: write the silence, then mark its start.
                     lk.unlock();
                     std::fill(in.begin(), in.end(), 0.0f);
-                    std::uint64_t written = 0, noSkip = 0;
+                    Frames written, noSkip;
                     bool ok = true;
                     while (ok && written < gapDue) {
-                        const std::uint64_t n = std::min<std::uint64_t>(kChunkFrames, gapDue - written);
+                        const Frames n = std::min(kChunkFrames, gapDue - written);
                         ok = pushFrames(in.data(), n, kCh, nullptr, cv, 1.0f, seen, waitDur, written, noSkip);
                     }
                     lk.lock();
                     if (!ok || gen != seen) continue; // job retired during the gap
-                    gapDue = 0;
+                    gapDue = Frames{};
                 }
                 const auto info = infoFor(path, *dec, cfg);
                 gain = info.appliedGain;
                 pokeControl = true;
-                trackIn = trackOut = 0;
-                LM_ASSERT(markers.empty() || markers.back().ringFrame <= ring.totalWritten() / kCh,
+                trackIn = trackOut = Frames{};
+                LM_ASSERT(markers.empty() || markers.back().ringFrame <= Frames(ring.totalWritten() / kCh),
                           "track markers are ordered by ring position");
-                markers.push_back(Marker{ring.totalWritten() / kCh, pk.idx, startFrame, info, pk.ctx, pk.user, pk.consumes});
+                markers.push_back(Marker{Frames(ring.totalWritten() / kCh), pk.idx, startFrame, info, pk.ctx, pk.user, pk.consumes});
                 fails = 0;
                 needOpen = false;
             }
@@ -1405,8 +1406,8 @@ struct Player::Impl {
             // Decode one chunk and push it.
             bool trackEnd = false;
             for (int chunks = 0; chunks < 4 && !trackEnd; chunks++) {
-                const std::uint64_t n = dec->read(in.data(), kChunkFrames);
-                if (n == 0) {
+                const Frames n = dec->read(in.data(), kChunkFrames);
+                if (!n) {
                     trackEnd = true;
                     break;
                 }
@@ -1421,7 +1422,7 @@ struct Player::Impl {
                 // silence through until the track has produced its length at the device
                 // rate (the converter's natural count, ceil(in * out / in_rate)), so the
                 // tail is played and the next track starts exactly where this one ends.
-                const std::uint64_t want = (trackIn * devRate + dec->sampleRate() - 1) / dec->sampleRate();
+                const Frames want{(trackIn.count() * devRate + dec->sampleRate() - 1) / dec->sampleRate()};
                 std::fill(in.begin(), in.end(), 0.0f);
                 bool ok = true;
                 for (int guard = 0; ok && trackOut < want && guard < 64; guard++)
@@ -1439,7 +1440,7 @@ struct Player::Impl {
                 }
                 dec.reset();
                 dropConverter();
-                gapDue = static_cast<std::uint64_t>(std::llround(gapSec.load(std::memory_order_relaxed) * devRate));
+                gapDue = Frames(static_cast<std::uint64_t>(std::llround(gapSec.load(std::memory_order_relaxed) * devRate)));
                 {
                     std::lock_guard lk(dm);
                     if (gen != seen) continue; // retired: the new job decides what plays
@@ -1452,7 +1453,7 @@ struct Player::Impl {
                         pk = successor(pk, true, true);
                     }
                 }
-                startFrame = 0;
+                startFrame = Frames{};
                 needOpen = true;
             }
         }
@@ -1462,29 +1463,30 @@ struct Player::Impl {
     // false if the job was retired meanwhile.
     // `produced` counts the frames written. With a converter, the first `skip` output
     // frames are dropped (and `skip` counted down) and output stops at `limit`.
-    bool pushFrames(const float *src, std::uint64_t n, std::uint32_t ch, ma_data_converter *conv, std::vector<float> &cv,
-                    float gain, std::uint64_t seen, Clock::duration waitDur, std::uint64_t &produced,
-                    std::uint64_t &skip, std::uint64_t limit = UINT64_MAX) {
-        while (n > 0) {
+    bool pushFrames(const float *src, Frames n, std::uint32_t ch, ma_data_converter *conv, std::vector<float> &cv,
+                    float gain, std::uint64_t seen, Clock::duration waitDur, Frames &produced, Frames &skip,
+                    Frames limit = Frames::max()) {
+        while (n) {
             const float *data = src;
-            std::uint64_t frames = n;
+            Frames frames = n;
             if (conv) {
                 if (produced >= limit) return true;
-                const std::uint64_t room = limit - produced; // may be huge (no limit): add skip safely
-                ma_uint64 fin = n, fout = room >= kConvFrames ? kConvFrames : std::min<std::uint64_t>(kConvFrames, room + skip);
+                const Frames room = limit - produced; // may be huge (no limit): add skip safely
+                ma_uint64 fin = n.count();
+                ma_uint64 fout = (room >= kConvFrames ? kConvFrames : std::min(kConvFrames, room + skip)).count();
                 ma_data_converter_process_pcm_frames(conv, src, &fin, cv.data(), &fout);
                 if (fin == 0 && fout == 0) return true; // nothing more to make from this input
                 src += fin * ch;
-                n -= fin;
-                const std::uint64_t drop = std::min<std::uint64_t>(skip, fout);
+                n -= Frames(fin);
+                const Frames drop = std::min(skip, Frames(fout));
                 skip -= drop;
-                data = cv.data() + drop * kCh;
-                frames = fout - drop;
+                data = cv.data() + drop.samples(kCh);
+                frames = Frames(fout) - drop;
             } else {
-                n = 0;
+                n = Frames{};
             }
             produced += frames;
-            std::size_t total = static_cast<std::size_t>(frames) * kCh, off = 0;
+            std::size_t total = static_cast<std::size_t>(frames.samples(kCh)), off = 0;
             if (gain != 1.0f) {
                 float *w = const_cast<float *>(data); // points into `cv` or the caller's buffer
                 for (std::size_t i = 0; i < total; i++) w[i] = std::clamp(w[i] * gain, -1.0f, 1.0f);
