@@ -37,6 +37,8 @@ constexpr std::array kActions = {
     Action{"queue_view", ToggleQueueView, Context::Global, "v", "show the queue (up next)"},
     Action{"browser", ToggleBrowser, Context::Global, "b", "browse library / folders"},
     Action{"pin", TogglePin, Context::Global, "P", "save offline / unsave (server tracks)"},
+    Action{"filter", OpenFilter, Context::Global, "/", "fuzzy filter (esc clears)"},
+    Action{"jump_playing", JumpPlaying, Context::Global, ".", "jump to the playing track"},
     Action{"command_line", OpenCommandLine, Context::Global, ":", "command line (:q quits)"},
     Action{"help", ToggleHelp, Context::Global, "?", "this help"},
     Action{"close_help", CloseHelp, Context::Global, "escape", "close the help"},

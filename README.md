@@ -61,6 +61,7 @@ inserts that much silence between tracks (`playback.gap_seconds`).
 | r | repeat: off → all → one | s | shuffle on / off |
 | q / Q | queue selected / play it next | v | show the queue (up next) |
 | b | browse library / folders | P | save offline (remote tracks) |
+| / | fuzzy filter (esc clears) | . | jump to the playing track |
 | : | command line (`:q` quits) | Ctrl-C | quit |
 
 A bare `q` does not quit: it queues. Quit with `:q` (or `:quit`) or Ctrl-C. Every key
@@ -72,6 +73,17 @@ line) cancels. `:q`, `:quit`, `:q!`, `:qa` quit; `:help`; `:seek 1:30`, `:seek 9
 `:seek 1:02:03`, `:seek 50%`, `:seek +10`, `:seek -5` (relative); `:vol 80` /
 `:volume 80` (0..150 %); and any action name below runs it (`:next`, `:shuffle`,
 `:queue_clear` in the queue pane). Unknown commands are reported on the status line.
+
+**Filter** (`/`) and **jump** (`.`). `/` opens a fuzzy filter for the list or the
+open browser level: the rows narrow as you type, and enter keeps the filter. Each word
+of the query must appear in the row's label as a subsequence (its letters in order,
+gaps allowed; ASCII case-insensitive; words in any order), so `/tnth` finds "10 Tenth"
+and `/bj jga` finds "Björk — Jóga". Browser files match on their file name and, once
+read, their tag label. While filtered, `j`/`k`/`g`/`G`/PgUp/PgDn move among the matches,
+`↑`/`↓` move while still typing, the status line shows `filter /query`, and `esc` (or
+backspace on an empty query) clears it. Switching panes, opening another browser level
+or replacing the list clears it too. `.` selects the playing track in the list, closing
+the browser or queue pane and clearing a filter that would hide it.
 
 **Status line.** Errors (red), warnings (yellow) and confirmations appear in the bottom
 line and expire on their own: confirmations after 3 s, warnings after 6 s, errors after
@@ -207,7 +219,8 @@ ctest --test-dir build --output-on-failure
   user keys taking default ones, digits, conflicts, unknown actions/keys with their
   place), the help and hint generated from the bindings, the `:` command line parser
   (quit forms, actions, `seek` positions, `vol`, `messages`, errors) and its editing, the
-  status line (expiry per level, rounding up, replacement, history of 50 with repeats
+  fuzzy matching (subsequence per word, any word order, ASCII case folding) and moving
+  within filtered rows (from a hidden row, clamping), the status line (expiry per level, rounding up, replacement, history of 50 with repeats
   stored once, no timer when empty), time/volume formatting.
 - `test_server_range`: Range header decisions (suffix, open-ended, past EOF, reversed,
   multiple ranges, overflow, empty file).
@@ -232,7 +245,8 @@ ctest --test-dir build --output-on-failure
   terminal; also that `:q` exits promptly with a FIFO in the queue; keybindings from
   `cfg.yaml` (a rebound `q` no longer queues, the hint and help follow the bindings), the
   `:` command line (`:vol`, `:seek 50%`, an unknown command, backspace editing), a status
-  message expiring after 3 s, the `:messages` overlay, and bad
+  message expiring after 3 s, the `:messages` overlay, the `/` filter (typing narrows the
+  list and hides other rows, no match, enter keeps, esc clears), `.`, and bad
   bindings (unknown key, one key on two actions) refused with exit status 2; with a temp `XDG_CONFIG_HOME`:
   `cfg.yaml`'s volume applied at start, a live edit (volume hot-applied, replaygain
   reported as restart-required), and a group-writable file / an `api_key` refused;
@@ -784,7 +798,7 @@ ones while their pane is open.
 
 | context | action (default keys) |
 |---|---|
-| global | `toggle_pause` (space), `next` (n), `prev` (p), `seek_back` (←), `seek_forward` (→), `seek_start` (Home), `seek_end` (End), `volume_up` (+ =), `volume_down` (- _), `play_selected` (enter), `select_up` (k ↑), `select_down` (j ↓), `select_first` (g), `select_last` (G), `page_up` (PgUp), `page_down` (PgDn), `repeat` (r), `shuffle` (s), `queue_add` (q), `play_next` (Q), `queue_view` (v), `browser` (b), `pin` (P), `command_line` (:), `help` (?), `close_help` (esc), `suspend` (Ctrl-Z), `quit` (Ctrl-C) |
+| global | `toggle_pause` (space), `next` (n), `prev` (p), `seek_back` (←), `seek_forward` (→), `seek_start` (Home), `seek_end` (End), `volume_up` (+ =), `volume_down` (- _), `play_selected` (enter), `select_up` (k ↑), `select_down` (j ↓), `select_first` (g), `select_last` (G), `page_up` (PgUp), `page_down` (PgDn), `filter` (/), `jump_playing` (.), `repeat` (r), `shuffle` (s), `queue_add` (q), `play_next` (Q), `queue_view` (v), `browser` (b), `pin` (P), `command_line` (:), `help` (?), `close_help` (esc), `suspend` (Ctrl-Z), `quit` (Ctrl-C) |
 | queue pane | `queue_move_up` (K), `queue_move_down` (J), `queue_remove` (d Del), `queue_clear` (c), `queue_close` (esc) |
 | browser | `browse_open` (l), `browse_up` (⌫ h), `browse_play` (o), `browser_close` (esc) |
 

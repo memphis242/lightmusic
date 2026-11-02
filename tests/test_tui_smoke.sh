@@ -248,6 +248,34 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (keys run)"; cat "$f"; fail=1
 done
+# Fuzzy filter: / narrows the list as you type (the other rows disappear), enter keeps
+# it, j/k move among the matches, esc clears it; . jumps back to the playing track.
+printf 'playback:\n  volume: 50\n' > "$CFG"
+: > "$TMP/log10"
+w10() { n=200; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log10"; do sleep 0.05; n=$((n - 1)); done; }
+{ w10 Playing; w10 "? help  :q quit"
+  printf '/tnth'; w10 "/tnth"
+  printf '\r'; w10 "filter /tnth"
+  : > "$TMP/log10.mark"; cp "$TMP/log10" "$TMP/log10.before"
+  printf '/'; sleep 0.1; printf 'zz'; w10 "nothing matches the filter"
+  printf '\177\177\r'; sleep 0.2
+  printf '\033'; w10 "? help  :q quit"
+  printf j; sleep 0.1; printf j; sleep 0.1; printf '.'; sleep 0.3
+  printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=80 LINES=24 \
+    timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log10" >/dev/null 2>&1
+rc=$?
+[ $rc -eq 0 ] || { echo "FAIL: filter run exit status $rc"; tail -c 1000 "$TMP/log10" | cat -v; fail=1; }
+for want in "/tnth" "filter /tnth" "nothing matches the filter"; do
+    grep -q -- "$want" "$TMP/log10" || { echo "FAIL: filter run: '$want' never shown"; fail=1; }
+done
+# While filtered, a redraw shows only the matching row: the last frame drawn before the
+# '/zz' edit has "10 Tenth" and no "2 Second".
+last=$(sed 's/\x1b\[H/\n@@FRAME@@\n/g' "$TMP/log10.before" | awk '/@@FRAME@@/{f=""} {f=f $0 "\n"} END{printf "%s", f}')
+echo "$last" | grep -q "10 Tenth" && ! echo "$last" | grep -q "2 Second" || { echo "FAIL: filter did not hide rows"; fail=1; }
+for f in "$TMP"/san*; do
+    [ -e "$f" ] || continue
+    echo "FAIL: sanitizer report $f (filter run)"; cat "$f"; fail=1
+done
 # A bad binding is refused before the terminal is touched, with its line.
 printf 'keys:\n  queue_add: [a, F13]\n' > "$CFG"
 out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?

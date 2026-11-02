@@ -319,6 +319,11 @@ public:
         }
         return nullptr;
     }
+    // UI thread: the label if already read (never requests one).
+    const std::string *cached(const std::string &path) const {
+        const auto it = cache_.find(path);
+        return it == cache_.end() || it->second.empty() ? nullptr : &it->second;
+    }
     // UI thread: takes finished labels; true if there were any (redraw).
     bool drain() {
         std::vector<std::pair<std::string, std::string>> d;
@@ -450,6 +455,11 @@ struct Ui {
     // Same for repeat/shuffle (r and s can be pressed faster than ModeChanged arrives).
     std::optional<lm::Repeat> repeatTarget;
     std::optional<bool> shuffleTarget;
+    // Fuzzy filter (/): the active query ("" = none), for the list or (filterBrowser)
+    // the browser level it was typed in; filterInput is the prompt while typing.
+    std::string filter;
+    bool filterBrowser = false;
+    std::optional<std::string> filterInput;
     lmtui::Keymap keymap;              // defaults + cfg.yaml keys:
     std::optional<std::string> cmdline; // the ':' command line while open (its text)
 };
@@ -485,10 +495,53 @@ std::string nameOf(const Ui &ui, int entry) {
                                                                            : std::string("?");
 }
 
+// The filter applies to what is shown now (not the queue pane).
+bool filterOn(const Ui &ui) { return !ui.filter.empty() && !ui.queueView && ui.filterBrowser == ui.browser.open; }
+
+// Rows of the list or the browser level that match the filter (file rows by their tag
+// label when it has been read, and their file name).
+std::vector<int> filteredRows(const Ui &ui, const TagWorker &tags) {
+    std::vector<int> v;
+    if (ui.browser.open) {
+        if (ui.browser.stack.empty()) return v;
+        const auto &rows = ui.browser.stack.back().rows;
+        for (std::size_t i = 0; i < rows.size(); i++) {
+            const BrowseRow &r = rows[i];
+            const std::string *tl = r.kind == BrowseRow::File ? tags.cached(r.path) : nullptr;
+            if (lmtui::fuzzyMatch(ui.filter, r.label) || (tl && lmtui::fuzzyMatch(ui.filter, *tl)))
+                v.push_back(static_cast<int>(i));
+        }
+        return v;
+    }
+    const std::size_t n = std::min(ui.ctx, ui.names.size());
+    for (std::size_t i = 0; i < n; i++)
+        if (lmtui::fuzzyMatch(ui.filter, ui.names[i])) v.push_back(static_cast<int>(i));
+    return v;
+}
+
+// Window of `visible` rows around the selection, as positions in `rows` (the filtered
+// rows) or plain indices when `rows` is null.
+struct Window {
+    int first = 0, stop = 0;
+};
+Window window(const std::vector<int> *rows, int total, int selected, int visible) {
+    int pos = selected;
+    if (rows) {
+        total = static_cast<int>(rows->size());
+        pos = static_cast<int>(std::lower_bound(rows->begin(), rows->end(), selected) - rows->begin());
+    }
+    const int first = std::clamp(pos - visible / 2, 0, std::max(0, total - visible));
+    return {first, std::min(total, first + visible)};
+}
+
 // The status line: the current message, coloured by level, or the key hint.
 Element statusText(const Ui &ui) {
     using L = lmtui::StatusLine::Level;
-    if (!ui.status.visible()) return text(ui.keymap.hint()) | dim;
+    if (!ui.status.visible()) {
+        if (filterOn(ui))
+            return text(std::format("filter /{}  (esc clears)", ui.filter)) | color(Color::Cyan);
+        return text(ui.keymap.hint()) | dim;
+    }
     const auto &m = ui.status.current();
     switch (m.level) {
     case L::Error: return text(m.text) | bold | color(Color::Red);
@@ -533,11 +586,12 @@ Element renderBrowser(const Ui &ui, TagWorker &tags, int height) {
                                          firstKey(ui, "queue_add"), firstKey(ui, "play_next"),
                                          firstKey(ui, "browse_up"), firstKey(ui, "browser_close"));
     rows.push_back(hbox({text(lv.title) | bold, filler(), text(hint) | dim}));
-    const int total = static_cast<int>(lv.rows.size());
     const int visible = std::max(1, queueRows(height) - 1);
-    const int first = std::clamp(lv.selected - visible / 2, 0, std::max(0, total - visible));
-    const int stop = std::min(total, first + visible);
-    for (int i = first; i < stop; i++) {
+    std::optional<std::vector<int>> fr;
+    if (filterOn(ui)) fr = filteredRows(ui, tags);
+    const Window w = window(fr ? &*fr : nullptr, static_cast<int>(lv.rows.size()), lv.selected, visible);
+    for (int k = w.first; k < w.stop; k++) {
+        const int i = fr ? (*fr)[static_cast<std::size_t>(k)] : k;
         const BrowseRow &r = lv.rows[static_cast<std::size_t>(i)];
         std::string name = r.label;
         if (r.kind == BrowseRow::File) {
@@ -559,6 +613,7 @@ Element renderBrowser(const Ui &ui, TagWorker &tags, int height) {
         rows.push_back(std::move(row));
     }
     if (lv.rows.empty()) rows.push_back(text("  (empty)") | dim);
+    else if (fr && fr->empty()) rows.push_back(text("  (nothing matches the filter)") | dim);
     return vbox(std::move(rows)) | yframe | flex;
 }
 
@@ -568,11 +623,13 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
     // would otherwise build 10k rows per frame).
     const int total = static_cast<int>(std::min(ui.ctx, ui.names.size()));
     const int visible = queueRows(height);
-    const int first = std::clamp(ui.selected - visible / 2, 0, std::max(0, total - visible));
-    const int stop = std::min(total, first + visible);
+    std::optional<std::vector<int>> fr;
+    if (filterOn(ui) && !ui.browser.open) fr = filteredRows(ui, tags);
+    const Window w = window(fr ? &*fr : nullptr, total, ui.selected, visible);
     Elements rows;
-    rows.reserve(static_cast<std::size_t>(stop - first));
-    for (std::size_t i = static_cast<std::size_t>(first); i < static_cast<std::size_t>(stop); i++) {
+    rows.reserve(static_cast<std::size_t>(w.stop - w.first));
+    for (int k = w.first; k < w.stop; k++) {
+        const auto i = static_cast<std::size_t>(fr ? (*fr)[static_cast<std::size_t>(k)] : k);
         const bool cur = static_cast<int>(i) == st.index;
         const bool sel = static_cast<int>(i) == ui.selected;
         const std::string num = std::format("{:3} ", i + 1);
@@ -581,9 +638,9 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
         if (cs == 2 && ui.showCacheMarkers) mark = mark | color(Color::Cyan);
         // Queued rows show their place in the user queue ("+1" plays next).
         std::string inQueue;
-        for (std::size_t k = 0; k < st.upNext.size(); k++)
-            if (st.upNext[k] == static_cast<int>(i)) {
-                inQueue = "+" + std::to_string(k + 1) + " ";
+        for (std::size_t q = 0; q < st.upNext.size(); q++)
+            if (st.upNext[q] == static_cast<int>(i)) {
+                inQueue = "+" + std::to_string(q + 1) + " ";
                 break;
             }
         Element row = hbox({text(cur ? std::string(statusGlyph(st.status)) + " " : "  "), text(num) | dim,
@@ -592,7 +649,9 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
         if (sel) row = row | inverted;
         rows.push_back(std::move(row));
     }
-    if (rows.empty()) rows.push_back(text("(no tracks: b browses the library / folders)") | dim);
+    if (rows.empty())
+        rows.push_back(text(fr && total > 0 ? "(nothing matches the filter)" : "(no tracks: b browses the library / folders)") |
+                       dim);
     Element queue = ui.browser.open ? renderBrowser(ui, tags, height)
                     : ui.queueView  ? renderUpNext(ui, height)
                                     : vbox(std::move(rows)) | yframe | flex;
@@ -617,7 +676,8 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
 
     // Footer: the command line while open, else the last message (or the key hint).
     Element footer =
-        ui.cmdline ? hbox({text(":" + *ui.cmdline), text(" ") | inverted, filler()})
+        ui.cmdline       ? hbox({text(":" + *ui.cmdline), text(" ") | inverted, filler()})
+        : ui.filterInput ? hbox({text("/" + *ui.filterInput), text(" ") | inverted, filler()})
                    : hbox({statusText(ui), filler(),
                            text(st.upNext.empty() || ui.queueView ? std::string()
                                                                   : "up next " + std::to_string(st.upNext.size()) + "  ") |
@@ -1338,6 +1398,8 @@ int run(int argc, char **argv) {
                     keepPaths.push_back(sp.path);
                     pushEntry(std::move(sp));
                 }
+                ui.filter.clear(); // a new list
+                ui.filterInput.reset();
                 labels->stop(); // results of the old scanner refer to the old list
                 labels = std::make_shared<LabelBox>();
                 scanLabels(0);
@@ -1464,6 +1526,20 @@ int run(int argc, char **argv) {
                     return static_cast<int>(ui.browser.stack.back().rows.size()) - 1;
                 return ui.queueView ? static_cast<int>(ui.st.upNext.size()) - 1 : last();
             };
+            // Moves within the filtered rows while a filter is on.
+            auto moveSel = [&](int delta) {
+                if (!filterOn(ui)) return selectRel(curSel() + delta);
+                if (const int r = lmtui::stepFiltered(filteredRows(ui, tagWorker), curSel(), delta); r >= 0) selectRel(r);
+            };
+            auto edgeSel = [&](bool toLast) {
+                if (!filterOn(ui)) return selectRel(toLast ? lastSel() : 0);
+                const auto rows = filteredRows(ui, tagWorker);
+                if (!rows.empty()) selectRel(toLast ? rows.back() : rows.front());
+            };
+            auto clearFilter = [&] {
+                ui.filter.clear();
+                ui.filterInput.reset();
+            };
             auto qEntry = [&]() -> int {
                 const auto k = static_cast<std::size_t>(ui.qselected);
                 return k < ui.st.upNext.size() ? ui.st.upNext[k] : -1;
@@ -1477,6 +1553,12 @@ int run(int argc, char **argv) {
             // was pressed, for SeekPercent).
             auto runCommand = [&](lmtui::Command cmd, const std::string &key) {
                 if (cmd == lmtui::Command::None) return;
+                // esc clears an active filter before it closes anything.
+                if (key == "escape" && !ui.help && filterOn(ui)) {
+                    clearFilter();
+                    dirty = true;
+                    return;
+                }
                 dirty = true;
                 if (cmd == lmtui::Command::Suspend) {
                     (void)raise(SIGTSTP); // handler restores the terminal, stops, flags SIGCONT
@@ -1527,7 +1609,9 @@ int run(int argc, char **argv) {
                 }
                 case lmtui::Command::PlaySelected:
                     if (ui.browser.open) {
+                        const std::size_t depth = ui.browser.stack.size();
                         browseOpen();
+                        if (ui.browser.stack.size() != depth || !ui.browser.open) clearFilter(); // a new level
                     } else if (!ui.queueView) {
                         if (static_cast<std::size_t>(ui.selected) < ui.ctx) player.playIndex(ui.selected);
                     } else if (const int e = qEntry(); e >= 0) {
@@ -1538,12 +1622,12 @@ int run(int argc, char **argv) {
                         else player.next();
                     }
                     break;
-                case lmtui::Command::SelectUp: selectRel(curSel() - 1); break;
-                case lmtui::Command::SelectDown: selectRel(curSel() + 1); break;
-                case lmtui::Command::SelectFirst: selectRel(0); break;
-                case lmtui::Command::SelectLast: selectRel(lastSel()); break;
-                case lmtui::Command::PageUp: selectRel(curSel() - page); break;
-                case lmtui::Command::PageDown: selectRel(curSel() + page); break;
+                case lmtui::Command::SelectUp: moveSel(-1); break;
+                case lmtui::Command::SelectDown: moveSel(+1); break;
+                case lmtui::Command::SelectFirst: edgeSel(false); break;
+                case lmtui::Command::SelectLast: edgeSel(true); break;
+                case lmtui::Command::PageUp: moveSel(-page); break;
+                case lmtui::Command::PageDown: moveSel(+page); break;
                 case lmtui::Command::QueueAdd:
                 case lmtui::Command::QueuePlayNext: {
                     const bool nextUp = cmd == lmtui::Command::QueuePlayNext;
@@ -1557,17 +1641,23 @@ int run(int argc, char **argv) {
                     break;
                 }
                 case lmtui::Command::ToggleQueueView:
+                    clearFilter();
                     ui.queueView = !ui.queueView;
                     ui.qselected = 0;
                     ui.browser.open = false;
                     break;
                 case lmtui::Command::ToggleBrowser:
+                    clearFilter();
                     ui.browser.open = !ui.browser.open;
                     if (ui.browser.open && ui.browser.stack.empty()) ui.browser.stack.push_back(rootLevel());
                     if (ui.browser.open) ui.queueView = false;
                     break;
-                case lmtui::Command::BrowseUp: browseUp(); break;
+                case lmtui::Command::BrowseUp:
+                    if (filterOn(ui)) clearFilter();
+                    browseUp();
+                    break;
                 case lmtui::Command::BrowsePlay:
+                    clearFilter(); // the browser closes
                     if (const BrowseRow *r = browseRow()) {
                         if (r->kind == BrowseRow::File || r->kind == BrowseRow::Track) browseOpen();
                         else replaceContext(tracksOf(*r), 0);
@@ -1645,6 +1735,33 @@ int run(int argc, char **argv) {
                 case lmtui::Command::OpenCommandLine:
                     ui.cmdline = std::string();
                     break;
+                case lmtui::Command::OpenFilter:
+                    if (ui.queueView) {
+                        ui.warn("the filter works in the list and the browser");
+                        break;
+                    }
+                    ui.filterBrowser = ui.browser.open;
+                    if (!filterOn(ui)) ui.filter.clear();
+                    ui.filterInput = ui.filter; // edit the active query
+                    break;
+                case lmtui::Command::JumpPlaying: {
+                    const int idx = ui.st.index;
+                    if (ui.st.status == lm::Status::Stopped || idx < 0) {
+                        ui.warn("nothing is playing");
+                        break;
+                    }
+                    if (static_cast<std::size_t>(idx) >= ui.ctx) {
+                        ui.warn("the playing track was queued from outside the list");
+                        break;
+                    }
+                    ui.browser.open = false;
+                    ui.queueView = false;
+                    if (!ui.filterBrowser && !ui.filter.empty() &&
+                        !lmtui::fuzzyMatch(ui.filter, ui.names[static_cast<std::size_t>(idx)]))
+                        clearFilter(); // it would be hidden
+                    select(idx);
+                    break;
+                }
                 }
             };
             auto runCommandLine = [&](const std::string &text) {
@@ -1688,6 +1805,24 @@ int run(int argc, char **argv) {
                     ui.showMessages = false;
                     dirty = true;
                     if (c == lmtui::Command::Quit || c == lmtui::Command::Suspend) runCommand(c, key);
+                    return;
+                }
+                if (ui.filterInput) {
+                    dirty = true;
+                    if (ui.keymap.lookup(lmtui::Context::Global, key) == lmtui::Command::Quit) running = false;
+                    else if (key == "escape") clearFilter();
+                    else if (key == "enter") {
+                        ui.filterInput.reset(); // keep the filter
+                    } else if (key == "up" || key == "down") {
+                        moveSel(key == "up" ? -1 : +1);
+                    } else if (!lmtui::editCommandLine(*ui.filterInput, key)) {
+                        clearFilter(); // backspace on an empty query
+                    } else {
+                        ui.filter = *ui.filterInput;
+                        // Snap the selection to the first visible row at or after it.
+                        if (const int r = lmtui::stepFiltered(filteredRows(ui, tagWorker), curSel(), 0); r >= 0)
+                            selectRel(r);
+                    }
                     return;
                 }
                 if (!ui.cmdline) return runCommand(ui.keymap.lookup(paneContext(), key), key);

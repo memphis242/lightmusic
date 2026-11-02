@@ -94,6 +94,8 @@ enum class Command {
     BrowseUp,      // browser: parent level (backspace, h)
     BrowsePlay,    // browser: play the selected folder/album/artist now (o)
     OpenCommandLine, // ':' opens the command line (keymap.hpp: parseCommandLine)
+    OpenFilter,      // '/': fuzzy filter of the list / browser level
+    JumpPlaying,     // '.': select the playing track in the list
 };
 
 constexpr double kSeekStep = 5.0;
@@ -143,6 +145,19 @@ int nextRepeat(int repeat);
 // Play-order indicator for the status line: "", "repeat", "repeat one", "shuffle",
 // "repeat · shuffle", ...
 std::string modeLabel(int repeat, bool shuffle);
+
+// Fuzzy filter (`/`): every space-separated term of `query` must occur in `text` as a
+// subsequence (its characters in order, gaps allowed), ASCII letters compared
+// case-insensitively, other bytes exactly. An empty or blank query matches everything.
+[[nodiscard]] bool fuzzyMatch(std::string_view query, std::string_view text);
+// Positions of the rows in `labels` that match, in order.
+[[nodiscard]] std::vector<int> filterRows(std::string_view query, const std::vector<std::string> &labels);
+// Moving the selection inside a filtered list: `rows` are the visible row indices
+// (ascending), `selected` the selected row (not necessarily visible). Returns the row
+// `delta` visible rows away from it, clamped to the first/last visible row; -1 if none
+// is visible. With delta 0 it snaps to the nearest visible row at or after `selected`
+// (else the last one).
+[[nodiscard]] int stepFiltered(const std::vector<int> &rows, int selected, int delta);
 
 // The status line's message ("toast"): errors, warnings and confirmations, each shown
 // until it expires (info 3 s, warning 6 s, error 10 s) or a newer one replaces it. The
