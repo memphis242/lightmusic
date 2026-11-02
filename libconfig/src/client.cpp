@@ -40,6 +40,7 @@ const Schema<ClientSettings> &clientSchema() {
             pathField<S>("ui.music_dir", &S::musicDir, true),
             boolField<S>("ui.save_settings", &S::saveSettings, true),
             boolField<S>("ui.resume_session", &S::resumeSession),
+            boolField<S>("ui.notifications", &S::notifications, true),
             namedListsField<S>("keys", &S::keys, true),
         };
         const std::string keyMsg = "the API key must not be stored in the config file; put it in a file only you "

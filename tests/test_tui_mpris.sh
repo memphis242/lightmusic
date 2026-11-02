@@ -1,6 +1,7 @@
 #!/bin/sh
 # TUI + MPRIS on a private session bus: the TUI (Null backend, in a pty via script(1))
-# registers org.mpris.MediaPlayer2.lightmusic; playerctl/busctl drive it; the paused TUI
+# registers org.mpris.MediaPlayer2.lightmusic; playerctl/busctl and the remote-control
+# flags (--play/--prev/--next/--add/--add-next/--pause) drive it; the paused TUI
 # must not wake up (main-thread context switches and CPU ticks over 5 s); MediaPlayer2.Quit
 # exits cleanly. Usage: test_tui_mpris.sh /path/to/lightmusic. Exit 77 (skip) without
 # dbus-run-session, busctl, script or ffmpeg.
@@ -60,6 +61,24 @@ else
 fi
 grep -q Paused "$TMP/log" || until_ 5 grep -q Paused "$TMP/log" || bad "TUI did not show Paused"
 
+# Remote-control flags of a second lightmusic process.
+"$BIN" --play || bad "--play"
+until_ 10 is_status Playing || bad "--play did not resume"
+"$BIN" --prev || bad "--prev"
+until_ 10 sh -c "busctl --user get-property $NAME $OBJ $PIF Metadata | grep -q Alpha" || bad "--prev did not go back"
+"$BIN" --next || bad "--next"
+until_ 10 sh -c "busctl --user get-property $NAME $OBJ $PIF Metadata | grep -q Beta" || bad "--next"
+(cd "$TMP" && "$BIN" --add a.flac) || bad "--add (relative path)"
+until_ 5 grep -q "queued: Tester — Alpha\|queued: a" "$TMP/log" || bad "TUI did not show the --add"
+"$BIN" --add-next "$TMP/b.flac" || bad "--add-next"
+until_ 5 grep -q "plays next: " "$TMP/log" || bad "TUI did not show the --add-next"
+out=$("$BIN" --add "$TMP/missing.flac" 2>&1); rc=$?
+[ $rc -ne 0 ] && echo "$out" | grep -q "missing.flac" || bad "--add of a missing file: rc $rc: $out"
+out=$("$BIN" --next "$TMP/a.flac" 2>&1); rc=$?
+[ $rc -eq 2 ] || bad "--next with files accepted (rc $rc): $out"
+"$BIN" --pause || bad "--pause"
+until_ 10 is_status Paused || bad "--pause"
+
 # LoopStatus/Shuffle set over MPRIS: shown in the TUI and saved into cfg.yaml.
 busctl --user set-property $NAME $OBJ $PIF LoopStatus s Playlist || bad "set LoopStatus"
 busctl --user set-property $NAME $OBJ $PIF Shuffle b true || bad "set Shuffle"
@@ -103,6 +122,8 @@ wait $SPID
 rc=$?
 [ $rc -eq 0 ] || bad "exit status $rc after Quit"
 grep -q "$(printf '\033')\\[?1049l" "$TMP/log" || bad "terminal not restored"
+out=$("$BIN" --toggle 2>&1); rc=$?
+[ $rc -eq 1 ] && echo "$out" | grep -q "no running lightmusic" || bad "--toggle without an instance: rc $rc: $out"
 for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     bad "sanitizer report $f"; cat "$f"

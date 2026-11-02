@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 #include <poll.h>
 
 #ifdef LM_TUI_MPRIS
@@ -23,12 +24,22 @@
 
 namespace lmtui {
 
+// lightmusic --add: (absolute paths, play next) -> "" or an error message.
+using RemoteAdd = std::function<std::string(const std::vector<std::string> &, bool)>;
+
 class MprisHook {
 public:
 #ifdef LM_TUI_MPRIS
-    explicit MprisHook(lm::Player &player, std::function<void(const std::string &)> log = nullptr) {
+    explicit MprisHook(lm::Player &player, std::function<void(const std::string &)> log = nullptr, RemoteAdd onAdd = nullptr,
+                       bool notify = false) {
         const char *off = std::getenv("LIGHTMUSIC_NO_MPRIS");
-        if (!off || !*off || *off == '0') server_ = lm::mpris::Server::create(player, nullptr, std::move(log));
+        lm::mpris::Server::Options opt;
+        opt.onAdd = std::move(onAdd);
+        opt.notify = notify;
+        if (!off || !*off || *off == '0') server_ = lm::mpris::Server::create(player, nullptr, std::move(log), std::move(opt));
+    }
+    void setNotify(bool on) {
+        if (server_) server_->setNotify(on);
     }
     pollfd pollFd() const { return server_ ? server_->pollFd() : pollfd{-1, 0, 0}; }
     int timeout(int t) const {
@@ -46,7 +57,8 @@ public:
 private:
     std::unique_ptr<lm::mpris::Server> server_;
 #else
-    explicit MprisHook(lm::Player &, std::function<void(const std::string &)> = nullptr) {}
+    explicit MprisHook(lm::Player &, std::function<void(const std::string &)> = nullptr, RemoteAdd = nullptr, bool = false) {}
+    void setNotify(bool) {}
     pollfd pollFd() const { return {-1, 0, 0}; }
     int timeout(int t) const { return t; }
     void process() {}

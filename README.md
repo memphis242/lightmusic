@@ -294,8 +294,15 @@ ctest --test-dir build --output-on-failure
   `playerctl` (if installed): properties and metadata, Play/Pause/PlayPause/Next/Previous,
   Seek and SetPosition (stale trackid or out-of-range position ignored), Volume write,
   PropertiesChanged (never for Position) and Seeked signals, `.instance<pid>` fallback
-  name, Quit. Skipped without `dbus-run-session` or `ffmpeg`.
-- `test_tui_mpris`: the TUI in a pty on a private bus, controlled with busctl/playerctl;
+  name, desktop notifications against a fake notification daemon (one per new track,
+  title and "artist — album", each replacing an earlier one), the remote-control client
+  (`remoteCommand`, unknown commands refused, `remoteAdd` through `Queue1.Add` with its
+  error passed back, "no running lightmusic" once the server is gone), Quit. Skipped
+  without `dbus-run-session` or `ffmpeg`.
+- `test_tui_mpris`: the TUI in a pty on a private bus, controlled with busctl/playerctl
+  and the remote-control flags of a second process (`--play/--prev/--next/--pause`,
+  `--add` with a relative path, `--add-next`, a missing file and files after `--next`
+  refused, `--toggle` with no instance);
   while paused its main thread must make no context switches and use no CPU ticks over
   5 s; MediaPlayer2.Quit must exit cleanly and restore the terminal.
 - `test_range_set`: cache range sets: merge, split, holes, serialisation, random ops
@@ -633,6 +640,25 @@ supported. PropertiesChanged is sent for status, track, volume, loop and shuffle
 `libmpris` (`frontends/mpris/`) uses sd-bus directly with no thread or timer of its own:
 the sd-bus fd joins the TUI's `poll()` loop, so a paused player still makes zero wakeups.
 
+**Remote control** from another terminal, a key binding of the desktop or a script:
+
+```sh
+lightmusic --toggle          # also --play, --pause, --stop, --next, --prev
+lightmusic --add ~/Music/x   # files/folders into the user queue (at the end) ...
+lightmusic --add-next a.flac # ... or to play next
+```
+
+These talk to the running TUI over the session bus (the plain name, else the first
+`...instance<pid>`) and exit: 0 when done, 1 with a message (no running lightmusic, the
+call failed or timed out after 5 s), 2 for bad usage. `--add` expands folders like the
+command line and sends absolute paths to `net.lightmusic.Queue1.Add(as paths, b next)`
+on the same object; the TUI accepts only absolute paths of regular files.
+
+**Desktop notifications** (`ui.notifications: true`, hot; off by default): when a new
+track becomes audible the TUI sends `org.freedesktop.Notifications.Notify` (title;
+artist — album), asynchronously and replacing its previous notification. Without a
+notification service it logs once on the status line and carries on.
+
 ## Streaming and offline cache (client)
 
 ```sh
@@ -798,6 +824,7 @@ ui:
                                     # UI (or over MPRIS) back here
   resume_session: true              # started without files: restore the last list,
                                     # queue and position (paused); --no-resume
+  notifications: false              # desktop notification on track change (hot)
 keys:                               # (hot) action: key or [keys]; replaces that
   queue_add: a                      # action's default keys; [] unbinds it
   quit: [ctrl-c, ctrl-q]
@@ -821,6 +848,7 @@ keys:                               # (hot) action: key or [keys]; replaces that
 | `ui.music_dir` | – | `$XDG_MUSIC_DIR`, else `~/Music` | yes (next time the browser opens at the top) |
 | `ui.save_settings` | – | true | yes |
 | `ui.resume_session` | `--no-resume` (= false) | true | restart |
+| `ui.notifications` | – | false | yes |
 | `keys.<action>` | – | see below | yes |
 
 #### Keybindings
