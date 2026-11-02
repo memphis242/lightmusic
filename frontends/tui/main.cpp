@@ -762,7 +762,9 @@ void usage(FILE *f) {
                "                 command-line flags override it\n"
                "  --no-config    ignore the settings file\n"
                "  --no-server    do not connect to the server named in the settings file\n"
-               "  --no-resume    start fresh instead of restoring the last session\n");
+               "  --no-resume    start fresh instead of restoring the last session\n"
+               "       lightmusic --next | --prev | --toggle | --play | --pause | --stop\n"
+               "       lightmusic --add | --add-next FILE|DIR...   (remote control of the running one)\n");
 }
 
 #ifdef LM_TUI_NET
@@ -837,6 +839,8 @@ int run(int argc, char **argv) {
     Live live;
     live.cli.name = "command line";
     bool listOnly = false, noConfig = false, noServer = false, noResume = false;
+    std::string remoteMethod;       // --next/--prev/--toggle/--play/--pause/--stop: MPRIS method
+    int remoteAdd = 0;        // --add (1) / --add-next (2): the arguments go to the queue
     std::string configPath;
     std::vector<std::int64_t> albumIds;
     for (int i = 1; i < argc; i++) {
@@ -858,6 +862,14 @@ int run(int argc, char **argv) {
         else if (!std::strcmp(argv[i], "--no-config")) noConfig = true;
         else if (!std::strcmp(argv[i], "--no-server")) noServer = true;
         else if (!std::strcmp(argv[i], "--no-resume")) noResume = true;
+        else if (!std::strcmp(argv[i], "--next")) remoteMethod = "Next";
+        else if (!std::strcmp(argv[i], "--prev")) remoteMethod = "Previous";
+        else if (!std::strcmp(argv[i], "--toggle")) remoteMethod = "PlayPause";
+        else if (!std::strcmp(argv[i], "--play")) remoteMethod = "Play";
+        else if (!std::strcmp(argv[i], "--pause")) remoteMethod = "Pause";
+        else if (!std::strcmp(argv[i], "--stop")) remoteMethod = "Stop";
+        else if (!std::strcmp(argv[i], "--add")) remoteAdd = 1;
+        else if (!std::strcmp(argv[i], "--add-next")) remoteAdd = 2;
         else if (!std::strcmp(argv[i], "--album")) {
             char *end = nullptr;
             const long long id = std::strtoll(value("--album"), &end, 10);
@@ -874,6 +886,55 @@ int run(int argc, char **argv) {
             for (const auto &l : lmtui::Keymap().helpLines()) lm::diagln(stdout, "  {}", l);
             return 0;
         } else args.emplace_back(argv[i]);
+    }
+    // Remote control: talk to the running instance over the session bus and exit.
+    if (!remoteMethod.empty() || remoteAdd) {
+        if (!remoteMethod.empty() && remoteAdd) {
+            lm::diagln(stderr, "lightmusic: --add and --{} do not go together", remoteMethod);
+            return 2;
+        }
+        if (!remoteMethod.empty() && !args.empty()) {
+            lm::diagln(stderr, "lightmusic: a remoteMethod command takes no files (did you mean --add?)");
+            return 2;
+        }
+#ifdef LM_TUI_MPRIS
+        std::string err;
+        if (!remoteMethod.empty()) {
+            if (!lm::mpris::remoteCommand(remoteMethod, &err)) {
+                lm::diagln(stderr, "lightmusic: {}", err);
+                return 1;
+            }
+            return 0;
+        }
+        if (args.empty()) {
+            lm::diagln(stderr, "lightmusic: --add needs files or folders");
+            return 2;
+        }
+        std::vector<std::string> errs;
+        std::vector<std::string> paths = lmtui::collectTracks(args, &errs);
+        for (const auto &e : errs) lm::diagln(stderr, "lightmusic: {}", e);
+        for (auto &p : paths) {
+            std::error_code ec;
+            const auto abs = std::filesystem::absolute(p, ec);
+            if (ec) {
+                lm::diagln(stderr, "lightmusic: {}: {}", p, ec.message());
+                return 1;
+            }
+            p = abs.lexically_normal().string();
+        }
+        if (paths.empty()) {
+            lm::diagln(stderr, "lightmusic: no playable files to add");
+            return 1;
+        }
+        if (!lm::mpris::remoteAdd(paths, remoteAdd == 2, &err)) {
+            lm::diagln(stderr, "lightmusic: {}", err);
+            return 1;
+        }
+        return errs.empty() ? 0 : 1;
+#else
+        lm::diagln(stderr, "lightmusic: built without MPRIS (libsystemd); remoteMethod control unavailable");
+        return 2;
+#endif
     }
     if (!noConfig) live.path = configPath.empty() ? lm::config::defaultClientConfigPath() : configPath;
     {
@@ -1214,10 +1275,19 @@ int run(int argc, char **argv) {
         // MPRIS (media keys); sd-bus fd joins the poll below. Diagnostics go to the status
         // line (stderr would corrupt the screen); shown on the next redraw.
         bool mprisNote = false; // a diagnostic arrived: redraw
-        lmtui::MprisHook mpris(player, [&ui, &mprisNote](const std::string &m) {
-            ui.warn(m);
-            mprisNote = true;
-        });
+        // lightmusic --add from another terminal: set once the queue helpers exist below
+        // (process() only runs inside the loop).
+        lmtui::RemoteAdd onRemoteAdd;
+        lmtui::MprisHook mpris(
+            player,
+            [&ui, &mprisNote](const std::string &m) {
+                ui.warn(m);
+                mprisNote = true;
+            },
+            [&onRemoteAdd](const std::vector<std::string> &paths, bool next) {
+                return onRemoteAdd ? onRemoteAdd(paths, next) : std::string("not ready");
+            },
+            live.running.notifications);
 #ifdef LM_TUI_NET
         if (client) updateFillQueue(ui, *client, -1);
         *uiActive = true;
@@ -1362,6 +1432,8 @@ int run(int argc, char **argv) {
                     } else if (k == "playback.shuffle") {
                         ui.shuffleTarget = n.shuffle;
                         player.setShuffle(n.shuffle);
+                    } else if (k == "ui.notifications") {
+                        mpris.setNotify(n.notifications);
                     } else if (k == "keys") {
                         lmtui::Keymap km;
                         std::vector<std::string> errs;
@@ -1621,6 +1693,20 @@ int run(int argc, char **argv) {
 #ifdef LM_TUI_NET
                 if (client) refreshCache(ui, *client, offline);
 #endif
+            };
+            onRemoteAdd = [&](const std::vector<std::string> &paths, bool next) -> std::string {
+                // From the session bus (same user): absolute paths of regular files only.
+                std::vector<Spec> specs;
+                for (const auto &p : paths) {
+                    struct stat sb{};
+                    if (p.empty() || p[0] != '/' || ::stat(p.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode))
+                        return "not an absolute path to a file: " + p;
+                    specs.push_back(Spec{p, lmtui::displayName(p), 0, 0});
+                }
+                if (specs.empty()) return "no files";
+                queueSpecs(std::move(specs), next);
+                dirty = true;
+                return {};
             };
             auto browseRow = [&]() -> BrowseRow * {
                 if (ui.browser.stack.empty()) return nullptr;

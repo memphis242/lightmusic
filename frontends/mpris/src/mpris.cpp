@@ -27,6 +27,9 @@ constexpr const char *kRootIface = "org.mpris.MediaPlayer2";
 constexpr const char *kPlayerIface = "org.mpris.MediaPlayer2.Player";
 constexpr const char *kBaseName = "org.mpris.MediaPlayer2.lightmusic";
 constexpr const char *kNoTrack = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
+constexpr const char *kQueueIface = "net.lightmusic.Queue1";
+constexpr const char *kNotifyName = "org.freedesktop.Notifications";
+constexpr const char *kNotifyPath = "/org/freedesktop/Notifications";
 
 std::int64_t toUs(double s) { return std::isfinite(s) && s > 0 ? static_cast<std::int64_t>(s * 1e6) : 0; }
 
@@ -147,13 +150,19 @@ std::string trackId(int index) {
 struct Server::Impl {
     Player &player;
     sd_bus *bus = nullptr;
-    sd_bus_slot *rootSlot = nullptr, *playerSlot = nullptr;
+    sd_bus_slot *rootSlot = nullptr, *playerSlot = nullptr, *queueSlot = nullptr;
+    sd_bus_slot *notifySlot = nullptr; // the pending Notify call (unref cancels its callback)
     std::string name;
     Published pub;
     bool quit = false;
+    Server::Options opt;
+    std::uint32_t notifyId = 0;    // replaces_id: our previous notification
+    bool notifyFailLogged = false; // once per connection
 
     explicit Impl(Player &p) : player(p), pub(publish(p.state())) {}
     ~Impl() {
+        sd_bus_slot_unref(notifySlot);
+        sd_bus_slot_unref(queueSlot);
         sd_bus_slot_unref(playerSlot);
         sd_bus_slot_unref(rootSlot);
         if (bus) sd_bus_flush_close_unref(bus);
@@ -244,6 +253,61 @@ struct Server::Impl {
     }
     static int mOpenUri(sd_bus_message *, void *, sd_bus_error *e) {
         return sd_bus_error_set(e, SD_BUS_ERROR_NOT_SUPPORTED, "OpenUri is not supported");
+    }
+
+    // ---- net.lightmusic.Queue1 ----
+    static int mAdd(sd_bus_message *m, void *u, sd_bus_error *e) {
+        auto &s = self(u);
+        std::vector<std::string> paths;
+        int r = sd_bus_message_enter_container(m, 'a', "s");
+        if (r < 0) return r;
+        for (;;) {
+            const char *p = nullptr;
+            r = sd_bus_message_read(m, "s", &p);
+            if (r < 0) return r;
+            if (r == 0) break;
+            if (paths.size() >= 100000) return sd_bus_error_set(e, SD_BUS_ERROR_LIMITS_EXCEEDED, "too many paths");
+            paths.emplace_back(p);
+        }
+        if ((r = sd_bus_message_exit_container(m)) < 0) return r;
+        int next = 0;
+        if ((r = sd_bus_message_read(m, "b", &next)) < 0) return r;
+        if (!s.opt.onAdd) return sd_bus_error_set(e, SD_BUS_ERROR_NOT_SUPPORTED, "adding is not supported");
+        const std::string err = s.opt.onAdd(paths, next != 0);
+        if (!err.empty()) return sd_bus_error_set(e, SD_BUS_ERROR_INVALID_ARGS, utf8(err).c_str());
+        return sd_bus_reply_method_return(m, "");
+    }
+
+    // ---- desktop notifications ----
+    static int notifyReply(sd_bus_message *m, void *u, sd_bus_error *) {
+        auto &s = self(u);
+        s.notifySlot = sd_bus_slot_unref(s.notifySlot);
+        if (const sd_bus_error *be = sd_bus_message_get_error(m)) {
+            if (!s.notifyFailLogged) {
+                s.notifyFailLogged = true;
+                s.log(std::string("notifications: ") + (be->message ? be->message : be->name ? be->name : "failed"));
+            }
+            return 0;
+        }
+        std::uint32_t id = 0;
+        if (sd_bus_message_read(m, "u", &id) >= 0) s.notifyId = id;
+        return 0;
+    }
+    void notifyTrack() {
+        if (!opt.notify || !bus || pub.trackid == kNoTrack) return;
+        std::string body = pub.artist;
+        if (!pub.album.empty()) body += (body.empty() ? "" : " — ") + pub.album;
+        notifySlot = sd_bus_slot_unref(notifySlot); // a newer track replaces a pending one
+        sd_bus_message *call = nullptr;
+        int r = sd_bus_message_new_method_call(bus, &call, kNotifyName, kNotifyPath, kNotifyName, "Notify");
+        if (r >= 0) r = sd_bus_message_append(call, "susss", "lightmusic", notifyId, "audio-x-generic", pub.title.c_str(),
+                                              body.c_str());
+        if (r >= 0) r = sd_bus_message_append(call, "as", 0);
+        if (r >= 0) r = sd_bus_message_append(call, "a{sv}", 0);
+        if (r >= 0) r = sd_bus_message_append(call, "i", -1);
+        if (r >= 0) r = sd_bus_call_async(bus, &notifySlot, call, notifyReply, this, 5'000'000); // 5 s
+        sd_bus_message_unref(call);
+        if (r < 0) logOnce(notifyFailLogged, "notifications: ", r);
     }
 
     // ---- org.mpris.MediaPlayer2.Player: properties ----
@@ -387,6 +451,8 @@ struct Server::Impl {
         log(what + std::string(std::strerror(-r)));
     }
     void drop() {
+        notifySlot = sd_bus_slot_unref(notifySlot);
+        queueSlot = sd_bus_slot_unref(queueSlot);
         playerSlot = sd_bus_slot_unref(playerSlot);
         rootSlot = sd_bus_slot_unref(rootSlot);
         if (bus) bus = sd_bus_close_unref(bus);
@@ -405,6 +471,8 @@ struct Server::Impl {
             what = "register root interface";
         } else if ((r = sd_bus_add_object_vtable(bus, &playerSlot, kPath, kPlayerIface, playerVtable(), this)) < 0) {
             what = "register player interface";
+        } else if ((r = sd_bus_add_object_vtable(bus, &queueSlot, kPath, kQueueIface, queueVtable(), this)) < 0) {
+            what = "register queue interface";
         } else {
             name = kBaseName;
             r = sd_bus_request_name(bus, name.c_str(), 0);
@@ -436,6 +504,8 @@ struct Server::Impl {
         if (r >= 0) {
             log("mpris: reconnected to the session bus as " + name);
             emitFailLogged = false;
+            notifyFailLogged = false;
+            notifyId = 0;
             return;
         }
         if (!retryLogged) {
@@ -448,6 +518,7 @@ struct Server::Impl {
 
     static const sd_bus_vtable *rootVtable();
     static const sd_bus_vtable *playerVtable();
+    static const sd_bus_vtable *queueVtable();
 
     static constexpr std::uint64_t kMinBackoffMs = 500, kMaxBackoffMs = 30000;
     static constexpr int kMaxPerProcess = 64;
@@ -505,14 +576,21 @@ const sd_bus_vtable kPlayerVtable[] = {
     SD_BUS_PROPERTY("CanSeek", "b", I::pCanSeek, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
     SD_BUS_PROPERTY("CanControl", "b", I::pTrue, 0, SD_BUS_VTABLE_PROPERTY_CONST),
     SD_BUS_VTABLE_END};
+
+const sd_bus_vtable kQueueVtable[] = {
+    SD_BUS_VTABLE_START(0),
+    SD_BUS_METHOD("Add", "asb", "", I::mAdd, SD_BUS_VTABLE_UNPRIVILEGED),
+    SD_BUS_VTABLE_END};
 } // namespace
 
+const sd_bus_vtable *Server::Impl::queueVtable() { return kQueueVtable; }
 const sd_bus_vtable *Server::Impl::rootVtable() { return kRootVtable; }
 const sd_bus_vtable *Server::Impl::playerVtable() { return kPlayerVtable; }
 
-std::unique_ptr<Server> Server::create(Player &player, std::string *err, Logger log) {
+std::unique_ptr<Server> Server::create(Player &player, std::string *err, Logger log, Options opt) {
     auto impl = std::make_unique<Impl>(player);
     impl->logger = std::move(log);
+    impl->opt = std::move(opt);
     const char *what = "";
     if (int r = impl->connect(what); r < 0) {
         if (err) *err = std::string("mpris: ") + what + ": " + std::strerror(-r);
@@ -573,6 +651,9 @@ void Server::onEvent(const Event &ev) {
     const Published old = s.pub;
     s.pub = publish(ev.state);
     s.emitChanged(old);
+    // A new audible track (TrackChanged can come before the status leaves Stopped, so
+    // this follows the published trackid; repeat-one of the same entry is not re-notified).
+    if (s.pub.trackid != old.trackid) s.notifyTrack();
     if (ev.type == EventType::Seeked && s.bus) {
         const int r = sd_bus_emit_signal(s.bus, kPath, kPlayerIface, "Seeked", "x", toUs(ev.state.position));
         if (r < 0) s.logOnce(s.emitFailLogged, "mpris: Seeked signal failed: ", r);
@@ -580,6 +661,107 @@ void Server::onEvent(const Event &ev) {
 }
 
 bool Server::quitRequested() const { return impl_->quit; }
+void Server::setNotify(bool on) { impl_->opt.notify = on; }
+
+namespace {
+// A session-bus connection for one remote call, closed on scope exit.
+struct BusRef {
+    sd_bus *bus = nullptr;
+    BusRef() = default;
+    BusRef(const BusRef &) = delete;
+    BusRef &operator=(const BusRef &) = delete;
+    ~BusRef() {
+        if (bus) sd_bus_flush_close_unref(bus);
+    }
+};
+struct ErrRef {
+    sd_bus_error e{}; // == SD_BUS_ERROR_NULL (a C compound literal, not ISO C++)
+    ErrRef() = default;
+    ErrRef(const ErrRef &) = delete;
+    ErrRef &operator=(const ErrRef &) = delete;
+    ~ErrRef() { sd_bus_error_free(&e); }
+    std::string str(int r) const { return e.message ? e.message : std::strerror(-r); }
+};
+
+// Connects and finds the running lightmusic's bus name.
+bool target(BusRef &b, std::string &name, std::string *err) {
+    int r = sd_bus_open_user(&b.bus);
+    if (r < 0) {
+        b.bus = nullptr;
+        if (err) *err = std::string("no session bus: ") + std::strerror(-r);
+        return false;
+    }
+    (void)sd_bus_set_method_call_timeout(b.bus, 5'000'000); // 5 s; fails only for a bad bus
+    ErrRef e;
+    sd_bus_message *reply = nullptr;
+    r = sd_bus_call_method(b.bus, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "ListNames",
+                           &e.e, &reply, "");
+    if (r < 0) {
+        if (err) *err = "cannot list bus names: " + e.str(r);
+        return false;
+    }
+    std::string instance;
+    bool plain = false;
+    if ((r = sd_bus_message_enter_container(reply, 'a', "s")) >= 0) {
+        const std::string prefix = std::string(kBaseName) + ".instance";
+        const char *n = nullptr;
+        while ((r = sd_bus_message_read(reply, "s", &n)) > 0) {
+            if (std::strcmp(n, kBaseName) == 0) plain = true;
+            else if (instance.empty() && std::strncmp(n, prefix.c_str(), prefix.size()) == 0) instance = n;
+        }
+    }
+    sd_bus_message_unref(reply);
+    if (r < 0) {
+        if (err) *err = std::string("cannot read bus names: ") + std::strerror(-r);
+        return false;
+    }
+    if (!plain && instance.empty()) {
+        if (err) *err = "no running lightmusic on the session bus";
+        return false;
+    }
+    name = plain ? kBaseName : instance;
+    return true;
+}
+} // namespace
+
+bool remoteCommand(std::string_view method, std::string *err) {
+    static constexpr std::string_view kAllowed[] = {"Next", "Previous", "PlayPause", "Play", "Pause", "Stop"};
+    if (std::find(std::begin(kAllowed), std::end(kAllowed), method) == std::end(kAllowed)) {
+        if (err) *err = "unknown remote command: " + std::string(method);
+        return false;
+    }
+    BusRef b;
+    std::string name;
+    if (!target(b, name, err)) return false;
+    ErrRef e;
+    const std::string m(method);
+    const int r = sd_bus_call_method(b.bus, name.c_str(), kPath, kPlayerIface, m.c_str(), &e.e, nullptr, "");
+    if (r < 0) {
+        if (err) *err = m + ": " + e.str(r);
+        return false;
+    }
+    return true;
+}
+
+bool remoteAdd(const std::vector<std::string> &paths, bool next, std::string *err) {
+    BusRef b;
+    std::string name;
+    if (!target(b, name, err)) return false;
+    sd_bus_message *call = nullptr;
+    int r = sd_bus_message_new_method_call(b.bus, &call, name.c_str(), kPath, kQueueIface, "Add");
+    if (r >= 0) r = sd_bus_message_open_container(call, 'a', "s");
+    for (std::size_t i = 0; r >= 0 && i < paths.size(); i++) r = sd_bus_message_append(call, "s", utf8(paths[i]).c_str());
+    if (r >= 0) r = sd_bus_message_close_container(call);
+    if (r >= 0) r = sd_bus_message_append(call, "b", next ? 1 : 0);
+    ErrRef e;
+    if (r >= 0) r = sd_bus_call(b.bus, call, 0, &e.e, nullptr);
+    sd_bus_message_unref(call);
+    if (r < 0) {
+        if (err) *err = "Add: " + e.str(r);
+        return false;
+    }
+    return true;
+}
 const std::string &Server::busName() const { return impl_->name; }
 
 } // namespace lm::mpris

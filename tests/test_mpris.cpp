@@ -14,6 +14,7 @@
 #include <functional>
 #include <mutex>
 #include <thread>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 
@@ -40,6 +41,7 @@ struct Loop {
     std::string name;
     std::thread th;
     std::atomic<int> wakeups{0};
+    lm::mpris::Server::Options opt; // set before start()
     std::mutex logM;
     std::vector<std::string> logs;
     std::string logText() {
@@ -63,10 +65,13 @@ struct Loop {
     void start() {
         th = std::thread([this] {
             std::string err;
-            auto srv = lm::mpris::Server::create(player, &err, [this](const std::string &msg) {
-                std::lock_guard lk(logM);
-                logs.push_back(msg);
-            });
+            auto srv = lm::mpris::Server::create(
+                player, &err,
+                [this](const std::string &msg) {
+                    std::lock_guard lk(logM);
+                    logs.push_back(msg);
+                },
+                opt);
             if (!srv) {
                 std::println(stderr, "{}", err);
                 ready = true;
@@ -100,6 +105,52 @@ struct Loop {
         th.join();
         (void)close(pipeFds[0]);
         (void)close(pipeFds[1]);
+    }
+};
+
+// A stand-in for the desktop's notification daemon on its own connection and thread:
+// records each Notify (summary, body, replaces_id) and answers ids 1, 2, ...
+struct FakeNotifyd {
+    std::mutex m;
+    std::vector<std::tuple<std::string, std::string, std::uint32_t>> calls;
+    std::atomic<bool> stop{false}, ready{false};
+    std::uint32_t nextId = 1;
+    std::thread th;
+    static int notify(sd_bus_message *msg, void *u, sd_bus_error *) {
+        auto &self = *static_cast<FakeNotifyd *>(u);
+        const char *app = nullptr, *icon = nullptr, *summary = nullptr, *body = nullptr;
+        std::uint32_t replaces = 0;
+        int r = sd_bus_message_read(msg, "susss", &app, &replaces, &icon, &summary, &body);
+        if (r < 0) return r;
+        std::lock_guard lk(self.m);
+        self.calls.emplace_back(summary, body, replaces);
+        return sd_bus_reply_method_return(msg, "u", self.nextId++);
+    }
+    void start() {
+        th = std::thread([this] {
+            sd_bus *bus = nullptr;
+            static const sd_bus_vtable vt[] = {
+                SD_BUS_VTABLE_START(0),
+                SD_BUS_METHOD("Notify", "susssasa{sv}i", "u", notify, SD_BUS_VTABLE_UNPRIVILEGED),
+                SD_BUS_VTABLE_END};
+            if (sd_bus_open_user(&bus) < 0 ||
+                sd_bus_add_object_vtable(bus, nullptr, "/org/freedesktop/Notifications", "org.freedesktop.Notifications", vt,
+                                         this) < 0 ||
+                sd_bus_request_name(bus, "org.freedesktop.Notifications", 0) < 0)
+                std::abort();
+            ready = true;
+            while (!stop) {
+                while (sd_bus_process(bus, nullptr) > 0) {
+                }
+                (void)sd_bus_wait(bus, 20000);
+            }
+            sd_bus_flush_close_unref(bus);
+        });
+        while (!ready) std::this_thread::sleep_for(5ms);
+    }
+    std::size_t count() {
+        std::lock_guard lk(m);
+        return calls.size();
     }
 };
 
@@ -282,7 +333,19 @@ int main() {
         if (loopPtr) loopPtr->push(e);
     };
     lm::Player player(std::move(cfg));
+    FakeNotifyd notifyd;
+    notifyd.start();
     Loop loop(player);
+    // net.lightmusic.Queue1.Add: recorded; "/bad" is refused with a message.
+    std::mutex addM;
+    std::vector<std::pair<std::vector<std::string>, bool>> added;
+    loop.opt.onAdd = [&](const std::vector<std::string> &paths, bool next) -> std::string {
+        if (!paths.empty() && paths[0] == "/bad") return "not an absolute path to a file: /bad";
+        std::lock_guard lk(addM);
+        added.emplace_back(paths, next);
+        return {};
+    };
+    loop.opt.notify = true;
     {
         std::lock_guard lk(lm_);
         loopPtr = &loop;
@@ -470,12 +533,58 @@ int main() {
         CHECK(loop.logText().empty());
     }
 
+    // Desktop notifications: one per audible track change, each replacing the last.
+    {
+        CHECK(c.waitFor([&] { return notifyd.count() >= 2; }));
+        std::lock_guard lk(notifyd.m);
+        CHECK(!notifyd.calls.empty() && std::get<0>(notifyd.calls[0]) == "Song1");
+        CHECK(!notifyd.calls.empty() && std::get<1>(notifyd.calls[0]) == "Artist — Album");
+        CHECK(!notifyd.calls.empty() && std::get<2>(notifyd.calls[0]) == 0u);
+        // Each later one replaces an earlier one (the newest whose reply had arrived).
+        for (std::size_t i = 1; i < notifyd.calls.size(); i++) {
+            const std::uint32_t rep = std::get<2>(notifyd.calls[i]);
+            CHECK(rep >= 1 && rep <= i);
+        }
+    }
+    // Remote control (lightmusic --next/--add): blocking client calls on another
+    // connection, served by the loop thread.
+    {
+        std::string err;
+        const int before = player.state().index;
+        CHECK(lm::mpris::remoteCommand("Pause", &err));
+        CHECK(c.waitFor([&] { return c.status() == "Paused"; }));
+        CHECK(lm::mpris::remoteCommand("PlayPause", &err));
+        CHECK(c.waitFor([&] { return c.status() == "Playing"; }));
+        CHECK(lm::mpris::remoteCommand("Previous", &err));
+        CHECK(c.waitFor([&] { return player.state().index != before || player.state().position < 2.0; }));
+        CHECK(!lm::mpris::remoteCommand("Quit", &err)); // not a remote command
+        CHECK(err.find("unknown remote command") != std::string::npos);
+        CHECK(lm::mpris::remoteAdd({"/m/a.flac", "/m/b.flac"}, true, &err));
+        {
+            std::lock_guard lk(addM);
+            CHECK_EQ(added.size(), 1u);
+            CHECK(!added.empty() && added[0].first == (std::vector<std::string>{"/m/a.flac", "/m/b.flac"}) && added[0].second);
+        }
+        err.clear();
+        CHECK(!lm::mpris::remoteAdd({"/bad"}, false, &err));
+        CHECK(err.find("not an absolute path to a file: /bad") != std::string::npos);
+        CHECK(loop.logText().empty());
+    }
+
     // Quit
     CHECK(!loop.quit);
     CHECK_EQ(c.call0("org.mpris.MediaPlayer2", "Quit") >= 0, true);
     CHECK(c.waitFor([&] { return loop.quit.load(); }));
 
     loop.join();
+    {
+        // No server any more: remote control reports it.
+        std::string err;
+        CHECK(!lm::mpris::remoteCommand("Next", &err));
+        CHECK(err.find("no running lightmusic") != std::string::npos);
+        notifyd.stop = true;
+        notifyd.th.join();
+    }
     {
         std::lock_guard lk(lm_);
         loopPtr = nullptr;
