@@ -743,6 +743,55 @@ static void testPlayStats() {
     CHECK(lmtui::Keymap().lookup(lmtui::Context::Global, "f") == Command::ToggleFavourite);
 }
 
+static void testPlaylists() {
+    using E = lmtui::M3uEntry;
+    std::vector<std::string> errs;
+    const std::string m3u = "\xEF\xBB\xBF#EXTM3U\r\n#EXTINF:123,Artist - Song\r\nsub/a.flac\r\n\r\n/abs/b.mp3\n"
+                            "#EXTINF:-1,Remote\nlm://server/track/9\nfile:///x/c%20d.opus\nhttp://radio/stream\n"
+                            "file://localhost/y/e.ogg\nfile:///bad%zz\n# a comment\n#EXTINF:5,Last";
+    const auto v = lmtui::parseM3u(m3u, "/pl", &errs);
+    CHECK((v == std::vector<E>{{"/pl/sub/a.flac", "Artist - Song", 123'000}, {"/abs/b.mp3", "", 0},
+                               {"lm://server/track/9", "Remote", 0}, {"/x/c d.opus", "", 0}, {"/y/e.ogg", "", 0}}));
+    CHECK_EQ(errs.size(), 2u); // the http URL and the bad file URL
+    CHECK(lmtui::parseM3u("a.flac\n", "/", nullptr) == (std::vector<E>{{"/a.flac", "", 0}}));
+    CHECK(lmtui::parseM3u("", "/x", nullptr).empty());
+    std::size_t skipped = 9;
+    const std::string out = lmtui::formatM3u({{"/a b.flac", "T, with comma", 61'500}, {"lm://server/track/2", "", 0},
+                                              {"/bad\nname", "x", 0}, {"", "", 0}},
+                                             &skipped);
+    CHECK_EQ(skipped, 2u);
+    CHECK(out == "#EXTM3U\n#EXTINF:61,T, with comma\n/a b.flac\n#EXTINF:-1,\nlm://server/track/2\n");
+    const auto back = lmtui::parseM3u(out, "/", nullptr);
+    CHECK(back.size() == 2 && back[0].title == "T, with comma" && back[0].durMs == 61'000 && back[1].path == "lm://server/track/2");
+    CHECK(lmtui::isPlaylistPath("x.m3u") && lmtui::isPlaylistPath("/a/B.M3U8") && !lmtui::isPlaylistPath("m3u") &&
+          !lmtui::isPlaylistPath("a.flac"));
+    std::string err;
+    CHECK(lmtui::validPlaylistName("Road trip", err));
+    for (const char *bad : {"", "a/b", ".hidden", "tab\there"}) CHECK(!lmtui::validPlaylistName(bad, err));
+    CHECK(!lmtui::validPlaylistName(std::string(101, 'x'), err));
+    CHECK(lmtui::playlistDir("/h", nullptr) == "/h/.local/share/lightmusic/playlists");
+    CHECK(lmtui::playlistDir("/h", "/d") == "/d/lightmusic/playlists");
+    using CL = lmtui::CommandLine;
+    CHECK(lmtui::parseCommandLine("save Road trip").kind == CL::Save && lmtui::parseCommandLine("save Road trip").arg == "Road trip");
+    CHECK(lmtui::parseCommandLine("load x").kind == CL::Load);
+    CHECK(lmtui::parseCommandLine("export /tmp/a.m3u").kind == CL::Export);
+    CHECK(lmtui::parseCommandLine("import ~/a.m3u").kind == CL::Import);
+    for (const char *bad : {"save", "load", "export", "import", "save a/b", "load .x"})
+        CHECK(lmtui::parseCommandLine(bad).kind == CL::Error);
+    // collectTracks expands a playlist given as a file (relative to its folder).
+    const fs::path dir = fs::temp_directory_path() / ("lm_pl_" + std::to_string(getpid()));
+    (void)fs::create_directories(dir / "s");
+    { std::ofstream(dir / "s" / "t.flac") << "x"; }
+    { std::ofstream(dir / "list.m3u8") << "#EXTM3U\ns/t.flac\nhttp://x/y\n"; }
+    std::vector<std::string> cerrs;
+    const auto tracks = lmtui::collectTracks({(dir / "list.m3u8").string()}, &cerrs);
+    CHECK((tracks == std::vector<std::string>{(dir / "s/t.flac").string()}));
+    CHECK_EQ(cerrs.size(), 1u);
+    std::vector<lmtui::M3uEntry> none;
+    CHECK(!lmtui::readM3u((dir / "missing.m3u").string(), none, nullptr, err) && err.find("missing.m3u") != std::string::npos);
+    fs::remove_all(dir);
+}
+
 int main() {
     testKeyFile();
     testKeyParser();
@@ -761,5 +810,6 @@ int main() {
     testSession();
     testBookmarks();
     testPlayStats();
+    testPlaylists();
     return lmtest::finish("test_tui_logic");
 }

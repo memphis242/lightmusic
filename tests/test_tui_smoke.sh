@@ -397,6 +397,36 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (stats runs)"; cat "$f"; fail=1
 done
+# Playlists: :save writes the list as M3U8, :load / the browser's Playlists level open
+# it, :export / :import use any path, and a playlist on the command line is expanded.
+export XDG_DATA_HOME="$TMP/data"
+PL="$XDG_DATA_HOME/lightmusic/playlists"
+: > "$TMP/log20"
+w20() { n=300; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log20"; do sleep 0.05; n=$((n - 1)); done; }
+{ w20 Playing; printf ':save Road trip\r'; w20 "saved 3 tracks"
+  printf ':export %s\r' "$TMP/out.m3u"; w20 "out.m3u"
+  printf ':import %s\r' "$TMP/missing.m3u"; w20 "missing.m3u"
+  printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=120 LINES=24 \
+    timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log20" >/dev/null 2>&1
+[ -f "$PL/Road trip.m3u8" ] && head -n1 "$PL/Road trip.m3u8" | grep -q '^#EXTM3U' &&
+    grep -q "1 First.opus$" "$PL/Road trip.m3u8" || { echo "FAIL: playlist not saved"; ls -l "$PL"; fail=1; }
+[ "$(grep -c '^#EXTINF' "$TMP/out.m3u" 2>/dev/null)" = 3 ] || { echo "FAIL: export"; cat "$TMP/out.m3u"; fail=1; }
+grep -q "missing.m3u: " "$TMP/log20" || { echo "FAIL: import of a missing file not reported"; fail=1; }
+# Relative playlist on the command line, with an unsupported URL reported.
+printf '#EXTM3U\nmusic/cd1/2 Second.flac\nhttp://example/stream\n' > "$TMP/rel.m3u"
+: > "$TMP/log21"
+{ n=300; while [ $n -gt 0 ] && ! grep -q Playing "$TMP/log21"; do sleep 0.05; n=$((n - 1)); done
+  sleep 0.3; printf ':load Road trip\r'; n=300; while [ $n -gt 0 ] && ! grep -q "3/3\|1/3" "$TMP/log21"; do sleep 0.05; n=$((n - 1)); done
+  printf b; n=300; while [ $n -gt 0 ] && ! grep -q "Playlists" "$TMP/log21"; do sleep 0.05; n=$((n - 1)); done
+  sleep 0.2; printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
+    timeout 30 script -qfec "$BIN --null '$TMP/rel.m3u'" "$TMP/log21" >/dev/null 2>&1
+for want in "1/1" "unsupported URL" "1/3\|3/3" "Playlists"; do
+    grep -q -- "$want" "$TMP/log21" || { echo "FAIL: playlist run: '$want' never shown"; fail=1; }
+done
+for f in "$TMP"/san*; do
+    [ -e "$f" ] || continue
+    echo "FAIL: sanitizer report $f (playlist runs)"; cat "$f"; fail=1
+done
 # A bad binding is refused before the terminal is touched, with its line.
 printf 'keys:\n  queue_add: [a, F13]\n' > "$CFG"
 out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?

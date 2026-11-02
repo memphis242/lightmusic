@@ -1713,6 +1713,23 @@ int run(int argc, char **argv) {
                 }
             };
 #endif
+            // ---- playlists ($XDG_DATA_HOME/lightmusic/playlists/*.m3u8) ----
+            const std::string plDir = lmtui::playlistDir(homeEnv && *homeEnv ? homeEnv : "/", std::getenv("XDG_DATA_HOME"));
+            auto playlistsLevel = [&] {
+                BrowseLevel lv;
+                lv.title = "Playlists";
+                std::error_code ec;
+                std::vector<std::string> names;
+                for (std::filesystem::directory_iterator it(plDir, ec), end; !ec && it != end; it.increment(ec))
+                    if (it->is_regular_file(ec) && lmtui::isPlaylistPath(it->path().filename().string()))
+                        names.push_back(it->path().filename().string());
+                std::sort(names.begin(), names.end(), [](const auto &a, const auto &b) { return lmtui::naturalLess(a, b); });
+                for (const auto &n : names) {
+                    const std::string label = n.substr(0, n.rfind('.'));
+                    lv.rows.push_back(BrowseRow{BrowseRow::Root, label, "pl:" + plDir + "/" + n, 0, "", -1, false});
+                }
+                return lv;
+            };
             auto rootLevel = [&] {
 #ifdef LM_TUI_NET
                 if (client) {
@@ -1722,12 +1739,14 @@ int run(int argc, char **argv) {
                                                 offline ? "offline: cached tracks play" : "", -1, false});
                     lv.rows.push_back(BrowseRow{BrowseRow::Root, "Folders", "folders", 0, musicRoot(), -1, false});
                     lv.rows.push_back(BrowseRow{BrowseRow::Root, "Smart lists", "smart", 0, "favourites, most played, ...", -1, false});
+                    lv.rows.push_back(BrowseRow{BrowseRow::Root, "Playlists", "playlists", 0, plDir, -1, false});
                     return lv;
                 }
 #endif
                 // The special rows go after the folder's entries, so the selection still
                 // starts on the first folder.
                 BrowseLevel lv = folderLevel(musicRoot());
+                lv.rows.push_back(BrowseRow{BrowseRow::Root, "Playlists", "playlists", 0, plDir, -1, false});
                 lv.rows.push_back(BrowseRow{BrowseRow::Root, "Smart lists", "smart", 0, "favourites, most played, ...", -1, false});
                 return lv;
             };
@@ -1824,6 +1843,43 @@ int run(int argc, char **argv) {
                     lv.rows.push_back(BrowseRow{BrowseRow::Root, title, "smart:" + id, 0, "", -1, false});
                 return lv;
             };
+            // A playlist's entries as tracks: server URIs through the library mirror (dropped
+            // if unknown), local paths kept if they exist. `skipped` counts the rest.
+            auto playlistSpecs = [&](const std::string &file, std::string &err, std::size_t &skipped) {
+                std::vector<Spec> v;
+                std::vector<lmtui::M3uEntry> pl;
+                std::vector<std::string> warnings;
+                skipped = 0;
+                if (!lmtui::readM3u(file, pl, &warnings, err)) return v;
+                skipped = warnings.size();
+                for (auto &e : pl) {
+#ifdef LM_TUI_NET
+                    if (const auto tid = lm::net::Client::parseTrackUri(e.path)) {
+                        if (const auto t = client ? client->track(*tid) : std::nullopt) v.push_back(remoteSpec(*t));
+                        else skipped++;
+                        continue;
+                    }
+#endif
+                    struct stat sb{};
+                    if (e.path.find("://") != std::string::npos || ::stat(e.path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode)) {
+                        skipped++;
+                        continue;
+                    }
+                    std::string name = e.title.empty() ? lmtui::displayName(e.path) : e.title;
+                    v.push_back(Spec{std::move(e.path), std::move(name), 0, e.durMs});
+                }
+                return v;
+            };
+            auto playlistLevel = [&](const std::string &file, const std::string &title) {
+                BrowseLevel lv;
+                lv.title = "Playlist: " + title;
+                std::vector<lmtui::M3uEntry> pl;
+                std::string err;
+                if (!lmtui::readM3u(file, pl, nullptr, err)) ui.error(err);
+                for (const auto &e : pl)
+                    if (auto r = keyRow(e.path)) lv.rows.push_back(std::move(*r));
+                return lv;
+            };
             auto smartLevel = [&](const std::string &id, const std::string &title) {
                 BrowseLevel lv;
                 lv.title = "Smart lists: " + title;
@@ -1841,6 +1897,13 @@ int run(int argc, char **argv) {
                 case BrowseRow::Dir: local(lmtui::collectTracks({r.path}, nullptr)); break;
                 case BrowseRow::File: local({r.path}); break;
                 case BrowseRow::Root:
+                    if (r.path.starts_with("pl:")) {
+                        std::string err;
+                        std::size_t skipped = 0;
+                        v = playlistSpecs(r.path.substr(3), err, skipped);
+                        if (!err.empty()) ui.error(err);
+                        break;
+                    }
                     if (r.path.starts_with("smart:"))
                         for (const auto &k : smartKeys(r.path.substr(6))) {
 #ifdef LM_TUI_NET
@@ -1977,6 +2040,14 @@ int run(int argc, char **argv) {
                     }
                     if (r->path.starts_with("smart:")) {
                         ui.browser.stack.push_back(smartLevel(r->path.substr(6), r->label));
+                        break;
+                    }
+                    if (r->path == "playlists") {
+                        ui.browser.stack.push_back(playlistsLevel());
+                        break;
+                    }
+                    if (r->path.starts_with("pl:")) {
+                        ui.browser.stack.push_back(playlistLevel(r->path.substr(3), r->label));
                         break;
                     }
 #ifdef LM_TUI_NET
@@ -2199,6 +2270,7 @@ int run(int argc, char **argv) {
                             const char *what = r->kind == BrowseRow::Dir      ? "folder "
                                                : r->kind == BrowseRow::Album  ? "album "
                                                : r->kind == BrowseRow::Artist ? "artist "
+                                               : r->path.starts_with("pl:")   ? "playlist "
                                                                               : "smart list ";
                             replaceContext(tracksOf(*r), 0, what + (r->kind == BrowseRow::Dir ? r->path : r->label));
                         }
@@ -2419,6 +2491,52 @@ int run(int argc, char **argv) {
                     break;
                 }
                 case lmtui::CommandLine::Messages: ui.showMessages = true; break;
+                case lmtui::CommandLine::Save:
+                case lmtui::CommandLine::Export: {
+                    // The list (not the user queue), with labels and lengths.
+                    std::vector<lmtui::M3uEntry> pl;
+                    for (std::size_t i = 0; i < ui.ctx && i < ui.paths.size(); i++)
+                        pl.push_back(lmtui::M3uEntry{ui.paths[i], ui.names[i], ui.durMs[i]});
+                    if (pl.empty()) {
+                        ui.warn("the list is empty");
+                        break;
+                    }
+                    std::size_t skipped = 0;
+                    const std::string m3u = lmtui::formatM3u(pl, &skipped);
+                    std::string file = c.arg;
+                    if (c.kind == lmtui::CommandLine::Save) {
+                        std::error_code ec;
+                        (void)std::filesystem::create_directories(plDir, ec); // the write reports
+                        file = plDir + "/" + c.arg + ".m3u8";
+                    } else if (file.front() == '~' && homeEnv && *homeEnv) {
+                        file = std::string(homeEnv) + file.substr(1);
+                    }
+                    std::string err;
+                    if (!lm::config::writeFileAtomic(file, m3u, 0644, &err)) {
+                        ui.error("not saved: " + err);
+                        break;
+                    }
+                    ui.info(std::format("saved {} track{} to {}{}", pl.size() - skipped, pl.size() - skipped == 1 ? "" : "s",
+                                        file, skipped ? std::format(" ({} with a newline in the path skipped)", skipped) : ""));
+                    break;
+                }
+                case lmtui::CommandLine::Load:
+                case lmtui::CommandLine::Import: {
+                    std::string file = c.kind == lmtui::CommandLine::Load ? plDir + "/" + c.arg + ".m3u8" : c.arg;
+                    if (c.kind == lmtui::CommandLine::Import && file.front() == '~' && homeEnv && *homeEnv)
+                        file = std::string(homeEnv) + file.substr(1);
+                    std::string err;
+                    std::size_t skipped = 0;
+                    std::vector<Spec> specs = playlistSpecs(file, err, skipped);
+                    if (!err.empty()) {
+                        ui.error(err);
+                        break;
+                    }
+                    const std::size_t n = specs.size();
+                    replaceContext(std::move(specs), 0, "playlist " + std::filesystem::path(file).stem().string());
+                    if (n && skipped) ui.warn(std::format("playlist: {} tracks, {} missing or unsupported skipped", n, skipped));
+                    break;
+                }
                 case lmtui::CommandLine::Marks:
                 case lmtui::CommandLine::DelMarks: {
                     const lm::PlayerState now = player.state();
