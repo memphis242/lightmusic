@@ -510,6 +510,14 @@ static void testStatusLine() {
     CHECK_EQ(s.history().size(), SL::kHistory);
     CHECK(s.history().back().text == "m59");
     CHECK(s.history().front().text == "m10");
+    // log(): history only, nothing shown (background problems such as cover art).
+    SL quiet;
+    quiet.log(SL::Level::Warning, "cover art: bad image");
+    quiet.log(SL::Level::Warning, "cover art: bad image"); // repeats stored once
+    quiet.log(SL::Level::Warning, "");
+    CHECK(!quiet.visible() && quiet.timeoutMs(t0) == -1);
+    CHECK_EQ(quiet.history().size(), 1u);
+    CHECK(quiet.history().back().text == "cover art: bad image" && quiet.history().back().level == SL::Level::Warning);
     CHECK(lmtui::parseCommandLine("messages").kind == lmtui::CommandLine::Messages);
     CHECK(lmtui::parseCommandLine("mes").kind == lmtui::CommandLine::Messages);
     CHECK(lmtui::parseCommandLine("mes x").kind == lmtui::CommandLine::Error);

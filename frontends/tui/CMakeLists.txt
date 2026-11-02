@@ -28,9 +28,15 @@ add_library(lm::tui_logic ALIAS tui_logic)
 target_include_directories(tui_logic PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(tui_logic PUBLIC lm::config PRIVATE lm_warnings_app)
 
+# Cover art: the thumbnail worker and the half-block pane (FTXUI), unit-tested on its own.
+add_library(tui_art STATIC art_view.cpp)
+add_library(lm::tui_art ALIAS tui_art)
+target_include_directories(tui_art PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(tui_art PUBLIC lm::art ftxui::dom ftxui::screen PRIVATE lm_warnings_app)
+
 add_executable(lightmusic main.cpp)
 lm_release_link_options(lightmusic)
-target_link_libraries(lightmusic PRIVATE lm::tui_logic lm::player lm::config ftxui::screen ftxui::dom
+target_link_libraries(lightmusic PRIVATE lm::tui_logic lm::tui_art lm::player lm::config ftxui::screen ftxui::dom
                                          lm_warnings_app)
 if(TARGET lm::net)
   target_compile_definitions(lightmusic PRIVATE LM_TUI_NET=1)

@@ -102,7 +102,8 @@ void testFullFile() {
                         "  volume: 70\n"
                         "  replaygain: album\n"
                         "ui:\n"
-                        "  show_cache_markers: false\n",
+                        "  show_cache_markers: false\n"
+                        "  cover_art: off\n",
                         d);
     for (const auto &x : d) std::println(stderr, "  {}", x.str());
     CHECK(d.empty());
@@ -116,6 +117,8 @@ void testFullFile() {
     CHECK_EQ(s.volume, 70);
     CHECK(s.replayGain == ReplayGain::Album);
     CHECK(!s.showCacheMarkers);
+    CHECK(!s.coverArt);
+    CHECK(lm::config::ClientSettings{}.coverArt); // on by default
     // Flow style is fine too (quoted numbers are not: see testScalarForms).
     Diags e;
     const auto f = load("cache: {max_size_mb: 5, background_fill: off}\n", e);
@@ -581,7 +584,7 @@ void testReload() {
 
     put("server:\n  url: http://b\n  key_file: /k\n"
         "cache:\n  max_size_mb: 20\n  background_fill: false\n  pause_on_metered: false\n"
-        "playback:\n  volume: 30\n  replaygain: track\nui:\n  show_cache_markers: false\n");
+        "playback:\n  volume: 30\n  replaygain: track\nui:\n  show_cache_markers: false\n  cover_art: false\n");
     CHECK(waitChange(w));
     auto r = reloadClientSettings(path, nullptr, cli, running);
     CHECK(r.ok);
@@ -592,7 +595,8 @@ void testReload() {
     CHECK(r.applied.serverUrl == "http://a");               // not hot
     CHECK(r.applied.replayGain == ReplayGain::Off);         // not hot
     CHECK(r.applied.showCacheMarkers);                      // not hot
-    CHECK(r.diff.hot.size() == 3);                          // cap, fill, volume
+    CHECK(!r.applied.coverArt);                             // hot
+    CHECK(r.diff.hot.size() == 4);                          // cap, fill, volume, cover art
     CHECK(r.diff.restart == (std::vector<std::string>{"server.url", "playback.replaygain", "ui.show_cache_markers"}));
     running = r.applied;
 
@@ -600,7 +604,7 @@ void testReload() {
     {
         std::ofstream f(path, std::ios::trunc);
         f << "server:\n  url: http://b\n  key_file: /k\ncache:\n  max_size_mb: 50\n  background_fill: false\n"
-             "playback:\n  volume: 30\n  replaygain: track\nui:\n  show_cache_markers: false\n";
+             "playback:\n  volume: 30\n  replaygain: track\nui:\n  show_cache_markers: false\n  cover_art: false\n";
     }
     CHECK(waitChange(w));
     r = reloadClientSettings(path, nullptr, cli, running);

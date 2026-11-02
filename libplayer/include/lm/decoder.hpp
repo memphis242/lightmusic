@@ -7,10 +7,12 @@
 #include "lm/frames.hpp"
 #include "lm/source.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace lm {
 
@@ -83,5 +85,16 @@ Format sniffFormat(ByteSource &src);
 // regular file, or is not a supported format (it is not checked to be decodable). Thread-safe; meant for
 // frontends that label a queue before its tracks play.
 [[nodiscard]] bool readTags(const std::string &path, Tags &out, std::string *err = nullptr);
+
+// Embedded pictures larger than this are ignored (untrusted input; a cover is far smaller).
+inline constexpr std::size_t kMaxEmbeddedPictureBytes = std::size_t{16} << 20;
+// Reads the embedded cover picture of a file (ID3v2 APIC, FLAC PICTURE, Vorbis/Opus
+// METADATA_BLOCK_PICTURE): the front cover if there is one, else the first picture. The
+// encoded image bytes (JPEG, PNG, ...) go to `out`, which is left empty when the file has
+// no picture (true is still returned). Returns false with `err` if the file cannot be
+// opened, is not a supported format, or its only pictures exceed kMaxEmbeddedPictureBytes.
+// Thread-safe; reads only tag bytes.
+[[nodiscard]] bool readEmbeddedPicture(const std::string &path, std::vector<unsigned char> &out,
+                                       std::string *err = nullptr);
 
 } // namespace lm

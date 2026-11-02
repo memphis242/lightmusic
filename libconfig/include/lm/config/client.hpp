@@ -40,6 +40,7 @@ struct ClientSettings {
     bool saveSettings = true; // write UI changes (volume, repeat, shuffle) back into cfg.yaml
     bool resumeSession = true; // started without files: restore the last list, queue and position
     bool notifications = false; // desktop notification on track change (hot)
+    bool coverArt = true;       // album cover pane (half-block thumbnail) when the terminal is wide enough (hot)
     // keys (hot): action name -> keys bound to it, replacing that action's defaults
     // (keys.queue_add: [q], keys.quit: []). Names and keys are checked by the frontend.
     std::map<std::string, NamedList> keys;

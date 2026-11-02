@@ -56,6 +56,7 @@ pkg_check_modules(OPUSFILE REQUIRED IMPORTED_TARGET opusfile)
 pkg_check_modules(VORBISFILE REQUIRED IMPORTED_TARGET vorbisfile)
 
 add_subdirectory(libplayer)
+add_subdirectory(libart)
 add_subdirectory(libconfig)
 if(LM_BUILD_NET)
   add_subdirectory(libnet)
