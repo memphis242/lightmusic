@@ -66,11 +66,12 @@ private:
 // Index of the action called `name` ("queue_add"; '-' is accepted for '_'), or -1.
 [[nodiscard]] int findAction(std::string_view name);
 
-// The `:` command line. `q`, `quit`, `q!` and `qa` quit; `help` toggles the help; any
+// The `:` command line. `q`, `quit`, `q!` and `qa` quit; `help` toggles the help;
+// `messages` (`mes`) shows the recent status messages; any
 // action name runs that action; `seek POS` (m:ss, h:mm:ss, seconds, N%; a leading + or -
 // is relative) and `volume N` / `vol N` (0..150 %) take an argument.
 struct CommandLine {
-    enum Kind { Error, Run, Seek, Volume } kind = Error;
+    enum Kind { Error, Run, Seek, Volume, Messages } kind = Error;
     Command cmd = Command::None; // Run
     Context ctx = Context::Global; // Run: where the action applies
     std::string error;           // Error: shown on the status line

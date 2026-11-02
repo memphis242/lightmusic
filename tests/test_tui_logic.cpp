@@ -476,6 +476,45 @@ static void testKeyFile() {
     CHECK(lmtui::Keymap().lookup(lmtui::Context::Global, "P") == Command::TogglePin);
 }
 
+static void testStatusLine() {
+    using SL = lmtui::StatusLine;
+    using namespace std::chrono_literals;
+    SL s;
+    const auto t0 = SL::Clock::time_point{} + 1h;
+    CHECK(!s.visible());
+    CHECK_EQ(s.timeoutMs(t0), -1); // nothing shown: no wakeup
+    CHECK(!s.expire(t0));
+    s.info("queued: x", t0);
+    CHECK(s.visible() && s.current().text == "queued: x" && s.current().level == SL::Level::Info);
+    CHECK_EQ(s.timeoutMs(t0), 3000);
+    CHECK_EQ(s.timeoutMs(t0 + 2999ms + 1us), 1); // rounded up: never wakes early
+    CHECK(!s.expire(t0 + 2999ms));
+    CHECK(s.expire(t0 + 3s));
+    CHECK(!s.visible());
+    CHECK(!s.expire(t0 + 4s)); // once
+    s.error("error: cannot open", t0);
+    CHECK_EQ(s.timeoutMs(t0), 10000);
+    s.warn("no playable tracks there", t0 + 1s); // a newer message replaces it
+    CHECK(s.current().level == SL::Level::Warning);
+    CHECK_EQ(s.timeoutMs(t0 + 1s), 6000);
+    CHECK_EQ(s.timeoutMs(t0 + 1h), 0);
+    s.warn("", t0); // empty: ignored
+    CHECK(s.current().text == "no playable tracks there");
+    s.warn("no playable tracks there", t0 + 2s); // a repeat refreshes, stored once
+    CHECK_EQ(s.history().size(), 3u);
+    CHECK(s.history().front().text == "queued: x");
+    CHECK(s.history().back().level == SL::Level::Warning);
+    s.clear();
+    CHECK(!s.visible() && s.timeoutMs(t0) == -1);
+    for (int i = 0; i < 60; i++) s.info("m" + std::to_string(i), t0);
+    CHECK_EQ(s.history().size(), SL::kHistory);
+    CHECK(s.history().back().text == "m59");
+    CHECK(s.history().front().text == "m10");
+    CHECK(lmtui::parseCommandLine("messages").kind == lmtui::CommandLine::Messages);
+    CHECK(lmtui::parseCommandLine("mes").kind == lmtui::CommandLine::Messages);
+    CHECK(lmtui::parseCommandLine("mes x").kind == lmtui::CommandLine::Error);
+}
+
 int main() {
     testKeyFile();
     testKeyParser();
@@ -488,5 +527,6 @@ int main() {
     testKeymapOverrides();
     testHelpFromBindings();
     testCommandLine();
+    testStatusLine();
     return lmtest::finish("test_tui_logic");
 }
