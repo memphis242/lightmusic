@@ -1,0 +1,90 @@
+// Cover art in the TUI: the background worker that pre-decodes album thumbnails and
+// looks them up for the playing track, and the half-block pane that draws one.
+//
+// Nothing is decoded on the play path. The worker runs at background priority
+// (SCHED_IDLE): it makes the thumbnail of every album in the list once (eager, while the
+// list is labelled) and stores it in the covers cache; a track change only asks it to
+// load the current and the next album's 12 KiB thumbnails. An album the eager pass has not
+// reached yet is done first when it is wanted.
+#pragma once
+
+#include "lm/art/store.hpp"
+#include "lm/art/thumb.hpp"
+
+#include <ftxui/dom/elements.hpp>
+
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <set>
+#include <string>
+#include <vector>
+
+namespace lmtui {
+
+// The cover pane next to the list: square on screen (each cell holds two pixels, and a
+// cell is about twice as tall as it is wide), `rows` = min(16, list rows), `cols` = 2 *
+// rows. Hidden (0 x 0) when the list would get narrower than kMinListCols or the pane
+// shorter than kMinRows.
+struct PaneSize {
+    int cols = 0, rows = 0;
+    [[nodiscard]] bool visible() const { return cols > 0 && rows > 0; }
+    bool operator==(const PaneSize &) const = default;
+};
+inline constexpr int kMaxCoverRows = 16, kMinCoverRows = 4, kMinListCols = 40;
+[[nodiscard]] PaneSize coverPane(int width, int listRows);
+
+// The thumbnail as `size.rows` lines of `size.cols` half-block cells ('▀', truecolour
+// foreground = upper pixel, background = lower pixel).
+[[nodiscard]] ftxui::Element coverElement(const lm::art::Thumb &t, PaneSize size);
+
+class ArtWorker {
+public:
+    using Spawn = std::function<void(std::function<void()>)>;
+    struct Result {
+        std::string track;
+        std::shared_ptr<const lm::art::Thumb> thumb; // nullptr: no usable art
+    };
+
+    // `notify` is called on the worker thread after results or messages land (wakes the
+    // UI). `spawn` starts the (detached) worker thread once, on the first request.
+    ArtWorker(std::string coversDir, std::function<void()> notify, Spawn spawn);
+    ArtWorker(const ArtWorker &) = delete;
+    ArtWorker &operator=(const ArtWorker &) = delete;
+    // Stops the worker after its current album; never waits for it (a read may block).
+    ~ArtWorker();
+
+    // UI thread: thumbnails for these tracks' albums, made in the background (each
+    // folder once per session).
+    void prefetch(const std::vector<std::string> &tracks);
+    // UI thread: the albums of these tracks (current and next) are wanted now: their
+    // results come back through take(), ahead of the eager work. Replaces earlier wants.
+    void want(const std::vector<std::string> &tracks);
+    // UI thread: finished lookups for wanted tracks.
+    [[nodiscard]] std::vector<Result> take();
+    // UI thread: problems to log (unusable art, cache trouble), each reported once.
+    [[nodiscard]] std::vector<std::string> takeMessages();
+
+private:
+    struct Shared {
+        std::mutex m;
+        std::condition_variable cv;
+        std::deque<std::string> want, eager;
+        std::vector<Result> done;
+        std::vector<std::string> messages;
+        std::set<std::string> reported;
+        bool stop = false, running = false;
+    };
+    static void run(const std::shared_ptr<Shared> &sh, const std::string &dir, const std::function<void()> &notify);
+    void start();
+
+    std::shared_ptr<Shared> sh_ = std::make_shared<Shared>();
+    std::string dir_;
+    std::function<void()> notify_;
+    Spawn spawn_;
+    std::set<std::string> folders_; // UI thread: folders already handed to prefetch()
+};
+
+} // namespace lmtui

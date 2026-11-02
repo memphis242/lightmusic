@@ -965,12 +965,17 @@ StatusLine::Clock::duration StatusLine::lifetime(Level level) {
     return 3s;
 }
 
-void StatusLine::show(Level level, std::string text, Clock::time_point now) {
+void StatusLine::log(Level level, std::string text) {
     if (text.empty()) return;
     if (history_.empty() || history_.back().level != level || history_.back().text != text) {
-        history_.push_back(Entry{level, text});
+        history_.push_back(Entry{level, std::move(text)});
         if (history_.size() > kHistory) history_.pop_front();
     }
+}
+
+void StatusLine::show(Level level, std::string text, Clock::time_point now) {
+    if (text.empty()) return;
+    log(level, text);
     cur_ = Entry{level, std::move(text)};
     shown_ = true;
     until_ = now + lifetime(level);

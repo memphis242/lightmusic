@@ -1,5 +1,6 @@
 // Tags without ffmpeg: hand-built ID3v2/ID3v1/Vorbis-comment edge cases, the tag-only
-// reader on in-memory MP3/FLAC/Ogg files (pictures skipped, bounded reads), and
+// reader on in-memory MP3/FLAC/Ogg files (pictures skipped, bounded reads), embedded
+// pictures (APIC, FLAC PICTURE, METADATA_BLOCK_PICTURE), and
 // robustness against corrupted, truncated and structurally odd tags (random and
 // structured fuzzing; meant to run under ASan/UBSan); ReplayGain album gain/peaks and
 // lm::replayGainFactor (modes, preamp, clipping prevention). File fixtures: test_tags_files.
@@ -236,6 +237,175 @@ static bytes oggPacket(std::uint32_t serial, const bytes &pkt) {
         off += n;
     }
     return out;
+}
+
+// Embedded pictures (lm::detail::readPictureFrom): ID3v2 APIC, FLAC PICTURE blocks and
+// METADATA_BLOCK_PICTURE comments; the front cover wins; size caps and malformed input.
+static bytes flacPictureBody(std::uint32_t type, const bytes &img) {
+    bytes b;
+    auto be = [&](std::uint32_t v) {
+        for (int i = 3; i >= 0; i--) b.push_back(static_cast<unsigned char>(v >> (8 * i)));
+    };
+    be(type);
+    be(10);
+    append(b, bytes{'i', 'm', 'a', 'g', 'e', '/', 'j', 'p', 'e', 'g'});
+    be(4);
+    append(b, bytes{'d', 'e', 's', 'c'});
+    for (int i = 0; i < 4; i++) be(0); // width, height, depth, colours (unused)
+    be(static_cast<std::uint32_t>(img.size()));
+    append(b, img);
+    return b;
+}
+static std::string base64(const bytes &in) {
+    static const char *k = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    std::size_t i = 0;
+    for (; i + 2 < in.size(); i += 3) {
+        const std::uint32_t v = std::uint32_t{in[i]} << 16 | std::uint32_t{in[i + 1]} << 8 | in[i + 2];
+        for (int s = 18; s >= 0; s -= 6) out.push_back(k[v >> s & 63]);
+    }
+    if (i < in.size()) {
+        std::uint32_t v = std::uint32_t{in[i]} << 16;
+        if (i + 1 < in.size()) v |= std::uint32_t{in[i + 1]} << 8;
+        out.push_back(k[v >> 18 & 63]);
+        out.push_back(k[v >> 12 & 63]);
+        out.push_back(i + 1 < in.size() ? k[v >> 6 & 63] : '=');
+        out.push_back('=');
+    }
+    return out;
+}
+static bytes apicBody(unsigned char enc, unsigned char type, const bytes &img) {
+    bytes b = {enc, 'i', 'm', 'a', 'g', 'e', '/', 'p', 'n', 'g', 0, type};
+    if (enc == 1) append(b, bytes{0xFF, 0xFE, 'd', 0, 0, 0}); // UTF-16 "d" + 2-byte terminator
+    else append(b, bytes{'d', 0});
+    append(b, img);
+    return b;
+}
+static bytes flacWith(const std::vector<std::pair<int, bytes>> &blocks) {
+    bytes f = {'f', 'L', 'a', 'C', 0, 0, 0, 34};
+    f.resize(f.size() + 34, 0);
+    for (std::size_t i = 0; i < blocks.size(); i++) {
+        const auto &[type, body] = blocks[i];
+        const bool last = i + 1 == blocks.size();
+        f.insert(f.end(), {static_cast<unsigned char>(type | (last ? 0x80 : 0)), static_cast<unsigned char>(body.size() >> 16),
+                           static_cast<unsigned char>(body.size() >> 8), static_cast<unsigned char>(body.size())});
+        append(f, body);
+    }
+    append(f, bytes(256, 0xAA));
+    return f;
+}
+static bytes picOf(MemSource &src, bool expectOk = true) {
+    bytes out;
+    std::string err;
+    const bool ok = lm::detail::readPictureFrom(src, out, &err);
+    CHECK(ok == expectOk);
+    if (ok != expectOk) std::println(stderr, "readPictureFrom: {}", err);
+    return out;
+}
+
+static void embeddedPictures() {
+    const bytes imgA(300, 0xA1), imgB(500, 0xB2), front(200, 0xF0);
+    const bytes mp3Tail = {0xFF, 0xFB, 0x90, 0x00, 0, 0, 0, 0};
+    {
+        // ID3v2.3 and v2.4: the front cover (type 3) wins over an earlier other picture;
+        // Latin-1 and UTF-16 descriptions.
+        for (int ver : {3, 4}) {
+            bytes fr = frame("APIC", apicBody(0, 0, imgA), ver);
+            append(fr, frame("TIT2", latin1("T"), ver));
+            append(fr, frame("APIC", apicBody(1, 3, front), ver));
+            append(fr, frame("APIC", apicBody(0, 3, imgB), ver)); // a second front cover: first wins
+            bytes file = tag(ver, 0, fr);
+            append(file, mp3Tail);
+            MemSource src(file);
+            CHECK(picOf(src) == front);
+        }
+        // No front cover: the first picture.
+        bytes file = tag(4, 0, frame("APIC", apicBody(0, 8, imgA), 4));
+        append(file, frame("APIC", apicBody(0, 9, imgB), 4));
+        append(file, mp3Tail);
+        MemSource src(file);
+        CHECK(picOf(src) == imgA);
+    }
+    {
+        // v2.4 per-frame unsynchronisation: FF 00 in the stored frame is FF in the image.
+        bytes img = {0xFF, 0xD8, 0xFF, 0xE0, 1, 2};
+        bytes stored = {0, 'i', '/', 'j', 0, 3, 0, 0xFF, 0x00, 0xD8, 0xFF, 0x00, 0xE0, 1, 2};
+        bytes file = tag(4, 0, frame("APIC", stored, 4, 0x02));
+        append(file, mp3Tail);
+        MemSource src(file);
+        CHECK(picOf(src) == img);
+        // A link ("-->") is not a picture; a file without pictures gives none (and true).
+        bytes link = {0, '-', '-', '>', 0, 3, 0, 'h', 't', 't', 'p'};
+        bytes f2 = tag(3, 0, frame("APIC", link, 3));
+        append(f2, mp3Tail);
+        MemSource s2(f2);
+        CHECK(picOf(s2).empty());
+    }
+    {
+        // FLAC: a PICTURE block, and a METADATA_BLOCK_PICTURE comment; the front cover
+        // wins wherever it is.
+        const bytes vc = vorbisComments({"TITLE=x", "METADATA_BLOCK_PICTURE=" + base64(flacPictureBody(3, front))});
+        bytes f = flacWith({{6, flacPictureBody(5, imgA)}, {4, vc}});
+        MemSource src(f);
+        CHECK(picOf(src) == front);
+        bytes f2 = flacWith({{6, flacPictureBody(5, imgA)}});
+        MemSource s2(f2);
+        CHECK(picOf(s2) == imgA);
+        bytes f3 = flacWith({{4, vorbisComments({"TITLE=x"})}});
+        MemSource s3(f3);
+        CHECK(picOf(s3).empty());
+        // Base64 lengths that need padding (1 and 2 trailing bytes).
+        for (std::size_t n : {301u, 302u}) {
+            const bytes img(n, 0x3C);
+            bytes f4 = flacWith({{4, vorbisComments({"metadata_block_picture=" + base64(flacPictureBody(3, img))})}});
+            MemSource s4(f4);
+            CHECK(picOf(s4) == img);
+        }
+        // Invalid base64 and a truncated picture block are ignored.
+        bytes f5 = flacWith({{4, vorbisComments({"METADATA_BLOCK_PICTURE=@@@@", "METADATA_BLOCK_PICTURE=AAAA"})}});
+        MemSource s5(f5);
+        CHECK(picOf(s5).empty());
+        bytes cut = flacPictureBody(3, imgA);
+        cut.resize(cut.size() - 10);
+        bytes f6 = flacWith({{6, cut}});
+        MemSource s6(f6);
+        CHECK(picOf(s6).empty());
+    }
+    {
+        // Ogg Vorbis / Opus: METADATA_BLOCK_PICTURE in a comment packet over several pages.
+        const bytes big(150000, 0x5A);
+        for (int opus = 0; opus < 2; opus++) {
+            bytes id = opus ? bytes{'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, 0, 0, 0x80, 0xBB, 0, 0, 0, 0, 0}
+                            : bytes{1, 'v', 'o', 'r', 'b', 'i', 's'};
+            if (!opus) id.resize(30, 0);
+            bytes c = opus ? bytes{'O', 'p', 'u', 's', 'T', 'a', 'g', 's'} : bytes{3, 'v', 'o', 'r', 'b', 'i', 's'};
+            append(c, vorbisComments({"TITLE=t", "METADATA_BLOCK_PICTURE=" + base64(flacPictureBody(3, big))}));
+            bytes file = oggPacket(7, id);
+            append(file, oggPage(9, {3}, bytes{1, 2, 3})); // other stream
+            append(file, oggPacket(7, c));
+            append(file, bytes(4096, 0x42));
+            MemSource src(file);
+            CHECK(picOf(src) == big);
+        }
+    }
+    {
+        // Over the size cap: an error (not "no picture"), and nothing is kept.
+        bytes img(lm::kMaxEmbeddedPictureBytes + 1, 0x77);
+        bytes file = tag(4, 0, frame("APIC", apicBody(0, 3, img), 4));
+        append(file, mp3Tail);
+        MemSource src(file);
+        CHECK(picOf(src, false).empty());
+        // ... but a small picture next to it is used.
+        bytes fr = frame("APIC", apicBody(0, 3, img), 4);
+        append(fr, frame("APIC", apicBody(0, 4, imgA), 4));
+        bytes f2 = tag(4, 0, fr);
+        append(f2, mp3Tail);
+        MemSource s2(f2);
+        CHECK(picOf(s2) == imgA);
+        // Unknown format.
+        MemSource s3(bytes(100, 0x01));
+        CHECK(picOf(s3, false).empty());
+    }
 }
 
 static void newCases() {
@@ -487,6 +657,9 @@ static void fuzzStructured(std::mt19937 &r, int iters) {
         Tags t2;
         (void)lm::detail::readTagsFrom(src, t2, &g);
         CHECK(t.title.size() <= 4096 && t2.title.size() <= 4096);
+        bytes pic;
+        (void)lm::detail::readPictureFrom(src, pic, nullptr); // either result; must stay in bounds
+        CHECK(pic.size() <= b.size());
         // Vorbis comment blocks: random lengths, truncated.
         bytes vc = vorbisComments({"TITLE=a", "ARTIST=b"});
         for (int k = static_cast<int>(r() % 4); k > 0; k--) vc[r() % vc.size()] = static_cast<unsigned char>(r());
@@ -580,6 +753,7 @@ static void replayGainTags() {
 int main() {
     handBuilt();
     newCases();
+    embeddedPictures();
     replayGainTags();
     // Fixed seed for reproducible CI; LM_FUZZ_SEED=<n> explores other inputs.
     const char *seedEnv = std::getenv("LM_FUZZ_SEED");

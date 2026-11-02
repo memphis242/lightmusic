@@ -39,6 +39,7 @@
 //     armed only while such input is pending).
 // FTXUI's ScreenInteractive is not used because its loop wakes ~115 times/s while idle
 // (15 ms animation thread + 20 ms stdin select timeout).
+#include "art_view.hpp"
 #include "keymap.hpp"
 #include "tui_logic.hpp"
 
@@ -462,6 +463,10 @@ struct Ui {
     void error(std::string m) { status.error(std::move(m), lmtui::StatusLine::Clock::now()); }
     bool showMessages = false; // :messages overlay
     bool showCacheMarkers = true;
+    // Cover art (ui.cover_art): thumbnails of the playing and the next track's albums
+    // (nullptr: no art), as the art worker delivers them.
+    bool coverArt = true;
+    std::unordered_map<std::string, std::shared_ptr<const lm::art::Thumb>> covers;
     int selected = 0;
     bool help = false;
     // Queue pane ("up next", v): replaces the list while open and takes the keys;
@@ -679,7 +684,7 @@ Element renderBrowser(const Ui &ui, TagWorker &tags, int height) {
     return vbox(std::move(rows)) | yframe | flex;
 }
 
-Element render(const Ui &ui, TagWorker &tags, int height) {
+Element render(const Ui &ui, TagWorker &tags, int width, int height) {
     const auto &st = ui.st;
     // Queue: only build the visible window around the selection (a 10k-track queue
     // would otherwise build 10k rows per frame).
@@ -718,6 +723,13 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
     Element queue = ui.browser.open ? renderBrowser(ui, tags, height)
                     : ui.queueView  ? renderUpNext(ui, height)
                                     : vbox(std::move(rows)) | yframe | flex;
+    // Cover pane beside the list (hidden without art or when the terminal is too narrow).
+    if (ui.coverArt && st.index >= 0 && static_cast<std::size_t>(st.index) < ui.paths.size()) {
+        const auto it = ui.covers.find(ui.paths[static_cast<std::size_t>(st.index)]);
+        const lmtui::PaneSize pane = lmtui::coverPane(width, visible);
+        if (it != ui.covers.end() && it->second && pane.visible())
+            queue = hbox({queue | flex, separator(), lmtui::coverElement(*it->second, pane)});
+    }
 
     // Now playing: title (or file name), then artist and album when tagged.
     std::string title = "—", sub;
@@ -1251,6 +1263,7 @@ int run(int argc, char **argv) {
         }
     }
     ui.showCacheMarkers = set.showCacheMarkers;
+    ui.coverArt = set.coverArt;
     if (!args.empty()) ui.paths = lmtui::collectTracks(args, &errors);
     for (const auto &e : errors) lm::diagln(stderr, "lightmusic: {}", e);
     for (const auto &p : ui.paths) ui.names.push_back(lmtui::displayName(p));
@@ -1301,8 +1314,42 @@ int run(int argc, char **argv) {
         // async signals blocked (spawnDetached). A new list (browser) gets a new box; the
         // old scanner's results are then dropped.
         auto labels = std::make_shared<LabelBox>();
+        // Cover art: album thumbnails are made in the background as the list is labelled
+        // (each folder once), and only loaded on a track change (see art_view.hpp).
+        std::string coversErr;
+        const std::string coversDir = lm::art::coversDir(live.running.cacheDir, &coversErr);
+        lmtui::ArtWorker artWorker(coversDir, [] { wake(); },
+                                   [](std::function<void()> fn) { spawnDetached(std::move(fn)); });
+        if (coversDir.empty()) ui.status.log(lmtui::StatusLine::Level::Warning, "cover art: " + coversErr);
+        auto prefetchArt = [&](std::size_t from) {
+            if (!ui.coverArt) return;
+            std::vector<std::string> local;
+            for (std::size_t i = from; i < ui.paths.size(); i++)
+                if (!ui.remote[i]) local.push_back(ui.paths[i]);
+            artWorker.prefetch(local);
+        };
+        // The playing track's and the next one's album thumbnails (only those are kept).
+        auto wantedArt = [&] {
+            std::vector<std::string> want;
+            auto add = [&](int i) {
+                if (i >= 0 && static_cast<std::size_t>(i) < ui.paths.size() && !ui.remote[static_cast<std::size_t>(i)])
+                    want.push_back(ui.paths[static_cast<std::size_t>(i)]);
+            };
+            if (!ui.coverArt) return want;
+            add(ui.st.index);
+            if (!ui.st.upNext.empty()) add(ui.st.upNext.front());
+            else if (ui.st.index >= 0) add(ui.st.index + 1); // the list's next (not shuffle-aware)
+            return want;
+        };
+        auto requestArt = [&] {
+            std::vector<std::string> want = wantedArt();
+            std::erase_if(ui.covers, [&](const auto &kv) { return std::find(want.begin(), want.end(), kv.first) == want.end(); });
+            std::erase_if(want, [&](const std::string &p) { return ui.covers.contains(p); });
+            artWorker.want(want);
+        };
         auto scanLabels = [&](std::size_t from) { // entries from `from` on
             if (from >= ui.paths.size()) return;
+            prefetchArt(from);
             spawnDetached([box = labels, from, paths = std::vector<std::string>(ui.paths.begin() + static_cast<std::ptrdiff_t>(from), ui.paths.end()),
                            remote = std::vector<lm::TrackId>(ui.remote.begin() + static_cast<std::ptrdiff_t>(from), ui.remote.end())] {
                 for (std::size_t i = 0; i < paths.size() && !box->stopped(); i++) {
@@ -1576,6 +1623,10 @@ int run(int argc, char **argv) {
                         player.setShuffle(n.shuffle);
                     } else if (k == "ui.notifications") {
                         mpris.setNotify(n.notifications);
+                    } else if (k == "ui.cover_art") {
+                        ui.coverArt = n.coverArt;
+                        requestArt();
+                        prefetchArt(0);
                     } else if (k == "keys") {
                         lmtui::Keymap km;
                         std::vector<std::string> errs;
@@ -2643,7 +2694,7 @@ int run(int argc, char **argv) {
                 if (ui.status.expire(lmtui::StatusLine::Clock::now())) dirty = true;
                 if (dirty) {
                     auto screen = Screen::Create(Dimension::Fixed(width), Dimension::Fixed(height));
-                    Render(screen, render(ui, tagWorker, height));
+                    Render(screen, render(ui, tagWorker, width, height));
                     Tty::put("\x1b[H" + screen.ToString());
                     dirty = false;
                 }
@@ -2684,6 +2735,8 @@ int run(int argc, char **argv) {
                     }
                     for (const auto &ev : inbox.take()) {
                         apply(ui, ev);
+                        if (ev.type == lm::EventType::TrackChanged || ev.type == lm::EventType::QueueChanged)
+                            requestArt();
                         if (ui.playsSinceSave >= 10) saveStats(); // a crash loses at most 9
                         mpris.event(ev);
                         dirty = true;
@@ -2706,6 +2759,14 @@ int run(int argc, char **argv) {
                     }
 #endif
                     if (tagWorker.drain()) dirty = true;
+                    if (auto got = artWorker.take(); !got.empty()) {
+                        const std::vector<std::string> want = wantedArt(); // the track may have changed meanwhile
+                        for (auto &res : got)
+                            if (std::find(want.begin(), want.end(), res.track) != want.end())
+                                ui.covers[res.track] = std::move(res.thumb);
+                        dirty = true;
+                    }
+                    for (auto &m : artWorker.takeMessages()) ui.status.log(lmtui::StatusLine::Level::Warning, std::move(m));
                     for (auto &it : labels->take()) {
                         if (it.index < ui.names.size() && !it.label.empty()) ui.names[it.index] = std::move(it.label);
                         if (it.index < ui.durMs.size() && it.durMs > 0) ui.durMs[it.index] = it.durMs;

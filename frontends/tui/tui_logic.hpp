@@ -341,6 +341,9 @@ public:
     void warn(std::string text, Clock::time_point now) { show(Level::Warning, std::move(text), now); }
     void error(std::string text, Clock::time_point now) { show(Level::Error, std::move(text), now); }
     void clear() { shown_ = false; }
+    // Records a message in the history (:messages) without showing it: background
+    // problems that must not take over the status line (cover art).
+    void log(Level level, std::string text);
 
     [[nodiscard]] bool visible() const { return shown_; }
     [[nodiscard]] const Entry &current() const { return cur_; } // valid while visible()

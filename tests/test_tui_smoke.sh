@@ -17,6 +17,7 @@ echo "not audio" > "$TMP/music/notes.txt"
 # Hermetic settings: cfg.yaml in a temp XDG_CONFIG_HOME (start volume 50%).
 export XDG_CONFIG_HOME="$TMP/xdg"
 export XDG_STATE_HOME="$TMP/state" # the resumable session (not the real one)
+export XDG_CACHE_HOME="$TMP/cache" # cover thumbnails (not the real cache)
 mkdir -p "$XDG_CONFIG_HOME/lightmusic"
 CFG="$XDG_CONFIG_HOME/lightmusic/cfg.yaml"
 printf 'playback:\n  volume: 50\n' > "$CFG"; chmod 600 "$CFG"
@@ -427,6 +428,34 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (playlist runs)"; cat "$f"; fail=1
 done
+# Cover art: an album folder with cover.png shows the half-block pane (truecolour; the
+# colour is checked loosely: ffmpeg makes it through YUV) and
+# leaves a thumbnail in the covers cache; ui.cover_art: false and a narrow terminal hide it.
+mkdir -p "$TMP/art"
+gen 440 20 "-c:a flac" "$TMP/art/01 Art.flac"
+ffmpeg -hide_banner -loglevel error -y -f lavfi -i color=c=0xC03020:s=300x300 -frames:v 1 "$TMP/art/cover.png" || exit 1
+printf 'playback:\n  volume: 50\n' > "$CFG"
+art_run() { # LOG COLS [CONFIG]
+    printf "$3" > "$CFG"
+    : > "$TMP/$1"
+    { n=300; while [ $n -gt 0 ] && ! grep -q Playing "$TMP/$1"; do sleep 0.05; n=$((n - 1)); done
+      n=100; while [ $n -gt 0 ] && ! grep -q "▀" "$TMP/$1"; do sleep 0.05; n=$((n - 1)); done
+      printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLORTERM=truecolor \
+        timeout 30 script -qfec "stty cols $2 rows 30; $BIN --null '$TMP/art'" "$TMP/$1" >/dev/null 2>&1
+}
+art_run log30 100 'playback:\n  volume: 50\n'
+grep -q "▀" "$TMP/log30" || { echo "FAIL: cover art pane never shown"; fail=1; }
+grep -q "38;2;19[0-3];4[5-9];3[0-3]" "$TMP/log30" || { echo "FAIL: cover art colours not drawn"; fail=1; }
+ls "$XDG_CACHE_HOME/lightmusic/covers/"*.thumb >/dev/null 2>&1 || { echo "FAIL: no cover thumbnail cached"; fail=1; }
+art_run log31 100 'ui:\n  cover_art: false\n'
+grep -q "Playing" "$TMP/log31" && ! grep -q "▀" "$TMP/log31" || { echo "FAIL: cover art shown with ui.cover_art: false"; fail=1; }
+art_run log32 60 'playback:\n  volume: 50\n'
+grep -q "Playing" "$TMP/log32" && ! grep -q "▀" "$TMP/log32" || { echo "FAIL: cover art shown in a narrow terminal"; fail=1; }
+for f in "$TMP"/san*; do
+    [ -e "$f" ] || continue
+    echo "FAIL: sanitizer report $f (cover art runs)"; cat "$f"; fail=1
+done
+printf 'playback:\n  volume: 50\n' > "$CFG"
 # A bad binding is refused before the terminal is touched, with its line.
 printf 'keys:\n  queue_add: [a, F13]\n' > "$CFG"
 out=$("$BIN" --null "$TMP/music" 2>&1 </dev/null); rc=$?

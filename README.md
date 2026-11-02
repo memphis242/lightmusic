@@ -139,6 +139,27 @@ folders: newest files) and Random album (an album of the library or a folder, pi
 random), each opened as a list of tracks (enter plays from a track, `o` plays it all,
 `q`/`Q` queue it), at most 500 rows.
 
+**Cover art.** The album cover of the playing track is drawn next to the list with
+Unicode half blocks (`▀`, foreground = upper pixel, background = lower pixel, two pixels
+per cell) in 24-bit colour (FTXUI maps it to 256 colours when the terminal does not
+advertise truecolour in `COLORTERM`); no kitty/sixel protocol. The pane is square, at
+most 32x16 cells, and hidden when the list would get narrower than 40 columns, when the
+album has no art, or with `ui.cover_art: false` (hot). A local album is its folder; its
+art is the embedded picture of the folder's first audio file (ID3v2 `APIC`, FLAC
+`PICTURE`, Vorbis/Opus `METADATA_BLOCK_PICTURE`; the front cover, else the first
+picture), else `cover.jpg`, `folder.jpg`, `cover.jpeg`, `folder.jpeg`, `cover.png` or
+`folder.png` (any case). Only JPEG and PNG are decoded (stb_image), and images are
+treated as untrusted: at most 16 MiB, 8192 pixels per side and 4096x4096 pixels in all,
+checked before decoding; a bad image is logged once in `:messages` and the pane stays
+empty. Nothing is decoded on the play path: a background thread at `SCHED_IDLE`
+priority makes a 64x64 RGB thumbnail (12 KiB) of every album in the list once, when the
+list is loaded, and stores it in `$XDG_CACHE_HOME/lightmusic/covers/` (`cache.dir`
+moves it; 0700, one file per folder, keyed by a hash of the folder path, and redone when
+the name, size or modification time of the art sources changes, so re-tagging or
+replacing the cover is picked up). A track change loads only the playing and the next
+album's thumbnails; the pane scales the thumbnail to its size when drawn. Server
+tracks show no cover yet.
+
 **Playlists** (M3U / M3U8). `:save NAME` stores the list (not the user queue) as
 `$XDG_DATA_HOME/lightmusic/playlists/NAME.m3u8` (else `~/.local/share/...`), with
 `#EXTINF` lengths and labels; `:load NAME` opens it as the list, and the browser's top level
@@ -266,7 +287,10 @@ ctest --test-dir build --output-on-failure
   fallback, preamp and its clamp, untagged files, peak capping); hand-built ID3 edge cases (surrogate pairs, v2.3/v2.4
   unsynchronisation, data-length indicator, syncsafe sizes in v2.3), the tag-only reader
   on in-memory MP3/FLAC/Ogg files (large pictures skipped, bounded reads, ID3v1 fallback),
-  and random plus structured fuzzing of the parsers (run it under ASan/UBSan;
+  embedded pictures (ID3v2.3/2.4 `APIC` with Latin-1/UTF-16 descriptions and per-frame
+  unsynchronisation, links, FLAC `PICTURE`, base64 `METADATA_BLOCK_PICTURE` in FLAC and in
+  Ogg Vorbis/Opus comment packets over several pages, front cover first, the 16 MiB cap,
+  truncated blocks and bad base64), and random plus structured fuzzing of the parsers (run it under ASan/UBSan;
   `LM_FUZZ_SEED=<n>` varies the inputs).
 - `test_tags_files`: title/artist/album/track/disc/year for each format from ffmpeg-tagged
   files (non-ASCII text; ID3v2.4 UTF-8, ID3v2.3 UTF-16, ID3v1) and corruption of real
@@ -310,6 +334,19 @@ ctest --test-dir build --output-on-failure
   music paths, flags overriding (lists replaced), defaults, errors with line numbers,
   unknown keys, loopback/proxy checks on the merged result, missing and world-writable
   files.
+- `test_art`: cover thumbnails: centre crop, area-average downscaling and upscaling, PNG
+  decoding, the size/side/pixel limits (checked from the header), empty, garbage,
+  truncated, damaged and byte-flipped images, half-block cells, the thumbnail file format
+  and its corrupt variants, the covers cache (0700 directory, hits, stamp misses, no-art
+  entries, corrupt files, an unwritable directory), album lookup (first audio file, cover
+  before folder image, case-insensitive) and its invalidation by size/mtime, corrupt and
+  oversized folder images; with ffmpeg also JPEG covers embedded in MP3 and FLAC (the
+  embedded picture wins over the folder image), files without pictures, and the decode
+  time of a 3000x3000 JPEG.
+- `test_tui_art`: the cover pane's size and when it hides, the half-block element
+  rendered by FTXUI (glyph, foreground/background per cell, truecolour and 256-colour
+  escapes), and the background worker end to end (eager thumbnails, wanted albums,
+  no-art and corrupt albums reported once, cache hits on the next run, a replaced cover).
 - `test_tui_logic`: directory scanning, natural sort, terminal key parsing (ctrl-letters,
   tab), the default keymap per context, `keys:` overrides (replacing defaults, unbinding,
   user keys taking default ones, digits, conflicts, unknown actions/keys with their
@@ -908,6 +945,8 @@ ui:
   resume_session: true              # started without files: restore the last list,
                                     # queue and position (paused); --no-resume
   notifications: false              # desktop notification on track change (hot)
+  cover_art: true                   # album cover pane beside the list (hot; hidden
+                                    # when the terminal is too narrow)
 keys:                               # (hot) action: key or [keys]; replaces that
   queue_add: a                      # action's default keys; [] unbinds it
   quit: [ctrl-c, ctrl-q]
@@ -936,6 +975,7 @@ keys:                               # (hot) action: key or [keys]; replaces that
 | `ui.save_settings` | – | true | yes |
 | `ui.resume_session` | `--no-resume` (= false) | true | restart |
 | `ui.notifications` | – | false | yes |
+| `ui.cover_art` | – | true | yes |
 | `keys.<action>` | – | see below | yes |
 
 #### Keybindings
@@ -1092,6 +1132,8 @@ libplayer/              static library `lm::player` (namespace lm), no UI deps
   src/                  decoders (dr_mp3, dr_flac, opusfile, vorbisfile), miniaudio
                         output, player threads; miniaudio_impl.c / dr_impl.c are the
                         only TUs that compile the vendored implementations
+libart/                 static library `lm::art`: cover thumbnails (stb_image JPEG/PNG,
+                        64x64 RGB), the covers cache, local album art, half-block cells
 libconfig/              static library `lm::config`: YAML layers, typed schemas, file
                         permission checks, inotify watcher (yaml-cpp)
 libnet/                 static library `lm::net`: server client (libcurl), library mirror and

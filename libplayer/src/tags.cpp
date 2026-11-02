@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,24 @@ bool iequals(std::string_view a, std::string_view b) {
 }
 
 constexpr std::string_view kTrackGain = "REPLAYGAIN_TRACK_GAIN";
+
+// The embedded picture chosen so far: the first front cover (picture type 3), else the
+// first picture of any type. Pictures over kMaxEmbeddedPictureBytes are not taken.
+struct PicturePick {
+    std::vector<unsigned char> &out;
+    bool have = false, front = false, tooLarge = false;
+    [[nodiscard]] bool wants(std::uint32_t type) const { return !have || (!front && type == 3); }
+    void take(std::uint32_t type, const unsigned char *p, const unsigned char *end) {
+        if (!wants(type) || p >= end) return;
+        if (static_cast<std::size_t>(end - p) > kMaxEmbeddedPictureBytes) {
+            tooLarge = true;
+            return;
+        }
+        out.assign(p, end);
+        have = true;
+        front = type == 3;
+    }
+};
 constexpr std::size_t kMaxField = 1024; // cap per text field (bytes of UTF-8)
 
 void putUtf8(std::string &s, std::uint32_t cp) {
@@ -142,8 +161,39 @@ void setIfZero(int &dst, std::string_view v) {
 
 bool id(const unsigned char *f, const char *s) { return std::memcmp(f, s, 4) == 0; }
 
+// ID3v2 APIC body: encoding, MIME type (Latin-1, NUL-terminated), picture type,
+// description (NUL-terminated in the frame's encoding: one NUL byte, or two at an even
+// offset for UTF-16), then the image. A MIME type of "-->" is a link, not an image.
+void apicFrame(const unsigned char *body, const unsigned char *end, PicturePick &pic) {
+    if (end - body < 2) return;
+    const int enc = body[0];
+    if (enc > 3) return;
+    const unsigned char *q = body + 1;
+    const unsigned char *mimeEnd = std::find(q, end, 0);
+    if (end - mimeEnd < 2) return;
+    const std::string_view mime(reinterpret_cast<const char *>(q), static_cast<std::size_t>(mimeEnd - q));
+    if (mime == "-->") return;
+    q = mimeEnd + 1;
+    const std::uint32_t type = *q++;
+    if (!pic.wants(type)) return;
+    if (enc == 1 || enc == 2) {
+        while (end - q >= 2 && (q[0] != 0 || q[1] != 0)) q += 2;
+        if (end - q < 2) return;
+        q += 2;
+    } else {
+        q = std::find(q, end, 0);
+        if (q == end) return;
+        q++;
+    }
+    pic.take(type, q, end);
+}
+
 void id3Frame(const unsigned char *fid, const unsigned char *body, const unsigned char *end, Tags *tags,
-              GainTags *gain) {
+              GainTags *gain, PicturePick *pic) {
+    if (id(fid, "APIC")) {
+        if (pic) apicFrame(body, end, *pic);
+        return;
+    }
     if (end - body < 1) return;
     const int enc = body[0];
     if (enc > 3) return;
@@ -165,7 +215,7 @@ void id3Frame(const unsigned char *fid, const unsigned char *body, const unsigne
 
 // Returns false if a frame's size overran the tag (parsing stopped there).
 bool id3Frames(int ver, unsigned char tagFlags, bool syncsafeSizes, const unsigned char *p, const unsigned char *end,
-               Tags *tags, GainTags *gain) {
+               Tags *tags, GainTags *gain, PicturePick *pic) {
     while (end - p >= 10 && p[0] != 0) {
         const std::uint32_t fsize = syncsafeSizes ? syncsafe(p + 4) : be32(p + 4);
         const unsigned char *body = p + 10;
@@ -178,15 +228,15 @@ bool id3Frames(int ver, unsigned char tagFlags, bool syncsafeSizes, const unsign
         // whether or not the frame sets 0x02.
         if (ver == 3 && !(fmt & 0xC0)) {
             const unsigned char *b = body + ((fmt & 0x20) ? 1 : 0);
-            if (b <= next) id3Frame(p, b, next, tags, gain);
+            if (b <= next) id3Frame(p, b, next, tags, gain, pic);
         } else if (ver == 4 && !(fmt & 0x0C)) {
             const unsigned char *b = body + ((fmt & 0x40) ? 1 : 0) + ((fmt & 0x01) ? 4 : 0);
             if (b <= next) {
                 if ((fmt & 0x02) || (tagFlags & 0x80)) {
                     const auto clean = deunsync(b, next);
-                    id3Frame(p, clean.data(), clean.data() + clean.size(), tags, gain);
+                    id3Frame(p, clean.data(), clean.data() + clean.size(), tags, gain, pic);
                 } else {
-                    id3Frame(p, b, next, tags, gain);
+                    id3Frame(p, b, next, tags, gain, pic);
                 }
             }
         }
@@ -277,7 +327,8 @@ bool applyVorbisComment(std::string_view comment, Tags &tags) {
     return true;
 }
 
-void parseId3v2(const unsigned char *tag, std::size_t size, Tags *tags, GainTags *gain) {
+namespace {
+void parseId3v2Impl(const unsigned char *tag, std::size_t size, Tags *tags, GainTags *gain, PicturePick *pic) {
     if (!tag || size < 10 || tag[0] != 'I' || tag[1] != 'D' || tag[2] != '3') return;
     const int ver = tag[3];
     const unsigned char flags = tag[5];
@@ -299,8 +350,13 @@ void parseId3v2(const unsigned char *tag, std::size_t size, Tags *tags, GainTags
     // Some v2.3 writers (old iTunes among them) store syncsafe frame sizes. If the plain
     // sizes run past the tag, retry the whole tag with syncsafe ones. Fields already set
     // by the first pass keep their values (first non-empty value wins).
-    if (!id3Frames(ver, flags, ver == 4, p, end, tags, gain) && ver == 3)
-        id3Frames(ver, flags, true, p, end, tags, gain);
+    if (!id3Frames(ver, flags, ver == 4, p, end, tags, gain, pic) && ver == 3)
+        id3Frames(ver, flags, true, p, end, tags, gain, pic);
+}
+} // namespace
+
+void parseId3v2(const unsigned char *tag, std::size_t size, Tags *tags, GainTags *gain) {
+    parseId3v2Impl(tag, size, tags, gain, nullptr);
 }
 
 std::optional<float> parseId3v2TrackGain(const unsigned char *tag, std::size_t size) {
@@ -641,6 +697,134 @@ void readOggTags(ByteSource &src, bool opus, Tags &tags, GainTags *gain) {
     }
 }
 
+// Standard base64 (RFC 4648; padding optional, no whitespace). False on any other byte.
+bool base64Decode(std::string_view in, std::vector<unsigned char> &out) {
+    out.clear();
+    out.reserve(in.size() / 4 * 3 + 3);
+    std::uint32_t acc = 0;
+    int bits = 0;
+    for (char ch : in) {
+        const auto c = static_cast<unsigned char>(ch);
+        std::uint32_t v = 0;
+        if (c >= 'A' && c <= 'Z') v = c - 'A';
+        else if (c >= 'a' && c <= 'z') v = c - 'a' + 26u;
+        else if (c >= '0' && c <= '9') v = c - '0' + 52u;
+        else if (c == '+') v = 62;
+        else if (c == '/') v = 63;
+        else if (c == '=') break;
+        else return false;
+        acc = (acc << 6 | v) & 0xFFFFFFu;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<unsigned char>(acc >> bits & 0xFF));
+        }
+    }
+    return true;
+}
+
+// FLAC PICTURE block body (also the payload of a METADATA_BLOCK_PICTURE comment): type,
+// MIME type and description (length-prefixed), width, height, depth, colours, then the
+// length-prefixed image. All integers are big-endian 32-bit.
+void flacPicture(const unsigned char *p, const unsigned char *end, PicturePick &pic) {
+    auto u32 = [&](std::uint32_t &v) {
+        if (end - p < 4) return false;
+        v = be32(p);
+        p += 4;
+        return true;
+    };
+    auto fits = [&](std::uint32_t n) { return n <= static_cast<std::size_t>(end - p); };
+    std::uint32_t type = 0, len = 0;
+    if (!u32(type) || !u32(len) || !fits(len)) return;
+    p += len; // MIME type
+    if (!u32(len) || !fits(len)) return;
+    p += len; // description
+    if (end - p < 16) return;
+    p += 16;
+    if (!u32(len) || !fits(len)) return;
+    pic.take(type, p, p + len);
+}
+
+// Longest METADATA_BLOCK_PICTURE value read: base64 of a picture at the size cap plus
+// its block header and a generous MIME type/description.
+constexpr std::size_t kMaxPictureComment = (kMaxEmbeddedPictureBytes + std::size_t{64} * 1024) / 3 * 4 + 4;
+
+// Vorbis comments: only METADATA_BLOCK_PICTURE entries are read (base64 FLAC picture
+// blocks); every other entry is skipped.
+void parsePictureComments(CommentStream &s, PicturePick &pic) {
+    unsigned char b[4];
+    if (!s.readAll(b, 4) || !s.skip(le32(b)) || !s.readAll(b, 4)) return;
+    std::string text;
+    std::vector<unsigned char> raw;
+    for (std::uint32_t count = le32(b); count > 0 && s.readAll(b, 4); count--) {
+        const std::uint32_t len = le32(b);
+        static constexpr std::size_t kPeek = 23; // strlen("METADATA_BLOCK_PICTURE=")
+        unsigned char head[kPeek];
+        const std::size_t h = std::min<std::size_t>(len, kPeek);
+        if (!s.readAll(head, h)) return;
+        if (!isPictureKey(head, h) || len - h > kMaxPictureComment) {
+            if (isPictureKey(head, h)) pic.tooLarge = true;
+            if (!s.skip(len - h)) return;
+            continue;
+        }
+        text.resize(len - h);
+        if (!s.readAll(reinterpret_cast<unsigned char *>(text.data()), text.size())) return; // truncated
+        if (base64Decode(text, raw)) flacPicture(raw.data(), raw.data() + raw.size(), pic);
+        if (pic.have && pic.front) return;
+    }
+}
+
+// The whole ID3v2 tag (header in `hdr`), read into memory when its size allows a
+// picture at the cap, and searched for APIC frames.
+void readId3Picture(ByteSource &src, const unsigned char *hdr, PicturePick &pic) {
+    if (hdr[3] != 3 && hdr[3] != 4) return;
+    const std::size_t tagSize = syncsafe(hdr + 6);
+    if (tagSize > kMaxEmbeddedPictureBytes + kMaxId3Bytes) {
+        pic.tooLarge = true;
+        return;
+    }
+    std::vector<unsigned char> t(hdr, hdr + 10);
+    t.resize(10 + tagSize);
+    t.resize(10 + src.read(t.data() + 10, tagSize));
+    parseId3v2Impl(t.data(), t.size(), nullptr, nullptr, &pic);
+}
+
+void readFlacPicture(ByteSource &src, PicturePick &pic) {
+    unsigned char b[4];
+    if (!readFully(src, b, 4) || std::memcmp(b, "fLaC", 4) != 0) return;
+    std::vector<unsigned char> body;
+    for (int blocks = 0; blocks < 1024 && readFully(src, b, 4); blocks++) {
+        const bool last = b[0] & 0x80;
+        const int type = b[0] & 0x7F;
+        const std::size_t len = std::size_t{b[1]} << 16 | std::size_t{b[2]} << 8 | b[3];
+        if (type == 6) { // PICTURE (at most 16 MiB by the 24-bit length)
+            body.resize(len);
+            if (!readFully(src, body.data(), len)) return;
+            flacPicture(body.data(), body.data() + len, pic);
+        } else if (type == 4) { // VORBIS_COMMENT may carry METADATA_BLOCK_PICTURE too
+            const std::int64_t at = src.tell();
+            BlockComments c(src, len);
+            parsePictureComments(c, pic);
+            if (at < 0 || !src.seek(at + static_cast<std::int64_t>(len), ByteSource::Whence::Set)) return;
+        } else if (type == 127 || !src.seek(static_cast<std::int64_t>(len), ByteSource::Whence::Cur)) {
+            return;
+        }
+        if (last || (pic.have && pic.front)) return;
+    }
+}
+
+void readOggPicture(ByteSource &src, bool opus, PicturePick &pic) {
+    OggPackets pk(src);
+    if (!pk.selectStream(opus ? std::string_view("OpusHead") : std::string_view("\x01vorbis", 7)) || !pk.nextPacket())
+        return;
+    unsigned char m[8];
+    if (opus) {
+        if (pk.readAll(m, 8) && std::memcmp(m, "OpusTags", 8) == 0) parsePictureComments(pk, pic);
+    } else if (pk.readAll(m, 7) && std::memcmp(m, "\x03vorbis", 7) == 0) {
+        parsePictureComments(pk, pic);
+    }
+}
+
 } // namespace
 
 void parseVorbisCommentBlock(const unsigned char *p, std::size_t size, Tags &tags, GainTags *gain) {
@@ -663,6 +847,32 @@ bool readTagsFrom(ByteSource &src, Tags &tags, GainTags *gain) {
     if (!src.seek(start, ByteSource::Whence::Set)) return true;
     if (f == Format::Flac) readFlacTags(src, tags, gain);
     else readOggTags(src, f == Format::Opus, tags, gain);
+    return true;
+}
+
+bool readPictureFrom(ByteSource &src, std::vector<unsigned char> &out, std::string *err) {
+    out.clear();
+    const Format f = sniffFormat(src);
+    if (f == Format::Unknown) {
+        if (err) *err = "unrecognized format";
+        return false;
+    }
+    PicturePick pic{out};
+    unsigned char hdr[10];
+    std::int64_t start = 0;
+    if (src.seek(0, ByteSource::Whence::Set) && readFully(src, hdr, 10) && std::memcmp(hdr, "ID3", 3) == 0) {
+        readId3Picture(src, hdr, pic);
+        start = 10 + std::int64_t{syncsafe(hdr + 6)} + ((hdr[5] & 0x10) ? 10 : 0);
+    }
+    if (f != Format::Mp3 && !(pic.have && pic.front) && src.seek(start, ByteSource::Whence::Set)) {
+        if (f == Format::Flac) readFlacPicture(src, pic);
+        else readOggPicture(src, f == Format::Opus, pic);
+    }
+    if (!pic.have) out.clear();
+    if (!pic.have && pic.tooLarge) {
+        if (err) *err = std::format("embedded picture larger than {} MiB", kMaxEmbeddedPictureBytes >> 20);
+        return false;
+    }
     return true;
 }
 

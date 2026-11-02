@@ -5,6 +5,7 @@
 
 #include <optional>
 #include <string_view>
+#include <vector>
 
 namespace lm::detail {
 
@@ -50,6 +51,12 @@ void parseVorbisCommentBlock(const unsigned char *p, std::size_t size, Tags &tag
 // comment header (no seeking to the end). Returns false for an unsupported format.
 // Leaves the source position unspecified.
 [[nodiscard]] bool readTagsFrom(ByteSource &src, Tags &tags, GainTags *gain);
+// Embedded picture reader behind lm::readEmbeddedPicture: ID3v2 APIC (MP3, or an ID3v2
+// tag in front of FLAC/Ogg), FLAC PICTURE blocks, and METADATA_BLOCK_PICTURE comments
+// (FLAC, Vorbis, Opus). The front cover wins, else the first picture. `out` is empty when
+// there is none. False (with `err`) for an unsupported format, or when the only
+// pictures are over kMaxEmbeddedPictureBytes. Leaves the source position unspecified.
+[[nodiscard]] bool readPictureFrom(ByteSource &src, std::vector<unsigned char> &out, std::string *err);
 // Leading integer of "3/12", "2004-05-01" etc.; 0 if none or out of range.
 int parseLeadingInt(std::string_view s);
 

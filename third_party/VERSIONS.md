@@ -14,9 +14,11 @@ compiled without our `-Wall -Wextra -Werror` flags.
 | dr_mp3.h | dr_mp3 v0.7.4 | Public domain (Unlicense) OR MIT-0 | 390e4e0ef0cff80fb86ebf1b461d6947cfa4ed699a4fe107e5a5e69a47db2950 |
 | dr_flac.h | dr_flac v0.13.4 | Public domain (Unlicense) OR MIT-0 | b0bf397159f212676454ac9dc92b515adf5d535750bc7a9b122d9a8101ddd100 |
 | cpp-httplib/httplib.h | cpp-httplib v0.48.0 | MIT (c) 2026 Yuji Hirose | 2c27187a8b5f6b657f2661e55fd596e900419bf33b1e6f1569fafa76f081495e |
+| stb_image.h | stb_image v2.30 | Public domain (Unlicense) OR MIT | 594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3 |
 
 Sources: github.com/mackron/miniaudio, github.com/mackron/dr_libs,
-github.com/yhirose/cpp-httplib (tag v0.48.0, raw `httplib.h`). License texts are inside
+github.com/yhirose/cpp-httplib (tag v0.48.0, raw `httplib.h`), github.com/nothings/stb
+(commit f58f558c120e9b32c217290b80bad1a0729fbb2c, `stb_image.h`, unmodified). License texts are inside
 each header.
 
 How they are used:
@@ -35,3 +37,9 @@ How they are used:
   `set_trusted_proxies`, `bind_to_any_port`/`listen_after_bind`). It is included only by
   `server/src/api.cpp` and `tests/test_server_e2e.cpp` (slow to compile). The bench keeps
   its own 0.18.1 copy in `bench/third_party/`.
+- `stb_image.h` (cover art) is compiled in exactly one translation unit
+  (`libart/src/stb_impl.c`, `-w`, SYSTEM include) with the options in
+  `libart/src/lm_stb_image.h`: JPEG and PNG only (`STBI_ONLY_JPEG`/`STBI_ONLY_PNG`), no
+  stdio, no HDR/linear, `STBI_MAX_DIMENSIONS` 8192. Every other file includes
+  `lm_stb_image.h`. Images are untrusted: `lm::art::makeThumb` checks the byte size and
+  the dimensions from the header before decoding (see README "Cover art").

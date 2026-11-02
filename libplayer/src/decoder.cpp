@@ -107,4 +107,19 @@ bool readTags(const std::string &path, Tags &out, std::string *err) {
     return true;
 }
 
+bool readEmbeddedPicture(const std::string &path, std::vector<unsigned char> &out, std::string *err) {
+    out.clear();
+    auto src = openFileSource(path);
+    if (!src) {
+        if (err) *err = "cannot open " + path;
+        return false;
+    }
+    std::string why;
+    if (!detail::readPictureFrom(*src, out, &why)) {
+        if (err) *err = why + ": " + path;
+        return false;
+    }
+    return true;
+}
+
 } // namespace lm
