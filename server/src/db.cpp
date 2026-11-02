@@ -536,7 +536,7 @@ std::optional<std::string> Db::json_artist(std::int64_t id) {
     return j.take();
 }
 
-std::string Db::json_albums(const std::string &sort, std::int64_t offset, std::int64_t limit) {
+std::string Db::json_albums(const std::string &sort, PageOffset offset, PageLimit limit) {
     std::string order;
     if (sort == "artist") order = "ar.name COLLATE NOCASE, al.year, al.title COLLATE NOCASE";
     else if (sort == "year") order = "al.year DESC, al.title COLLATE NOCASE";
@@ -549,11 +549,11 @@ std::string Db::json_albums(const std::string &sort, std::int64_t offset, std::i
         c.step();
         total = c.i64(0);
     }
-    j.begin_object().kv("total", total).kv("offset", offset).kv("limit", limit);
+    j.begin_object().kv("total", total).kv("offset", offset.value).kv("limit", limit.value);
     j.key("albums").begin_array();
     Stmt s(db_, (std::string(kAlbumSelect) + "GROUP BY al.id ORDER BY " + order +
                  ", al.id LIMIT ? OFFSET ?").c_str());
-    s.bind(1, limit).bind(2, offset);
+    s.bind(1, limit.value).bind(2, offset.value);
     while (s.step()) { j.begin_object(); write_album_fields(j, s); j.end_object(); }
     j.end_array().end_object();
     return j.take();
@@ -585,7 +585,7 @@ std::optional<std::string> Db::json_track(lm::TrackId id) {
     return j.take();
 }
 
-std::string Db::json_search(const std::string &q, std::int64_t limit) {
+std::string Db::json_search(const std::string &q, PageLimit limit) {
     std::string pat = like_pattern(q);
     Json j;
     j.begin_object().kv("query", q);
@@ -593,14 +593,14 @@ std::string Db::json_search(const std::string &q, std::int64_t limit) {
     {
         Stmt s(db_, (std::string(kArtistSelect) + "WHERE r.name LIKE ?1 ESCAPE '\\' "
                      "ORDER BY r.name COLLATE NOCASE LIMIT ?2").c_str());
-        s.bind(1, pat).bind(2, limit);
+        s.bind(1, pat).bind(2, limit.value);
         while (s.step()) { j.begin_object(); write_artist_fields(j, s); j.end_object(); }
     }
     j.end_array().key("albums").begin_array();
     {
         Stmt s(db_, (std::string(kAlbumSelect) + "WHERE al.title LIKE ?1 ESCAPE '\\' "
                      "GROUP BY al.id ORDER BY al.title COLLATE NOCASE LIMIT ?2").c_str());
-        s.bind(1, pat).bind(2, limit);
+        s.bind(1, pat).bind(2, limit.value);
         while (s.step()) { j.begin_object(); write_album_fields(j, s); j.end_object(); }
     }
     j.end_array().key("tracks").begin_array();
@@ -608,7 +608,7 @@ std::string Db::json_search(const std::string &q, std::int64_t limit) {
         Stmt s(db_, (std::string(kTrackSelect) +
                      "WHERE t.title LIKE ?1 ESCAPE '\\' OR t.artist LIKE ?1 ESCAPE '\\' "
                      "ORDER BY t.title COLLATE NOCASE LIMIT ?2").c_str());
-        s.bind(1, pat).bind(2, limit);
+        s.bind(1, pat).bind(2, limit.value);
         while (s.step()) write_track(j, s);
     }
     j.end_array().end_object();

@@ -14,6 +14,7 @@
 #pragma once
 
 #include <chrono>
+#include <cmath>
 #include <concepts>
 #include <limits>
 #include <cstdint>
@@ -315,6 +316,23 @@ template <class T> Field<T> floatField(std::string key, double T::*p, double lo,
     LM_ASSERT(lo <= hi, "floatField: empty range");
     auto f = detail::base(std::move(key), p, hot);
     f.set = [p, lo, hi](T &t, const Value &v, std::string &err) { return parseFloat(v, lo, hi, t.*p, err); };
+    return f;
+}
+
+// A duration written as decimal seconds in the file ("0.5", "2") and kept as integer
+// milliseconds (rounded to the nearest ms), within [lo, hi].
+template <class T>
+Field<T> secondsField(std::string key, std::chrono::milliseconds T::*p, std::chrono::milliseconds lo,
+                      std::chrono::milliseconds hi, bool hot = false) {
+    LM_ASSERT(lo <= hi, "secondsField: empty range");
+    auto f = detail::base(std::move(key), p, hot);
+    f.set = [p, lo, hi](T &t, const Value &v, std::string &err) {
+        double s = 0;
+        if (!parseFloat(v, static_cast<double>(lo.count()) / 1000.0, static_cast<double>(hi.count()) / 1000.0, s, err))
+            return false;
+        t.*p = std::chrono::milliseconds(std::llround(s * 1000.0));
+        return true;
+    };
     return f;
 }
 

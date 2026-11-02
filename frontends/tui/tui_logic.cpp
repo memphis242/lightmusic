@@ -215,16 +215,18 @@ std::string displayName(std::string_view path) {
     return std::string(path);
 }
 
-std::string formatTime(double seconds) {
-    if (!(seconds > 0)) seconds = 0;
-    const long t = static_cast<long>(seconds);
-    if (t >= 3600) return std::format("{}:{:02}:{:02}", t / 3600, (t / 60) % 60, t % 60);
-    return std::format("{}:{:02}", t / 60, t % 60);
+std::string formatTime(std::chrono::milliseconds t) {
+    const auto s = std::max<std::int64_t>(0, std::chrono::duration_cast<std::chrono::seconds>(t).count());
+    if (s >= 3600) return std::format("{}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60);
+    return std::format("{}:{:02}", s / 60, s % 60);
 }
 
 int percentKey(std::string_view k) { return k.size() == 1 && k[0] >= '0' && k[0] <= '9' ? (k[0] - '0') * 10 : -1; }
 
-double endSeekTarget(double duration) { return duration > 0 ? std::max(0.0, duration - kEndSeek) : -1; }
+std::optional<std::chrono::milliseconds> endSeekTarget(std::chrono::milliseconds duration) {
+    if (duration <= std::chrono::milliseconds{0}) return std::nullopt;
+    return std::max(std::chrono::milliseconds{0}, duration - kEndSeek);
+}
 
 int nextRepeat(int repeat) { return repeat == 0 ? 1 : repeat == 1 ? 2 : 0; }
 
@@ -435,15 +437,10 @@ TimeLeft timeLeft(std::int64_t currentLeftMs, const std::vector<std::int64_t> &a
     return t;
 }
 
-std::string formatMs(std::int64_t ms) {
-    const std::int64_t s = std::max<std::int64_t>(0, ms) / 1000;
-    if (s >= 3600) return std::format("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60);
-    return std::format("{}:{:02}", s / 60, s % 60);
-}
 
 std::string formatTimeLeft(const TimeLeft &t) {
     std::string r = t.tracks ? std::format("{} more · ", t.tracks) : std::string();
-    return r + formatMs(t.ms) + (t.unknown ? "+" : "") + " left";
+    return r + formatTime(std::chrono::milliseconds(t.ms)) + (t.unknown ? "+" : "") + " left";
 }
 
 namespace {

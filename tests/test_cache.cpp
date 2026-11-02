@@ -51,7 +51,7 @@ lm::net::ClientConfig baseCfg(const std::string &url, const std::string &dir) {
     c.serverUrl = url;
     c.apiKey = FakeServer::kKey;
     c.cacheDir = dir;
-    c.readTimeoutSec = 10;
+    c.readTimeout = std::chrono::seconds(10);
     // Plenty of free disk unless a test shims it: the floor must not depend on the host.
     c.diskSpaceProbe = [](const std::string &, std::uint64_t *avail, std::uint64_t *total) {
         *avail = 1ull << 40;
@@ -507,7 +507,7 @@ void timeoutsAndErrors() {
     srv.setTrack(3, FakeServer::randomBytes(100000, 33), "\"u\"");
     const std::string dir = tempDir("timeout");
     auto cfg = baseCfg(srv.url(), dir);
-    cfg.readTimeoutSec = 1;
+    cfg.readTimeout = std::chrono::seconds(1);
     auto c = open(cfg);
     CHECK(c && syncOk(*c));
     if (!c) return;
@@ -690,7 +690,7 @@ void truncatedResponses() {
     const std::string dir = tempDir("truncated");
     auto cfg = baseCfg(srv.url(), dir);
     cfg.backgroundFill = false;
-    cfg.readTimeoutSec = 30;
+    cfg.readTimeout = std::chrono::seconds(30);
     auto c = open(cfg);
     CHECK(c && syncOk(*c));
     if (!c) return;
@@ -714,7 +714,7 @@ void wrongTotal() {
     const std::string dir = tempDir("wrongtotal");
     auto cfg = baseCfg(srv.url(), dir);
     cfg.backgroundFill = false;
-    cfg.readTimeoutSec = 2;
+    cfg.readTimeout = std::chrono::seconds(2);
     auto c = open(cfg);
     CHECK(c && syncOk(*c));
     if (!c) return;

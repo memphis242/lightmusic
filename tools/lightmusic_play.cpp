@@ -18,6 +18,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -35,9 +36,11 @@ std::atomic<bool> g_done{false};
 void printState(const char *tag, const lm::PlayerState &s, const std::string &msg) {
     std::lock_guard lk(g_print);
     // Progress output only: best effort.
-    lm::diagln(stdout, "[{:<8}] {:<7} #{}/{} {:6.1f}/{:<6.1f}s vol={:.2f} underruns={} {}{}{}", tag,
-               lm::statusName(s.status), s.index, s.queueSize, s.position, s.track.duration, s.volume, s.underruns,
-               s.track.path, msg.empty() ? "" : "  ", msg);
+    // Times as seconds with one decimal: integer ms split into seconds and tenths.
+    const auto pos = s.position.count(), len = s.track.duration.count();
+    lm::diagln(stdout, "[{:<8}] {:<7} #{}/{} {:4}.{}/{}.{}s vol={:.2f} underruns={} {}{}{}", tag,
+               lm::statusName(s.status), s.index, s.queueSize, pos / 1000, pos % 1000 / 100, len / 1000,
+               len % 1000 / 100, s.volume, s.underruns, s.track.path, msg.empty() ? "" : "  ", msg);
     (void)std::fflush(stdout);
 }
 
@@ -59,7 +62,7 @@ int main(int argc, char **argv) {
                 lm::diagln(stderr, "lightmusic-play: --gap needs seconds in 0..30");
                 return 2;
             }
-            cfg.gapSeconds = g;
+            cfg.gap = lm::Millis(std::llround(g * 1000.0)); // decimal seconds in, integer ms kept
             i++;
         }
         else if (!std::strcmp(argv[i], "-h") || !std::strcmp(argv[i], "--help")) {
@@ -109,7 +112,7 @@ int main(int argc, char **argv) {
         case 'p': player.togglePause(); break;
         case 'n': player.next(); break;
         case 'b': player.prev(); break;
-        case 's': player.seek(std::atof(arg)); break; // NOLINT(cert-err34-c): dev harness, junk -> 0
+        case 's': player.seek(lm::Millis(std::llround(std::atof(arg) * 1000.0))); break; // NOLINT(cert-err34-c): dev harness, junk -> 0
         case 'v': player.setVolume(static_cast<float>(std::atof(arg))); break; // NOLINT(cert-err34-c): dev harness, junk -> 0
         case 'x': player.stop(); break; // NOLINT(cert-err34-c): dev harness, junk -> 0
         case 'i': printState("info", player.state(), ""); break; // NOLINT(cert-err34-c): dev harness, junk -> 0

@@ -551,8 +551,8 @@ struct HttpApi::Impl {
             std::string sort = req.has_param("sort") ? req.get_param_value("sort") : "title";
             if (sort != "title" && sort != "artist" && sort != "year" && sort != "newest")
                 return error(res, 400, "sort must be title, artist, year or newest");
-            json(res, pool.get()->json_albums(sort, param_i64(req, "offset", 0, 0, INT64_MAX),
-                                              param_i64(req, "limit", 100, 1, 500)));
+            json(res, pool.get()->json_albums(sort, PageOffset(param_i64(req, "offset", 0, 0, INT64_MAX)),
+                                              PageLimit(param_i64(req, "limit", 100, 1, 500))));
         }));
         get(R"(/api/v1/albums/(\d+))", guarded(true, false, [this](auto &req, auto &res) {
             std::int64_t id;
@@ -569,7 +569,7 @@ struct HttpApi::Impl {
         get("/api/v1/search", guarded(true, false, [this](auto &req, auto &res) {
             std::string q = req.get_param_value("q");
             if (q.empty() || q.size() > 200) return error(res, 400, "q must be 1-200 bytes");
-            json(res, pool.get()->json_search(q, param_i64(req, "limit", 20, 1, 100)));
+            json(res, pool.get()->json_search(q, PageLimit(param_i64(req, "limit", 20, 1, 100))));
         }));
         get(R"(/api/v1/stream/(\d+))",
                 guarded(true, true, [this](auto &req, auto &res) { stream(req, res); }));

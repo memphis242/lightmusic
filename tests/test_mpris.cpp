@@ -556,7 +556,7 @@ int main() {
         CHECK(lm::mpris::remoteCommand("PlayPause", &err));
         CHECK(c.waitFor([&] { return c.status() == "Playing"; }));
         CHECK(lm::mpris::remoteCommand("Previous", &err));
-        CHECK(c.waitFor([&] { return player.state().index != before || player.state().position < 2.0; }));
+        CHECK(c.waitFor([&] { return player.state().index != before || player.state().position < std::chrono::seconds(2); }));
         CHECK(!lm::mpris::remoteCommand("Quit", &err)); // not a remote command
         CHECK(err.find("unknown remote command") != std::string::npos);
         CHECK(lm::mpris::remoteAdd({"/m/a.flac", "/m/b.flac"}, true, &err));

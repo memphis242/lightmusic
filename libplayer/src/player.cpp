@@ -19,7 +19,7 @@
 // handed to the device) to know which track is audible and where, so gapless
 // transitions and positions need no extra communication from the audio thread.
 //
-// Gap (PlayerConfig::gapSeconds): when a track ends naturally the decoder notes
+// Gap (PlayerConfig::gap): when a track ends naturally the decoder notes
 // round(gap * device rate) frames as due; once the next track has opened it writes that
 // many zero frames to the ring and only then records the next track's marker, so
 // TrackChanged and position 0 fall on its first real sample (the previous track's
@@ -128,18 +128,37 @@ constexpr std::uint32_t kCh = detail::AudioOutput::kChannels;
 constexpr std::uint32_t kMaxChannels = 8;
 constexpr Frames kChunkFrames{2048};
 constexpr Frames kConvFrames{4096};
-constexpr double kMaxGapSeconds = 30.0;
+constexpr Millis kMaxGap{30'000};
+constexpr std::uint32_t kMaxRate = 768000; // highest device/track rate the limits below assume
 
 // Compile-time consistency of the pipeline limits.
 static_assert(kCh >= 1 && kCh <= kMaxChannels, "device channel count within decoder limit");
 static_assert(kChunkFrames > Frames{0} && kConvFrames >= kChunkFrames, "converter output holds a decoded chunk");
-static_assert(kMaxGapSeconds > 0 && kMaxGapSeconds * 768000.0 * kCh < 9.0e15,
-              "longest gap at the highest supported rate is exact in double and fits a 64-bit frame count");
+static_assert(kMaxGap.count() > 0 && static_cast<std::uint64_t>(kMaxGap.count()) * kMaxRate * kCh < (1ull << 62),
+              "longest gap at the highest supported rate fits a 64-bit frame count with room");
 static_assert(sizeof(std::uint64_t) == 8, "frame counters and ring positions are 64-bit");
-static_assert(std::atomic<std::uint64_t>::is_always_lock_free && std::atomic<double>::is_always_lock_free,
+static_assert(std::atomic<std::uint64_t>::is_always_lock_free && std::atomic<std::int64_t>::is_always_lock_free,
               "decoder/control-thread atomics must not take a hidden lock");
 
-double clampGap(double s) { return std::isnan(s) ? 0.0 : std::clamp(s, 0.0, kMaxGapSeconds); }
+Millis clampGap(Millis g) { return std::clamp(g, Millis{0}, kMaxGap); }
+
+// Integer time <-> frame conversions (exact; rounding down).
+//   frames for a time: t * rate / 1000 (gap frames, seek targets, buffer sizes);
+//   time of a frame count: frames * 1000 / rate (positions, lengths);
+//   a clock duration for a frame count (deadlines), split so frames * 1e9 cannot overflow.
+Frames framesFor(Millis t, std::uint32_t rate) {
+    return Frames(static_cast<std::uint64_t>(std::max<Millis::rep>(0, t.count())) * rate / 1000);
+}
+Millis millisFor(Frames f, std::uint32_t rate) {
+    return rate ? Millis(static_cast<Millis::rep>(f.count() / rate * 1000 + f.count() % rate * 1000 / rate)) : Millis{0};
+}
+Clock::duration durationFor(Frames f, std::uint32_t rate) {
+    if (!rate) return Clock::duration::zero();
+    const std::uint64_t whole = f.count() / rate, rest = f.count() % rate;
+    return std::chrono::duration_cast<Clock::duration>(
+        std::chrono::seconds(static_cast<std::int64_t>(whole)) +
+        std::chrono::nanoseconds(static_cast<std::int64_t>(rest * 1'000'000'000ull / rate)));
+}
 
 struct Marker {
     Frames ringFrame;  // ring write position (device-rate frames) where the track starts
@@ -167,7 +186,7 @@ TrackInfo infoFor(const std::string &path, const Decoder &d, const PlayerConfig 
     t.format = d.format();
     t.sampleRate = d.sampleRate();
     t.channels = d.channels();
-    t.duration = d.sampleRate() ? static_cast<double>(d.totalFrames().count()) / d.sampleRate() : 0;
+    t.duration = millisFor(d.totalFrames(), d.sampleRate());
     t.trackGainDb = d.trackGainDb();
     t.gain = d.replayGain();
     t.appliedGain = replayGainFactor(t.gain, cfg.replayGain, cfg.replayGainPreampDb, cfg.replayGainPreventClipping);
@@ -182,7 +201,8 @@ struct Cmd {
     } kind;
     std::vector<std::string> paths{};
     int index = 0;
-    double value = 0;
+    Millis at{0};       // Seek, Cue: the target
+    float volume = 0;   // Volume
     std::promise<void> *barrier = nullptr;
     std::vector<int> ints{}; // QueueAddEntries: entries; QueueMove/QueueRemove: {entry, to}
     std::uint64_t seq = 0; // Impl::cmdSeq right after this command was queued
@@ -218,7 +238,7 @@ struct Player::Impl {
     // startAt() gives up when cmdSeq moved past the value recorded with the command it
     // is handling (i.e. a superseding command was queued after it).
     std::atomic<std::uint64_t> cmdSeq{0};
-    std::atomic<double> gapSec{0.0}; // read by the decoder thread at each natural track end
+    std::atomic<std::int64_t> gapMs{0}; // read by the decoder thread at each natural track end
     std::uint64_t seenSeq = 0;                // control thread
     std::atomic<std::uint64_t> openingGen{0}; // generation + 1 of the open in progress, 0 if none
     // A superseded startAt() leaves the player on the track it was opening (index, status =
@@ -354,7 +374,7 @@ struct Player::Impl {
             std::isfinite(cfg.replayGainPreampDb) ? std::clamp(cfg.replayGainPreampDb, -15.0f, 15.0f) : 0.0f;
         out.tap = cfg.outputTap;
         out.tapUser = cfg.outputTapUser;
-        gapSec.store(clampGap(cfg.gapSeconds));
+        gapMs.store(clampGap(cfg.gap).count());
         decoderThread = std::thread([this] { decoderMain(); });
         controlThread = std::thread([this] { controlMain(); });
     }
@@ -368,7 +388,7 @@ struct Player::Impl {
 
     std::size_t ringSamples(std::uint32_t rate) const {
         LM_ASSERT(rate > 0, "ring sized for a real device rate");
-        return static_cast<std::size_t>(std::max(0.05, cfg.ringSeconds) * rate) * kCh;
+        return static_cast<std::size_t>(framesFor(std::max(Millis{50}, cfg.ring), rate).samples(kCh));
     }
 
     ~Impl() {
@@ -542,10 +562,9 @@ struct Player::Impl {
         if (s.status != Status::Stopped && s.index >= 0 && snapDevRate && snapMarker.info.sampleRate) {
             const std::uint64_t read = ring.totalRead() / kCh;
             const Frames played{read > snapLatency ? read - snapLatency : 0};
-            const double into =
-                played > snapMarker.ringFrame ? static_cast<double>((played - snapMarker.ringFrame).count()) / snapDevRate : 0;
-            s.position = static_cast<double>(snapMarker.startFrame.count()) / snapMarker.info.sampleRate + into;
-            if (s.track.duration > 0) s.position = std::min(s.position, s.track.duration);
+            const Millis into = played > snapMarker.ringFrame ? millisFor(played - snapMarker.ringFrame, snapDevRate) : Millis{0};
+            s.position = millisFor(snapMarker.startFrame, snapMarker.info.sampleRate) + into;
+            if (s.track.duration > Millis{0}) s.position = std::min(s.position, s.track.duration);
         }
         return s;
     }
@@ -579,7 +598,7 @@ struct Player::Impl {
         snap.index = index;
         snap.queueSize = qsize;
         snap.track = index >= 0 ? cur.info : TrackInfo{};
-        snap.position = 0;
+        snap.position = Millis{0};
         snap.output = out.isOpen() ? out.describe() : "";
         snapMarker = cur;
         snapDevRate = out.sampleRate();
@@ -607,7 +626,7 @@ struct Player::Impl {
     }
 
     Clock::duration tickDur() const {
-        return std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(std::max(0.05, cfg.tickSeconds)));
+        return std::chrono::duration_cast<Clock::duration>(std::max(Millis{50}, cfg.tick));
     }
 
     // ---------------------------------------------------------------- device start/stop
@@ -657,10 +676,10 @@ struct Player::Impl {
     }
 
     // Starts decoding at queue[i] + frame. Returns false if no track from i on opens.
-    // seekSec >= 0: start at that time instead of `frame` (the rate is known once open).
+    // seekTo: start at that time instead of `frame` (the rate is known once open).
     // `pk.consumes`: pk.idx is upNext.front(); a jump to it takes it off the user queue
     // at once (only the decoder's gapless picks wait until they are audible).
-    bool startAt(Pick pk, Frames frame, Status target, double seekSec = -1) {
+    bool startAt(Pick pk, Frames frame, Status target, std::optional<Millis> seekTo = std::nullopt) {
         const Status before = status;
         openPending = false;
         flush();
@@ -743,7 +762,7 @@ struct Player::Impl {
             ring.resize(ringSamples(out.sampleRate()));
             ringRate = out.sampleRate();
         }
-        if (seekSec >= 0) frame = Frames(static_cast<std::uint64_t>(seekSec * dec->sampleRate()));
+        if (seekTo) frame = framesFor(*seekTo, dec->sampleRate());
         if (frame && dec->totalFrames()) frame = std::min(frame, dec->totalFrames());
         // The state describes the new track from here on, whether or not the prebuffer
         // fills in time; the decoder's own marker (same ring frame) confirms it later.
@@ -779,7 +798,7 @@ struct Player::Impl {
     void waitPrebuffer() {
         const auto deadline = Clock::now() + std::chrono::seconds(1);
         const std::size_t want = std::min<std::size_t>(
-            ring.capacity() / 2, static_cast<std::size_t>(cfg.prebufferSeconds * out.sampleRate()) * kCh);
+            ring.capacity() / 2, static_cast<std::size_t>(framesFor(cfg.prebuffer, out.sampleRate()).samples(kCh)));
         while (Clock::now() < deadline && ring.readable() < want) {
             {
                 std::lock_guard lk(dm);
@@ -898,7 +917,7 @@ struct Player::Impl {
                     pk.user = true;
                 }
             }
-            if (c.kind == Cmd::Cue) startAt(pk, Frames{}, Status::Paused, std::max(0.0, c.value));
+            if (c.kind == Cmd::Cue) startAt(pk, Frames{}, Status::Paused, std::max(Millis{0}, c.at));
             else startAt(pk, Frames{}, Status::Playing);
             break;
         }
@@ -938,30 +957,30 @@ struct Player::Impl {
                 std::lock_guard lk(dm);
                 p = predecessor(curPick());
             }
-            const bool restart = stateNow().position > 3.0 || p < 0;
+            const bool restart = stateNow().position > std::chrono::seconds(3) || p < 0;
             startAt(restart ? curPick() : Pick{p, p, false, false}, Frames{},
                     status == Status::Paused ? Status::Paused : Status::Playing);
             break;
         }
         case Cmd::Seek: {
             serviceMarkers();
-            const double s = std::max(0.0, c.value);
+            const Millis s = std::max(Millis{0}, c.at);
             if (openPending && index >= 0) { // the track was never opened: open it at s
                 startAt(curPick(), Frames{}, status, s);
                 emit(EventType::Seeked);
                 break;
             }
             if (status == Status::Stopped || index < 0 || !cur.info.sampleRate) break;
-            startAt(curPick(), Frames(static_cast<std::uint64_t>(s * cur.info.sampleRate)), status);
+            startAt(curPick(), framesFor(s, cur.info.sampleRate), status);
             emit(EventType::Seeked);
             break;
         }
         case Cmd::Volume:
-            if (!std::isfinite(c.value)) {
+            if (!std::isfinite(c.volume)) {
                 emit(EventType::Error, "volume: not a finite number; ignored");
                 break;
             }
-            out.volume.store(static_cast<float>(std::clamp(c.value, 0.0, 2.0)));
+            out.volume.store(std::clamp(c.volume, 0.0f, 2.0f));
             emit(EventType::VolumeChanged);
             break;
         case Cmd::SetRepeat:
@@ -1176,9 +1195,8 @@ struct Player::Impl {
                 // The callback keeps feeding silence while the device plays out its buffer.
                 if (!draining) {
                     draining = true;
-                    const double rate = out.sampleRate() ? out.sampleRate() : 48000.0;
-                    drainDeadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
-                                                       std::chrono::duration<double>(out.latencyFrames() / rate));
+                    const std::uint32_t rate = out.sampleRate() ? out.sampleRate() : 48000;
+                    drainDeadline = Clock::now() + durationFor(Frames(out.latencyFrames()), rate);
                 }
                 if (Clock::now() >= drainDeadline) endOfQueue();
             }
@@ -1192,18 +1210,16 @@ struct Player::Impl {
     Clock::time_point nextWake() {
         if (status != Status::Playing) return Clock::time_point::max();
         Clock::time_point t = nextTick;
-        const double rate = out.sampleRate() ? out.sampleRate() : 48000.0;
+        const std::uint32_t rate = out.sampleRate() ? out.sampleRate() : 48000;
         const Frames audible = audibleFrame();
         if (draining) return std::min(t, drainDeadline);
         std::lock_guard lk(dm);
-        auto at = [&](double sec) {
-            return Clock::now() + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(sec));
-        };
+        const auto now = Clock::now();
         if (!markers.empty()) {
             const Frames f = markers.front().ringFrame;
-            t = std::min(t, at((f > audible ? static_cast<double>((f - audible).count()) / rate : 0) + 0.002));
+            t = std::min(t, now + durationFor(f > audible ? f - audible : Frames{}, rate) + Millis{2});
         }
-        if (decoderExhausted) t = std::min(t, at(static_cast<double>(ring.readable() / kCh) / rate + 0.02)); // NOLINT(bugprone-integer-division): whole frames on purpose
+        if (decoderExhausted) t = std::min(t, now + durationFor(Frames(ring.readable() / kCh), rate) + Millis{20});
         return t;
     }
 
@@ -1264,8 +1280,7 @@ struct Player::Impl {
         // Silence frames due before the next track's first frame (natural track end only).
         Frames gapDue;
         std::vector<float> in(kChunkFrames.samples(kMaxChannels)), cv(kConvFrames.samples(kCh));
-        const auto waitDur = std::chrono::duration_cast<Clock::duration>(
-            std::chrono::duration<double>(std::max(0.01, cfg.ringSeconds / 4)));
+        const auto waitDur = std::chrono::duration_cast<Clock::duration>(std::max(Millis{10}, cfg.ring / 4));
 
         auto dropConverter = [&] {
             if (convInit) ma_data_converter_uninit(&conv, nullptr);
@@ -1440,7 +1455,7 @@ struct Player::Impl {
                 }
                 dec.reset();
                 dropConverter();
-                gapDue = Frames(static_cast<std::uint64_t>(std::llround(gapSec.load(std::memory_order_relaxed) * devRate)));
+                gapDue = framesFor(Millis(gapMs.load(std::memory_order_relaxed)), devRate);
                 {
                     std::lock_guard lk(dm);
                     if (gen != seen) continue; // retired: the new job decides what plays
@@ -1514,16 +1529,26 @@ void Player::enqueue(std::vector<std::string> paths) { impl_->push(Cmd{Cmd::Enqu
 void Player::clearQueue() { impl_->push(Cmd{Cmd::Clear}); }
 void Player::play() { impl_->push(Cmd{Cmd::Play}); }
 void Player::playIndex(int index) { impl_->push(Cmd{Cmd::PlayIndex, {}, index}); }
-void Player::cueIndex(int index, double seconds) {
-    impl_->push(Cmd{Cmd::Cue, {}, index, std::isfinite(seconds) ? seconds : 0.0});
+void Player::cueIndex(int index, Millis at) {
+    Cmd c{Cmd::Cue, {}, index};
+    c.at = at;
+    impl_->push(std::move(c));
 }
 void Player::pause() { impl_->push(Cmd{Cmd::Pause}); }
 void Player::togglePause() { impl_->push(Cmd{Cmd::Toggle}); }
 void Player::stop() { impl_->push(Cmd{Cmd::Stop}); }
 void Player::next() { impl_->push(Cmd{Cmd::Next}); }
 void Player::prev() { impl_->push(Cmd{Cmd::Prev}); }
-void Player::seek(double seconds) { impl_->push(Cmd{Cmd::Seek, {}, 0, seconds}); }
-void Player::setVolume(float v) { impl_->push(Cmd{Cmd::Volume, {}, 0, static_cast<double>(v)}); }
+void Player::seek(Millis to) {
+    Cmd c{Cmd::Seek};
+    c.at = to;
+    impl_->push(std::move(c));
+}
+void Player::setVolume(float v) {
+    Cmd c{Cmd::Volume};
+    c.volume = v;
+    impl_->push(std::move(c));
+}
 void Player::queueAdd(std::vector<std::string> paths, bool next) {
     impl_->push(Cmd{Cmd::QueueAdd, std::move(paths), next ? 1 : 0});
 }
@@ -1551,9 +1576,7 @@ void Player::simulateDeviceEvent(DeviceEvent e) {
     else impl_->out.deviceRerouted.store(true, std::memory_order_release);
     impl_->poke();
 }
-void Player::setGap(double seconds) {
-    if (!std::isnan(seconds)) impl_->gapSec.store(clampGap(seconds), std::memory_order_relaxed);
-}
+void Player::setGap(Millis gap) { impl_->gapMs.store(clampGap(gap).count(), std::memory_order_relaxed); }
 PlayerState Player::state() const { return impl_->stateNow(); }
 void Player::sync() {
     // From an onEvent handler (the control thread) waiting would deadlock: the barrier
@@ -1561,7 +1584,9 @@ void Player::sync() {
     if (std::this_thread::get_id() == impl_->controlThread.get_id()) return;
     std::promise<void> p;
     auto f = p.get_future();
-    impl_->push(Cmd{Cmd::Barrier, {}, 0, 0, &p});
+    Cmd c{Cmd::Barrier};
+    c.barrier = &p;
+    impl_->push(std::move(c));
     f.wait();
 }
 

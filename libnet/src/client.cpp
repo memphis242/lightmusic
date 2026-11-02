@@ -41,7 +41,7 @@
 //      queue), then pinned incomplete tracks, then partially cached tracks.
 // Errors: a failed transfer (connection cut, stall, protocol error) is retried with
 // backoff by schedule(); a fetch that delivered bytes before failing retries at once.
-// Readers keep waiting meanwhile (bounded by readTimeoutSec without progress) and fail
+// Readers keep waiting meanwhile (bounded by readTimeout without progress) and fail
 // only on a fatal error (401/403/404, cache write/sync failure), when the server cannot
 // be reached at all (no response; retries continue), or after kMaxTransientFailures
 // consecutive failures without progress.
@@ -1414,7 +1414,7 @@ public:
         std::size_t got = 0;
         std::unique_lock lk(e_->m);
         const auto timeout = std::chrono::duration_cast<Clock::duration>(
-            std::chrono::duration<double>(std::max(0.1, core_->cfg.readTimeoutSec)));
+            std::max(std::chrono::milliseconds{100}, core_->cfg.readTimeout));
         while (got < n && !failed_) {
             if (interrupted_ || core_->stopping) break;
             if (e_->epoch != epoch_) {

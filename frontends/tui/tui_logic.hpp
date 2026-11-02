@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -83,8 +84,8 @@ std::string displayName(std::string_view path);
 // displayName(path) without a title.
 std::string trackLabel(std::string_view artist, std::string_view title, std::string_view path);
 
-// "m:ss", or "h:mm:ss" from one hour on. Negative/NaN -> "0:00".
-std::string formatTime(double seconds);
+// "m:ss", or "h:mm:ss" from one hour on (rounded down to whole seconds). Negative -> "0:00".
+std::string formatTime(std::chrono::milliseconds t);
 
 enum class Command {
     None,
@@ -134,13 +135,13 @@ enum class Command {
     ToggleFavourite, // f: the selected track is a favourite (or not)
 };
 
-constexpr double kSeekStep = 5.0;
-constexpr double kEndSeek = 5.0; // End leaves this much of the track
+constexpr std::chrono::milliseconds kSeekStep{5000};
+constexpr std::chrono::milliseconds kEndSeek{5000}; // End leaves this much of the track
 // 0..90 for the keys "0".."9" (SeekPercent), -1 otherwise.
 int percentKey(std::string_view key);
-// Target of SeekEnd for a track of `duration` seconds: duration - kEndSeek, at least 0;
-// -1 if the duration is unknown (<= 0).
-double endSeekTarget(double duration);
+// Target of SeekEnd for a track of length `duration`: duration - kEndSeek, at least 0;
+// none if the length is unknown (<= 0).
+[[nodiscard]] std::optional<std::chrono::milliseconds> endSeekTarget(std::chrono::milliseconds duration);
 constexpr float kVolumeStep = 0.05f;
 constexpr float kVolumeMax = 1.5f;
 // New linear volume after a step (+1/-1), rounded to the step grid and clamped.
@@ -206,8 +207,6 @@ struct TimeLeft {
 [[nodiscard]] TimeLeft timeLeft(std::int64_t currentLeftMs, const std::vector<std::int64_t> &aheadMs);
 // "3 more · 12:30 left", "12:30+ left" with unknown lengths, "4:05 left" with none ahead.
 [[nodiscard]] std::string formatTimeLeft(const TimeLeft &t);
-// "m:ss" / "h:mm:ss" for a non-negative millisecond count (rounded down to seconds).
-[[nodiscard]] std::string formatMs(std::int64_t ms);
 
 // The last session (resumed on the next start without files): the entries (paths or
 // lm:// URIs; the first `ctx` are the list, the rest were queued from outside it), the
