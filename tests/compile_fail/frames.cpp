@@ -1,5 +1,5 @@
 // Compile-fail cases for lm::Frames (tests/CMakeLists.txt builds this once per
-// LM_CF_CASE and requires the build to fail naming lm::Frames).
+// LM_CF_CASE and requires the build to fail on the conversion to / from lm::Frames).
 #include "lm/decoder.hpp"
 
 #include <cstdint>
