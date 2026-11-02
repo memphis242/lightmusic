@@ -4,6 +4,8 @@
 // time/volume formatting.
 #pragma once
 
+#include <chrono>
+#include <deque>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -141,5 +143,43 @@ int nextRepeat(int repeat);
 // Play-order indicator for the status line: "", "repeat", "repeat one", "shuffle",
 // "repeat · shuffle", ...
 std::string modeLabel(int repeat, bool shuffle);
+
+// The status line's message ("toast"): errors, warnings and confirmations, each shown
+// until it expires (info 3 s, warning 6 s, error 10 s) or a newer one replaces it. The
+// last kHistory messages are kept for `:messages`. The caller polls with timeoutMs(), so
+// nothing wakes the loop while no message is shown.
+class StatusLine {
+public:
+    using Clock = std::chrono::steady_clock;
+    enum class Level { Info, Warning, Error };
+    static constexpr std::size_t kHistory = 50;
+    struct Entry {
+        Level level = Level::Info;
+        std::string text;
+    };
+
+    void show(Level level, std::string text, Clock::time_point now);
+    void info(std::string text, Clock::time_point now) { show(Level::Info, std::move(text), now); }
+    void warn(std::string text, Clock::time_point now) { show(Level::Warning, std::move(text), now); }
+    void error(std::string text, Clock::time_point now) { show(Level::Error, std::move(text), now); }
+    void clear() { shown_ = false; }
+
+    [[nodiscard]] bool visible() const { return shown_; }
+    [[nodiscard]] const Entry &current() const { return cur_; } // valid while visible()
+    // Milliseconds until the message expires (>= 0), or -1 if none is shown.
+    [[nodiscard]] int timeoutMs(Clock::time_point now) const;
+    // Hides an expired message; true if that changed what is shown (redraw).
+    bool expire(Clock::time_point now);
+    // Oldest first; consecutive repeats are stored once.
+    [[nodiscard]] const std::deque<Entry> &history() const { return history_; }
+
+    static Clock::duration lifetime(Level level);
+
+private:
+    Entry cur_;
+    bool shown_ = false;
+    Clock::time_point until_{};
+    std::deque<Entry> history_;
+};
 
 } // namespace lmtui

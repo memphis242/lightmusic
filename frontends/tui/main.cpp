@@ -428,7 +428,11 @@ struct Ui {
     std::vector<char> pinned;
     std::string net; // "offline", cache usage, ... (empty without --server)
     lm::PlayerState st;
-    std::string message; // last error / notice
+    lmtui::StatusLine status; // the status line's message (expires; see StatusLine)
+    void info(std::string m) { status.info(std::move(m), lmtui::StatusLine::Clock::now()); }
+    void warn(std::string m) { status.warn(std::move(m), lmtui::StatusLine::Clock::now()); }
+    void error(std::string m) { status.error(std::move(m), lmtui::StatusLine::Clock::now()); }
+    bool showMessages = false; // :messages overlay
     bool showCacheMarkers = true;
     int selected = 0;
     bool help = false;
@@ -479,6 +483,19 @@ int queueRows(int height) { return std::max(1, height - 6); }
 std::string nameOf(const Ui &ui, int entry) {
     return entry >= 0 && static_cast<std::size_t>(entry) < ui.names.size() ? ui.names[static_cast<std::size_t>(entry)]
                                                                            : std::string("?");
+}
+
+// The status line: the current message, coloured by level, or the key hint.
+Element statusText(const Ui &ui) {
+    using L = lmtui::StatusLine::Level;
+    if (!ui.status.visible()) return text(ui.keymap.hint()) | dim;
+    const auto &m = ui.status.current();
+    switch (m.level) {
+    case L::Error: return text(m.text) | bold | color(Color::Red);
+    case L::Warning: return text(m.text) | color(Color::Yellow);
+    case L::Info: break;
+    }
+    return text(m.text);
 }
 
 // The user queue pane: header plus the visible window of st.upNext.
@@ -601,7 +618,7 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
     // Footer: the command line while open, else the last message (or the key hint).
     Element footer =
         ui.cmdline ? hbox({text(":" + *ui.cmdline), text(" ") | inverted, filler()})
-                   : hbox({text(ui.message.empty() ? ui.keymap.hint() : ui.message) | dim, filler(),
+                   : hbox({statusText(ui), filler(),
                            text(st.upNext.empty() || ui.queueView ? std::string()
                                                                   : "up next " + std::to_string(st.upNext.size()) + "  ") |
                                color(Color::Yellow),
@@ -615,6 +632,20 @@ Element render(const Ui &ui, TagWorker &tags, int height) {
     });
 
     Element main = vbox({queue, separator(), now}) | border;
+    if (ui.showMessages) {
+        // :messages: the most recent that fit, oldest first.
+        const auto &h = ui.status.history();
+        const std::size_t fit = static_cast<std::size_t>(std::max(1, height - 6));
+        Elements lines{text("messages (any key closes)") | bold};
+        if (h.empty()) lines.push_back(text("(none yet)") | dim);
+        for (std::size_t i = h.size() > fit ? h.size() - fit : 0; i < h.size(); i++) {
+            Element l = text(h[i].text);
+            if (h[i].level == lmtui::StatusLine::Level::Error) l = l | color(Color::Red);
+            else if (h[i].level == lmtui::StatusLine::Level::Warning) l = l | color(Color::Yellow);
+            lines.push_back(std::move(l));
+        }
+        return dbox({main, vbox(std::move(lines)) | border | bgcolor(Color::Black) | clear_under | center});
+    }
     if (!ui.help) return main;
     Elements help;
     for (const auto &l : ui.keymap.helpLines()) help.push_back(text(l));
@@ -667,16 +698,17 @@ void apply(Ui &ui, const lm::Event &ev) {
     if (ui.repeatTarget && ev.state.repeat == *ui.repeatTarget) ui.repeatTarget.reset();
     if (ui.shuffleTarget && ev.state.shuffle == *ui.shuffleTarget) ui.shuffleTarget.reset();
     switch (ev.type) {
-    case lm::EventType::Error: ui.message = "error: " + ev.message; break;
+    case lm::EventType::Error: ui.error("error: " + ev.message); break;
     case lm::EventType::TrackChanged:
-        ui.message.clear();
+        // The message stays until it expires: an error that made the player skip a
+        // track must not vanish with the skip.
         if (ev.state.index >= 0 && static_cast<std::size_t>(ev.state.index) < ui.ctx) ui.selected = ev.state.index;
         if (ev.state.index >= 0 && static_cast<std::size_t>(ev.state.index) < ui.names.size() &&
             ev.state.track.path == ui.paths[static_cast<std::size_t>(ev.state.index)])
             ui.names[static_cast<std::size_t>(ev.state.index)] =
                 lmtui::trackLabel(ev.state.track.tags.artist, ev.state.track.tags.title, ev.state.track.path);
         break;
-    case lm::EventType::EndOfQueue: ui.message = "end of queue"; break;
+    case lm::EventType::EndOfQueue: ui.info("end of queue"); break;
     default: break;
     }
     ui.qselected = std::clamp(ui.qselected, 0, std::max(0, static_cast<int>(ui.st.upNext.size()) - 1));
@@ -911,7 +943,7 @@ int run(int argc, char **argv) {
     }
     if (client) {
         refreshCache(ui, *client, offline);
-        if (offline) ui.message = "offline: " + netNote;
+        if (offline) ui.warn("offline: " + netNote);
     }
 #endif
     ui.ctx = ui.paths.size();
@@ -980,7 +1012,7 @@ int run(int argc, char **argv) {
         // line (stderr would corrupt the screen); shown on the next redraw.
         bool mprisNote = false; // a diagnostic arrived: redraw
         lmtui::MprisHook mpris(player, [&ui, &mprisNote](const std::string &m) {
-            ui.message = m;
+            ui.warn(m);
             mprisNote = true;
         });
 #ifdef LM_TUI_NET
@@ -1005,7 +1037,7 @@ int run(int argc, char **argv) {
             if (!live.path.empty()) {
                 watcher.emplace(live.path);
                 if (!watcher->ok()) {
-                    ui.message = "settings reload off: " + watcher->error();
+                    ui.warn("settings reload off: " + watcher->error());
                     watcher.reset();
                 }
             }
@@ -1040,7 +1072,7 @@ int run(int argc, char **argv) {
                 else if (quitErr)
                     *quitErr = err;
                 else
-                    { ui.message = err; dirty = true; }
+                    { ui.error(err); dirty = true; }
             };
             auto saveTimeoutMs = [&]() -> int {
                 if (!saveDue) return -1;
@@ -1067,7 +1099,10 @@ int run(int argc, char **argv) {
                     for (const auto &d : r.diags)
                         if (!why || (d.level == lm::config::Diag::Error && why->level != lm::config::Diag::Error))
                             why = &d;
-                    if (why) ui.message = "settings not reloaded: " + why->str();
+                    if (why) {
+                        if (why->level == lm::config::Diag::Error) ui.error("settings not reloaded: " + why->str());
+                        else ui.warn("settings not reloaded: " + why->str());
+                    }
                     return;
                 }
                 const auto &n = r.applied;
@@ -1087,7 +1122,7 @@ int run(int argc, char **argv) {
                         lmtui::Keymap km;
                         std::vector<std::string> errs;
                         if (!km.apply(n.keys, errs)) {
-                            ui.message = "keys not reloaded: " + errs.front();
+                            ui.error("keys not reloaded: " + errs.front());
                             live.running = n;
                             return;
                         }
@@ -1111,7 +1146,8 @@ int run(int argc, char **argv) {
                         msg += " (" + d.msg + ")";
                         break;
                     }
-                ui.message = msg;
+                if (r.diff.restart.empty()) ui.info(msg);
+                else ui.warn(msg);
             };
             auto last = [&] { return std::max(0, static_cast<int>(ui.ctx) - 1); };
             auto select = [&](int i) { ui.selected = std::clamp(i, 0, last()); };
@@ -1145,7 +1181,7 @@ int run(int argc, char **argv) {
                     r.label = e.dir ? e.name + "/" : e.name;
                     lv.rows.push_back(std::move(r));
                 }
-                if (!err.empty()) ui.message = err;
+                if (!err.empty()) ui.error(err);
                 return lv;
             };
 #ifdef LM_TUI_NET
@@ -1281,7 +1317,7 @@ int run(int argc, char **argv) {
             // queue is kept: its tracks are re-added after the new list.
             auto replaceContext = [&](std::vector<Spec> specs, int start) {
                 if (specs.empty()) {
-                    ui.message = "no playable tracks there";
+                    ui.warn("no playable tracks there");
                     return;
                 }
                 std::vector<Spec> keep;
@@ -1321,7 +1357,7 @@ int run(int argc, char **argv) {
             // Adds tracks to the user queue as new entries (outside the list).
             auto queueSpecs = [&](std::vector<Spec> specs, bool next) {
                 if (specs.empty()) {
-                    ui.message = "no playable tracks there";
+                    ui.warn("no playable tracks there");
                     return;
                 }
                 const std::size_t from = ui.paths.size();
@@ -1331,8 +1367,8 @@ int run(int argc, char **argv) {
                     pushEntry(std::move(sp));
                 }
                 scanLabels(from);
-                ui.message = (next ? "plays next: " : "queued: ") +
-                             (paths.size() == 1 ? ui.names[from] : std::to_string(paths.size()) + " tracks");
+                ui.info((next ? "plays next: " : "queued: ") +
+                        (paths.size() == 1 ? ui.names[from] : std::to_string(paths.size()) + " tracks"));
                 player.queueAdd(std::move(paths), next);
 #ifdef LM_TUI_NET
                 if (client) refreshCache(ui, *client, offline);
@@ -1517,7 +1553,7 @@ int run(int argc, char **argv) {
                     }
                     if (static_cast<std::size_t>(ui.selected) >= ui.ctx) break;
                     player.queueAddEntries({ui.selected}, nextUp);
-                    ui.message = (nextUp ? "plays next: " : "queued: ") + nameOf(ui, ui.selected);
+                    ui.info((nextUp ? "plays next: " : "queued: ") + nameOf(ui, ui.selected));
                     break;
                 }
                 case lmtui::Command::ToggleQueueView:
@@ -1558,7 +1594,7 @@ int run(int argc, char **argv) {
                         // A track, or every track of an album (all saved: unsave them all).
                         BrowseRow *r = browseRow();
                         if (!client || !r || (r->kind != BrowseRow::Track && r->kind != BrowseRow::Album)) {
-                            ui.message = "only server tracks and albums can be saved offline";
+                            ui.warn("only server tracks and albums can be saved offline");
                             break;
                         }
                         std::vector<std::int64_t> ids;
@@ -1570,7 +1606,8 @@ int run(int argc, char **argv) {
                         std::string err;
                         for (auto id : ids)
                             if (!client->pin(id, !all, &err)) break;
-                        ui.message = !err.empty() ? err : all ? "no longer saved offline" : "saved offline";
+                        if (!err.empty()) ui.error(err);
+                        else ui.info(all ? "no longer saved offline" : "saved offline");
                         refreshBrowser();
                         refreshCache(ui, *client, offline);
                         break;
@@ -1578,27 +1615,27 @@ int run(int argc, char **argv) {
                     const auto sel = static_cast<std::size_t>(ui.selected);
                     if (client && sel < ui.remote.size() && ui.remote[sel]) {
                         std::string err;
-                        if (!client->pin(ui.remote[sel], !ui.pinned[sel], &err)) ui.message = err;
-                        else ui.message = ui.pinned[sel] ? "no longer saved offline" : "saved offline";
+                        if (!client->pin(ui.remote[sel], !ui.pinned[sel], &err)) ui.error(err);
+                        else ui.info(ui.pinned[sel] ? "no longer saved offline" : "saved offline");
                         refreshCache(ui, *client, offline);
                         break;
                     }
 #endif
-                    ui.message = "only remote tracks can be saved offline";
+                    ui.warn("only remote tracks can be saved offline");
                     break;
                 }
                 case lmtui::Command::CycleRepeat: {
                     const lm::Repeat cur = ui.repeatTarget.value_or(ui.st.repeat);
                     ui.repeatTarget = static_cast<lm::Repeat>(lmtui::nextRepeat(static_cast<int>(cur)));
                     player.setRepeat(*ui.repeatTarget);
-                    ui.message = std::string("repeat: ") + lm::repeatName(*ui.repeatTarget);
+                    ui.info(std::string("repeat: ") + lm::repeatName(*ui.repeatTarget));
                     saveDue = std::chrono::steady_clock::now() + std::chrono::seconds(1);
                     break;
                 }
                 case lmtui::Command::ToggleShuffle:
                     ui.shuffleTarget = !ui.shuffleTarget.value_or(ui.st.shuffle);
                     player.setShuffle(*ui.shuffleTarget);
-                    ui.message = *ui.shuffleTarget ? "shuffle on" : "shuffle off";
+                    ui.info(*ui.shuffleTarget ? "shuffle on" : "shuffle off");
                     saveDue = std::chrono::steady_clock::now() + std::chrono::seconds(1);
                     break;
                 case lmtui::Command::ToggleHelp: ui.help = !ui.help; break;
@@ -1613,11 +1650,10 @@ int run(int argc, char **argv) {
             auto runCommandLine = [&](const std::string &text) {
                 const lmtui::CommandLine c = lmtui::parseCommandLine(text);
                 switch (c.kind) {
-                case lmtui::CommandLine::Error: ui.message = c.error; break;
+                case lmtui::CommandLine::Error: ui.warn(c.error); break;
                 case lmtui::CommandLine::Run:
                     if (c.ctx != lmtui::Context::Global && c.ctx != paneContext()) {
-                        ui.message = text + ": only in the " +
-                                     (c.ctx == lmtui::Context::Queue ? "queue pane" : "browser");
+                        ui.warn(text + ": only in the " + (c.ctx == lmtui::Context::Queue ? "queue pane" : "browser"));
                         break;
                     }
                     runCommand(c.cmd, std::string());
@@ -1626,11 +1662,11 @@ int run(int argc, char **argv) {
                     const lm::PlayerState now = player.state();
                     const double dur = now.track.duration;
                     if (now.status == lm::Status::Stopped) {
-                        ui.message = "seek: nothing is playing";
+                        ui.warn("seek: nothing is playing");
                         break;
                     }
                     if (c.percent >= 0 && dur <= 0) {
-                        ui.message = "seek: the track length is unknown";
+                        ui.warn("seek: the track length is unknown");
                         break;
                     }
                     const double secs = static_cast<double>(c.ms) / 1000.0;
@@ -1638,6 +1674,7 @@ int run(int argc, char **argv) {
                     player.seek(std::max(0.0, to));
                     break;
                 }
+                case lmtui::CommandLine::Messages: ui.showMessages = true; break;
                 case lmtui::CommandLine::Volume:
                     ui.volumeTarget = static_cast<float>(c.volume) / 100.0f;
                     player.setVolume(*ui.volumeTarget);
@@ -1646,6 +1683,13 @@ int run(int argc, char **argv) {
                 }
             };
             auto handleKey = [&](const std::string &key) {
+                if (ui.showMessages && !ui.cmdline) { // any key closes it (the quit key still quits)
+                    const lmtui::Command c = ui.keymap.lookup(paneContext(), key);
+                    ui.showMessages = false;
+                    dirty = true;
+                    if (c == lmtui::Command::Quit || c == lmtui::Command::Suspend) runCommand(c, key);
+                    return;
+                }
                 if (!ui.cmdline) return runCommand(ui.keymap.lookup(paneContext(), key), key);
                 dirty = true;
                 if (ui.keymap.lookup(lmtui::Context::Global, key) == lmtui::Command::Quit) running = false;
@@ -1667,6 +1711,7 @@ int run(int argc, char **argv) {
                     Tty::size(width, height);
                     dirty = true;
                 }
+                if (ui.status.expire(lmtui::StatusLine::Clock::now())) dirty = true;
                 if (dirty) {
                     auto screen = Screen::Create(Dimension::Fixed(width), Dimension::Fixed(height));
                     Render(screen, render(ui, tagWorker, height));
@@ -1681,6 +1726,9 @@ int run(int argc, char **argv) {
                 if (watcher && watcher->timeoutMs() >= 0) // settings reload debounce
                     timeout = timeout < 0 ? watcher->timeoutMs() : std::min(timeout, watcher->timeoutMs());
                 if (saveDue) timeout = timeout < 0 ? saveTimeoutMs() : std::min(timeout, saveTimeoutMs());
+                // The status message's expiry (only while one is shown).
+                if (const int st = ui.status.timeoutMs(lmtui::StatusLine::Clock::now()); st >= 0)
+                    timeout = timeout < 0 ? st : std::min(timeout, st);
                 const int r = poll(fds, 4, mpris.timeout(timeout)); // min of all; -1 when all idle
                 mpris.process();
                 if (mpris.quitRequested()) running = false;

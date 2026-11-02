@@ -73,6 +73,13 @@ line) cancels. `:q`, `:quit`, `:q!`, `:qa` quit; `:help`; `:seek 1:30`, `:seek 9
 `:volume 80` (0..150 %); and any action name below runs it (`:next`, `:shuffle`,
 `:queue_clear` in the queue pane). Unknown commands are reported on the status line.
 
+**Status line.** Errors (red), warnings (yellow) and confirmations appear in the bottom
+line and expire on their own: confirmations after 3 s, warnings after 6 s, errors after
+10 s, or sooner when a newer message replaces them. A track change no longer wipes the
+message, so an error that made the player skip a file stays readable. `:messages` (or
+`:mes`) shows the last 50 messages; any key closes it. The expiry is the loop's only
+timer while a message is shown; with no message nothing wakes the TUI.
+
 In the queue pane (`v`): `j`/`k` select, `J`/`K` move the entry down/up, `d` or Delete
 removes it, `c` clears the queue, `enter` plays it now, `Esc`/`v` returns to the list.
 
@@ -199,8 +206,9 @@ ctest --test-dir build --output-on-failure
   tab), the default keymap per context, `keys:` overrides (replacing defaults, unbinding,
   user keys taking default ones, digits, conflicts, unknown actions/keys with their
   place), the help and hint generated from the bindings, the `:` command line parser
-  (quit forms, actions, `seek` positions, `vol`, errors) and its editing, time/volume
-  formatting.
+  (quit forms, actions, `seek` positions, `vol`, `messages`, errors) and its editing, the
+  status line (expiry per level, rounding up, replacement, history of 50 with repeats
+  stored once, no timer when empty), time/volume formatting.
 - `test_server_range`: Range header decisions (suffix, open-ended, past EOF, reversed,
   multiple ranges, overflow, empty file).
 - `test_server_auth`: SHA-256 test vectors, key generation, constant-time compare, the
@@ -223,7 +231,8 @@ ctest --test-dir build --output-on-failure
   generated files, sends keys, expects a clean exit on Ctrl-C / `:q` and a restored
   terminal; also that `:q` exits promptly with a FIFO in the queue; keybindings from
   `cfg.yaml` (a rebound `q` no longer queues, the hint and help follow the bindings), the
-  `:` command line (`:vol`, `:seek 50%`, an unknown command, backspace editing), and bad
+  `:` command line (`:vol`, `:seek 50%`, an unknown command, backspace editing), a status
+  message expiring after 3 s, the `:messages` overlay, and bad
   bindings (unknown key, one key on two actions) refused with exit status 2; with a temp `XDG_CONFIG_HOME`:
   `cfg.yaml`'s volume applied at start, a live edit (volume hot-applied, replaygain
   reported as restart-required), and a group-writable file / an `api_key` refused;

@@ -227,15 +227,23 @@ w9() { n=200; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log9"; do sleep 0.05
   printf ':nex\177xt\r'; w9 "2 Second"   # backspace edits the line
   printf h; w9 "add the selection to the queue"
   printf h; sleep 0.2
+  printf r; w9 "repeat: all"              # an info message ...
+  c=$(grep -o "h help  :q quit" "$TMP/log9" | wc -l)
+  n=200; while [ $n -gt 0 ] && [ "$(grep -o "h help  :q quit" "$TMP/log9" | wc -l)" -le "$c" ]; do
+      sleep 0.05; n=$((n - 1)); done    # ... expires after 3 s: the hint is back
+  [ $n -gt 0 ] && echo expired >> "$TMP/notes9"
+  printf ':messages\r'; w9 "messages (any key closes)"
+  printf x; sleep 0.2
   printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=40 \
     timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log9" >/dev/null 2>&1
 rc=$?
 [ $rc -eq 0 ] || { echo "FAIL: keys run exit status $rc"; tail -c 1000 "$TMP/log9" | cat -v; fail=1; }
 for want in "h help  :q quit" "queued: 1 First" "vol  80%" "0:1[01] / 0:20" "unknown command: frob" \
-            "a            add the selection to the queue"; do
+            "a            add the selection to the queue" "messages (any key closes)"; do
     grep -q -- "$want" "$TMP/log9" || { echo "FAIL: keys run: '$want' never shown"; fail=1; }
 done
 grep -q "queued: .*queued: " "$TMP/log9" && { echo "FAIL: unbound q still queued"; fail=1; }
+grep -q expired "$TMP/notes9" 2>/dev/null || { echo "FAIL: keys run: status message did not expire"; fail=1; }
 for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (keys run)"; cat "$f"; fail=1

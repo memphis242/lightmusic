@@ -374,4 +374,39 @@ std::string cacheGlyph(int state, bool pinned) {
     return std::string(g) + (pinned && state >= 0 ? "*" : "");
 }
 
+StatusLine::Clock::duration StatusLine::lifetime(Level level) {
+    using namespace std::chrono_literals;
+    switch (level) {
+    case Level::Error: return 10s;
+    case Level::Warning: return 6s;
+    case Level::Info: break;
+    }
+    return 3s;
+}
+
+void StatusLine::show(Level level, std::string text, Clock::time_point now) {
+    if (text.empty()) return;
+    if (history_.empty() || history_.back().level != level || history_.back().text != text) {
+        history_.push_back(Entry{level, text});
+        if (history_.size() > kHistory) history_.pop_front();
+    }
+    cur_ = Entry{level, std::move(text)};
+    shown_ = true;
+    until_ = now + lifetime(level);
+}
+
+int StatusLine::timeoutMs(Clock::time_point now) const {
+    if (!shown_) return -1;
+    if (until_ <= now) return 0;
+    // Round up: waking a little late is fine, early would spin.
+    const auto ms = std::chrono::ceil<std::chrono::milliseconds>(until_ - now).count();
+    return static_cast<int>(std::min<long long>(ms, 1'000'000));
+}
+
+bool StatusLine::expire(Clock::time_point now) {
+    if (!shown_ || now < until_) return false;
+    shown_ = false;
+    return true;
+}
+
 } // namespace lmtui

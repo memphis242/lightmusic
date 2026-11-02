@@ -253,7 +253,7 @@ std::vector<std::string> Keymap::helpLines() const {
     section(Context::Global, "");
     section(Context::Queue, "in the queue pane:");
     section(Context::Browser, "in the browser (also q / Q queue, P save offline):");
-    out.emplace_back(":q           quit; :seek 1:30, :seek 50%, :vol 80, :<action> (keys.<action> in cfg.yaml)");
+    out.emplace_back(":q           quit; :seek 1:30, :seek 50%, :vol 80, :messages, :<action>");
     return out;
 }
 
@@ -279,6 +279,11 @@ CommandLine parseCommandLine(std::string_view text) {
         if (!arg.empty()) return fail(verb + " takes no argument");
         r.kind = CommandLine::Run;
         r.cmd = Command::Quit;
+        return r;
+    }
+    if (verb == "messages" || verb == "mes") {
+        if (!arg.empty()) return fail(verb + " takes no argument");
+        r.kind = CommandLine::Messages;
         return r;
     }
     if (verb == "seek") {
