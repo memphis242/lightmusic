@@ -107,7 +107,11 @@ std::optional<Picture> read_embedded_picture(int fd, const std::string &name) {
         return std::nullopt;
     }
     if (ext == "mp3") {
+#if TAGLIB_MAJOR_VERSION >= 2
+        TagLib::MPEG::File mp(&stream, false);
+#else
         TagLib::MPEG::File mp(&stream, TagLib::ID3v2::FrameFactory::instance(), false);
+#endif
         if (!mp.isValid()) return std::nullopt;
         auto *id3 = mp.ID3v2Tag(false);
         if (!id3) return std::nullopt;
@@ -123,7 +127,11 @@ std::optional<Picture> read_embedded_picture(int fd, const std::string &name) {
                        std::string(best->picture().data(), best->picture().size())};
     }
     if (ext == "flac") {
+#if TAGLIB_MAJOR_VERSION >= 2
+        TagLib::FLAC::File fl(&stream, false);
+#else
         TagLib::FLAC::File fl(&stream, TagLib::ID3v2::FrameFactory::instance(), false);
+#endif
         if (!fl.isValid()) return std::nullopt;
         if (auto p = pick_flac(fl.pictureList())) return p;
         if (auto *x = fl.xiphComment(false)) return pick_flac(x->pictureList());
