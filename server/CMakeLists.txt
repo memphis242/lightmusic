@@ -40,7 +40,7 @@ target_link_libraries(lm_server_core
 add_executable(lightmusicd src/main.cpp src/api.cpp)
 lm_release_link_options(lightmusicd)
 target_link_libraries(lightmusicd PRIVATE lm_server_core lm_httplib lm_warnings_app PkgConfig::TAGLIB lm::art)
-install(TARGETS lightmusicd RUNTIME DESTINATION bin)
+install(TARGETS lightmusicd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 # GCC 13 with -fsanitize=address reports a false -Wmaybe-uninitialized inside
 # <bits/std_function.h> for the std::regex code httplib.h instantiates in our TU.

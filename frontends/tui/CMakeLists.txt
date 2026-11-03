@@ -36,6 +36,7 @@ target_link_libraries(tui_art PUBLIC lm::art_local ftxui::dom ftxui::screen PRIV
 
 add_executable(lightmusic main.cpp)
 lm_release_link_options(lightmusic)
+install(TARGETS lightmusic RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 target_link_libraries(lightmusic PRIVATE lm::tui_logic lm::tui_art lm::player lm::config ftxui::screen ftxui::dom
                                          lm_warnings_app)
 if(TARGET lm::net)

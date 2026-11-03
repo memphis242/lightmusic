@@ -38,6 +38,18 @@ The TUI needs FTXUI >= 6 (Fedora's `ftxui-devel` is 6.1.9). Where no package exi
 (e.g. Ubuntu), `-DLM_FETCH_FTXUI=ON` fetches v6.1.9 at configure time (network) and links
 it statically; `-DLM_BUILD_TUI=OFF` skips the TUI altogether.
 
+### Install
+
+```sh
+cmake --install build --prefix ~/.local --strip   # per user (~/.local/bin is on Fedora's PATH)
+sudo cmake --install build --strip                # system-wide, /usr/local/bin
+```
+
+Installs `lightmusic` (TUI), `lightmusic-play` (headless) and `lightmusicd` (server), each
+only if it was built. No other files are needed: settings live in
+`~/.config/lightmusic/cfg.yaml`, caches in `~/.cache/lightmusic/`. `--strip` drops debug
+symbols. Uninstall by deleting the three files (`build/install_manifest.txt` lists them).
+
 ## Run
 
 ```sh
