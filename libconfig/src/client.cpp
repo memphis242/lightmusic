@@ -50,6 +50,10 @@ const Schema<ClientSettings> &clientSchema() {
                          {{"normal", CoverResolution::Normal},
                           {"high", CoverResolution::High},
                           {"very_high", CoverResolution::VeryHigh}}),
+            enumField<S>("ui.cover_graphics", &S::coverGraphics,
+                         {{"auto", CoverGraphics::Auto},
+                          {"kitty", CoverGraphics::Kitty},
+                          {"half_blocks", CoverGraphics::HalfBlocks}}),
             namedListsField<S>("keys", &S::keys, true),
         };
         const std::string keyMsg = "the API key must not be stored in the config file; put it in a file only you "

@@ -151,10 +151,21 @@ folders: newest files) and Random album (an album of the library or a folder, pi
 random), each opened as a list of tracks (enter plays from a track, `o` plays it all,
 `q`/`Q` queue it), at most 500 rows.
 
-**Cover art.** The album cover of the playing track is drawn next to the list with
-Unicode half blocks (`▀`, foreground = upper pixel, background = lower pixel, two pixels
-per cell) in 24-bit colour (FTXUI maps it to 256 colours when the terminal does not
-advertise truecolour in `COLORTERM`); no kitty/sixel protocol. The pane is square, at
+**Cover art.** The album cover of the playing track is drawn next to the list, in one of
+two ways (`ui.cover_graphics`, restart):
+- **kitty** (the kitty graphics protocol, chosen by `auto` in kitty, Ghostty and WezTerm,
+  never inside tmux or screen): the terminal draws the thumbnail's real pixels, scaled to
+  the pane, so the detail is the thumbnail's (`ui.cover_resolution`), not two pixels per
+  cell. The thumbnail is uploaded once per cover and placed over the blank pane after
+  each frame; it is hidden under the help and `:messages` overlays, and every image is
+  erased on exit. With kitty, `high` or `very_high` is worth it at any terminal size.
+- **half_blocks** (any other terminal): Unicode half blocks (`▀`, foreground = upper
+  pixel, background = lower pixel, two pixels per cell) in 24-bit colour (FTXUI maps it
+  to 256 colours when the terminal does not advertise truecolour in `COLORTERM`). The
+  detail is limited by the pane's cells: a higher `ui.cover_resolution` only shows once
+  the pane is larger than the lower one's (a smaller font).
+
+The pane is square, at
 most 64x32 cells (the 64x64 thumbnail at full resolution), 128x64 cells with
 `ui.cover_resolution: high` (128x128 thumbnails, 48 KiB each, four times the cache
 space) or 256x128 cells with `very_high` (256x256, 192 KiB each, sixteen times; a full
@@ -992,6 +1003,9 @@ ui:
   cover_resolution: normal          # normal: 64x64 thumbnails (pane up to 64x32
                                     # cells); high: 128x128 (up to 128x64);
                                     # very_high: 256x256 (up to 256x128); restart
+  cover_graphics: auto              # kitty: real pixels (kitty, Ghostty, WezTerm);
+                                    # half_blocks: two pixels per cell; auto:
+                                    # kitty where supported; restart
 keys:                               # (hot) action: key or [keys]; replaces that
   queue_add: a                      # action's default keys; [] unbinds it
   quit: [ctrl-c, ctrl-q]
@@ -1022,6 +1036,7 @@ keys:                               # (hot) action: key or [keys]; replaces that
 | `ui.notifications` | – | false | yes |
 | `ui.cover_art` | – | true | yes |
 | `ui.cover_resolution` | – | normal | restart |
+| `ui.cover_graphics` | – | auto | restart |
 | `keys.<action>` | – | see below | yes |
 
 #### Keybindings

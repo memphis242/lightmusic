@@ -22,6 +22,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace lmtui {
@@ -47,6 +48,31 @@ inline constexpr int kMinCoverRows = 4, kMinListCols = 40;
 // The thumbnail as `size.rows` lines of `size.cols` half-block cells ('▀', truecolour
 // foreground = upper pixel, background = lower pixel).
 [[nodiscard]] ftxui::Element coverElement(const lm::art::Thumb &t, PaneSize size);
+
+// How the cover is drawn. HalfBlocks: coverElement() (two pixels per cell). Kitty: the
+// kitty graphics protocol (the terminal draws the thumbnail's real pixels, scaled to the
+// pane): the pane is left blank and the image is placed over it after each frame.
+enum class Graphics { HalfBlocks, Kitty };
+// `auto`: Kitty in terminals known to support it (kitty, Ghostty, WezTerm: TERM,
+// TERM_PROGRAM, KITTY_WINDOW_ID), never inside tmux or screen (they do not pass the
+// protocol through); HalfBlocks otherwise. `env` reads one variable (nullptr: unset).
+[[nodiscard]] Graphics detectGraphics(const std::function<const char *(const char *)> &env);
+
+// Kitty graphics protocol commands (APC "\x1b_G...\x1b\\"), all with q=2 (no replies:
+// they would arrive as keyboard input).
+namespace kitty {
+// Uploads `t` as image `id` (24-bit RGB, base64, in chunks of 4096 bytes).
+[[nodiscard]] std::string transmit(const lm::art::Thumb &t, std::uint32_t id);
+// Places image `id` at the 0-based cell (x, y), scaled to `size` cells; the cursor does
+// not move. Replaces the image's earlier placement.
+[[nodiscard]] std::string place(std::uint32_t id, int x, int y, PaneSize size);
+// Removes the placements of image `id` (the image stays uploaded).
+[[nodiscard]] std::string hide(std::uint32_t id);
+// Removes image `id` and frees its data.
+[[nodiscard]] std::string erase(std::uint32_t id);
+// Removes every image (leaving the screen).
+inline constexpr std::string_view kEraseAll = "\x1b_Ga=d,d=A,q=2\x1b\\";
+} // namespace kitty
 
 // Server albums (the TUI built with libnet): how to find a remote track's album and fetch
 // the thumbnail lightmusicd made for it. Called on the worker thread; the functions must

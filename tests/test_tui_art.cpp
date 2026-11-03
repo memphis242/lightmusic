@@ -5,6 +5,7 @@
 #include "art_view.hpp"
 #include "common.hpp"
 
+#include <map>
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/screen.hpp>
 #include <ftxui/screen/terminal.hpp>
@@ -328,11 +329,77 @@ static void remote(const std::string &tmp) {
     }
 }
 
+// Kitty graphics: terminal detection from the environment, and the protocol's commands
+// (the upload decodes back to the thumbnail's pixels, in chunks of at most 4096 bytes).
+static void kittyGraphics() {
+    using lmtui::Graphics;
+    auto with = [](std::map<std::string, std::string> vars) {
+        return lmtui::detectGraphics([&vars](const char *n) -> const char * {
+            const auto it = vars.find(n);
+            return it == vars.end() ? nullptr : it->second.c_str();
+        });
+    };
+    CHECK(with({{"TERM", "xterm-kitty"}}) == Graphics::Kitty);
+    CHECK(with({{"TERM", "xterm-ghostty"}}) == Graphics::Kitty);
+    CHECK(with({{"TERM", "xterm-256color"}, {"TERM_PROGRAM", "ghostty"}}) == Graphics::Kitty);
+    CHECK(with({{"TERM", "xterm-256color"}, {"TERM_PROGRAM", "WezTerm"}}) == Graphics::Kitty);
+    CHECK(with({{"TERM", "xterm-256color"}, {"KITTY_WINDOW_ID", "1"}}) == Graphics::Kitty);
+    CHECK(with({{"TERM", "xterm-256color"}}) == Graphics::HalfBlocks);
+    CHECK(with({}) == Graphics::HalfBlocks);
+    CHECK(with({{"TERM", "tmux-256color"}, {"TERM_PROGRAM", "WezTerm"}}) == Graphics::HalfBlocks); // tmux eats it
+    CHECK(with({{"TERM", "xterm-kitty"}, {"TMUX", "/tmp/tmux-1/default,1,0"}}) == Graphics::HalfBlocks);
+    CHECK(with({{"TERM", "screen.xterm-256color"}, {"KITTY_WINDOW_ID", "3"}}) == Graphics::HalfBlocks);
+
+    lm::art::Thumb t(lm::art::ThumbRes::High);
+    for (std::size_t i = 0; i < t.px().size(); i++) t.px()[i] = static_cast<std::uint8_t>(i * 31 + i / 7);
+    const std::string up = lmtui::kitty::transmit(t, 5);
+    CHECK(up.starts_with("\x1b_Ga=t,f=24,s=128,v=128,i=5,q=2,m=1;"));
+    // Split into escape codes; collect the payloads.
+    std::string b64;
+    std::size_t codes = 0, pos = 0;
+    bool lastFinal = false;
+    while (pos < up.size()) {
+        CHECK(up.compare(pos, 3, "\x1b_G") == 0);
+        const std::size_t semi = up.find(';', pos), end = up.find("\x1b\\", pos);
+        CHECK(semi != std::string::npos && end != std::string::npos && semi < end);
+        if (semi == std::string::npos || end == std::string::npos) break;
+        CHECK(end - semi - 1 <= 4096);
+        lastFinal = up.compare(semi - 3, 3, "m=0") == 0;
+        b64.append(up, semi + 1, end - semi - 1);
+        codes++;
+        pos = end + 2;
+    }
+    CHECK(lastFinal);
+    CHECK_EQ(codes, (49152u / 3 * 4 + 4095) / 4096);
+    // Decode the base64 back.
+    auto val = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        return c == '+' ? 62 : c == '/' ? 63 : -1;
+    };
+    std::vector<std::uint8_t> back;
+    for (std::size_t i = 0; i + 4 <= b64.size(); i += 4) {
+        const int a = val(b64[i]), b = val(b64[i + 1]), c = val(b64[i + 2]), d = val(b64[i + 3]);
+        back.push_back(static_cast<std::uint8_t>(a << 2 | b >> 4));
+        if (c >= 0) back.push_back(static_cast<std::uint8_t>((b & 15) << 4 | c >> 2));
+        if (d >= 0) back.push_back(static_cast<std::uint8_t>((c & 3) << 6 | d));
+    }
+    CHECK(std::equal(back.begin(), back.end(), t.px().begin(), t.px().end()));
+    // A Normal thumbnail (12288 bytes: 3 codes) and the other commands.
+    CHECK(lmtui::kitty::transmit(lm::art::Thumb{}, 1).starts_with("\x1b_Ga=t,f=24,s=64,v=64,i=1,q=2,m=1;"));
+    CHECK(lmtui::kitty::place(5, 41, 0, {40, 20}) == "\x1b[1;42H\x1b_Ga=p,i=5,p=1,c=40,r=20,C=1,q=2\x1b\\");
+    CHECK(lmtui::kitty::hide(5) == "\x1b_Ga=d,d=i,i=5,q=2\x1b\\");
+    CHECK(lmtui::kitty::erase(5) == "\x1b_Ga=d,d=I,i=5,q=2\x1b\\");
+    CHECK(lmtui::kitty::kEraseAll == "\x1b_Ga=d,d=A,q=2\x1b\\");
+}
+
 int main() {
     char tmpl[] = "/tmp/lm_tui_art_XXXXXX";
     const std::string tmp = lmtest::makeTempDir(tmpl);
     layout();
     rendering();
+    kittyGraphics();
     worker(tmp);
     remote(tmp);
     std::error_code ec;

@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cstring>
 #include <format>
+#include <iterator>
+#include <span>
 #include <utility>
 
 namespace lmtui {
@@ -17,6 +19,72 @@ PaneSize coverPane(int width, int listRows, int maxRows) {
     if (rows < kMinCoverRows) return {};
     return {2 * rows, rows};
 }
+
+Graphics detectGraphics(const std::function<const char *(const char *)> &env) {
+    auto get = [&](const char *name) -> std::string_view {
+        const char *v = env(name);
+        return v ? std::string_view(v) : std::string_view();
+    };
+    const std::string_view term = get("TERM"), program = get("TERM_PROGRAM");
+    if (!get("TMUX").empty() || term.starts_with("screen") || term.starts_with("tmux")) return Graphics::HalfBlocks;
+    if (term == "xterm-kitty" || term == "xterm-ghostty" || program == "ghostty" || program == "WezTerm" ||
+        !get("KITTY_WINDOW_ID").empty())
+        return Graphics::Kitty;
+    return Graphics::HalfBlocks;
+}
+
+namespace kitty {
+
+namespace {
+void base64(std::span<const std::uint8_t> in, std::string &out) {
+    static constexpr char kAlphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::size_t i = 0;
+    for (; i + 3 <= in.size(); i += 3) {
+        const std::uint32_t v = std::uint32_t{in[i]} << 16 | std::uint32_t{in[i + 1]} << 8 | in[i + 2];
+        out += kAlphabet[v >> 18 & 63];
+        out += kAlphabet[v >> 12 & 63];
+        out += kAlphabet[v >> 6 & 63];
+        out += kAlphabet[v & 63];
+    }
+    if (const std::size_t rest = in.size() - i; rest > 0) {
+        const std::uint32_t v = std::uint32_t{in[i]} << 16 | (rest == 2 ? std::uint32_t{in[i + 1]} << 8 : 0);
+        out += kAlphabet[v >> 18 & 63];
+        out += kAlphabet[v >> 12 & 63];
+        out += rest == 2 ? kAlphabet[v >> 6 & 63] : '=';
+        out += '=';
+    }
+}
+} // namespace
+
+std::string transmit(const lm::art::Thumb &t, std::uint32_t id) {
+    std::string b64;
+    b64.reserve((t.px().size() + 2) / 3 * 4);
+    base64(t.px(), b64);
+    constexpr std::size_t kChunk = 4096; // the protocol's limit per escape code
+    std::string out;
+    out.reserve(b64.size() + b64.size() / kChunk * 16 + 64);
+    for (std::size_t off = 0; off < b64.size(); off += kChunk) {
+        const bool last = off + kChunk >= b64.size();
+        if (off == 0)
+            std::format_to(std::back_inserter(out), "\x1b_Ga=t,f=24,s={},v={},i={},q=2,m={};", t.side(), t.side(), id,
+                           last ? 0 : 1);
+        else
+            std::format_to(std::back_inserter(out), "\x1b_Gm={};", last ? 0 : 1);
+        out.append(b64, off, kChunk);
+        out += "\x1b\\";
+    }
+    return out;
+}
+
+std::string place(std::uint32_t id, int x, int y, PaneSize size) {
+    LM_ASSERT(x >= 0 && y >= 0 && size.visible(), "a visible pane on the screen");
+    return std::format("\x1b[{};{}H\x1b_Ga=p,i={},p=1,c={},r={},C=1,q=2\x1b\\", y + 1, x + 1, id, size.cols, size.rows);
+}
+
+std::string hide(std::uint32_t id) { return std::format("\x1b_Ga=d,d=i,i={},q=2\x1b\\", id); }
+std::string erase(std::uint32_t id) { return std::format("\x1b_Ga=d,d=I,i={},q=2\x1b\\", id); }
+
+} // namespace kitty
 
 ftxui::Element coverElement(const lm::art::Thumb &t, PaneSize size) {
     using namespace ftxui;
