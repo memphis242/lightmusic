@@ -107,6 +107,7 @@ std::atomic<int> g_cacheChanged{0}; // set by the network thread (libnet onCache
 // g_ttyRaw is set and only read afterwards.
 termios g_saved{};
 std::atomic<int> g_ttyRaw{0};
+std::atomic<int> g_kitty{0}; // kitty graphics in use: images are erased when leaving the screen
 
 constexpr char kEnterScreen[] = "\x1b[?1049h\x1b[?25l\x1b[2J";
 constexpr char kLeaveScreen[] = "\x1b[0m\x1b[?25h\x1b[?1049l";
@@ -127,6 +128,7 @@ void writeAll(int fd, const char *p, std::size_t n) {
 void restoreTerminal() {
     if (g_ttyRaw.exchange(0) == 0) return;
     (void)tcsetattr(STDIN_FILENO, TCSANOW, &g_saved); // signal context: nothing better to do
+    if (g_kitty.load() != 0) writeAll(STDOUT_FILENO, lmtui::kitty::kEraseAll.data(), lmtui::kitty::kEraseAll.size());
     writeAll(STDOUT_FILENO, kLeaveScreen, sizeof kLeaveScreen - 1);
 }
 
@@ -475,6 +477,11 @@ struct Ui {
     // (nullptr: no art), as the art worker delivers them.
     bool coverArt = true;
     int coverMaxRows = lmtui::kMaxCoverRows; // ui.cover_resolution (restart)
+    lmtui::Graphics graphics = lmtui::Graphics::HalfBlocks; // ui.cover_graphics (restart)
+    // Kitty graphics, set by render(): the thumbnail to place this frame (nullptr: none)
+    // and the pane's cells (filled in by FTXUI's reflect() during Render()).
+    mutable std::shared_ptr<const lm::art::Thumb> coverShown;
+    mutable ftxui::Box coverBox{};
     std::unordered_map<std::string, std::shared_ptr<const lm::art::Thumb>> covers;
     int selected = 0;
     bool help = false;
@@ -733,11 +740,22 @@ Element render(const Ui &ui, TagWorker &tags, int width, int height) {
                     : ui.queueView  ? renderUpNext(ui, height)
                                     : vbox(std::move(rows)) | yframe | flex;
     // Cover pane beside the list (hidden without art or when the terminal is too narrow).
+    ui.coverShown.reset();
     if (ui.coverArt && st.index >= 0 && static_cast<std::size_t>(st.index) < ui.paths.size()) {
         const auto it = ui.covers.find(ui.paths[static_cast<std::size_t>(st.index)]);
         const lmtui::PaneSize pane = lmtui::coverPane(width, visible, ui.coverMaxRows);
-        if (it != ui.covers.end() && it->second && pane.visible())
-            queue = hbox({queue | flex, separator(), lmtui::coverElement(*it->second, pane)});
+        if (it != ui.covers.end() && it->second && pane.visible()) {
+            Element cover;
+            if (ui.graphics == lmtui::Graphics::Kitty) {
+                // Blank cells the image is placed over after the frame (not under an overlay).
+                cover = emptyElement() | size(WIDTH, EQUAL, pane.cols) | size(HEIGHT, EQUAL, pane.rows) |
+                        reflect(ui.coverBox);
+                if (!ui.showMessages && !ui.help) ui.coverShown = it->second;
+            } else {
+                cover = lmtui::coverElement(*it->second, pane);
+            }
+            queue = hbox({queue | flex, separator(), std::move(cover)});
+        }
     }
 
     // Now playing: title (or file name), then artist and album when tagged.
@@ -810,6 +828,33 @@ Element render(const Ui &ui, TagWorker &tags, int width, int height) {
     Elements help;
     for (const auto &l : ui.keymap.helpLines()) help.push_back(text(l));
     return dbox({main, vbox(std::move(help)) | border | bgcolor(Color::Black) | clear_under | center});
+}
+
+// Kitty graphics: the thumbnail uploaded (as `id`) and whether it is placed.
+struct KittyCover {
+    std::shared_ptr<const lm::art::Thumb> sent;
+    std::uint32_t id = 0;
+    bool placed = false;
+};
+
+// Appends to `frame` the commands that make the placed cover match what render() chose:
+// upload a new thumbnail once (freeing the previous one), then place it over the blank
+// pane on every frame (cheap; the text just drawn may have covered it, as in WezTerm).
+void kittyCover(const Ui &ui, KittyCover &k, std::string &frame) {
+    const ftxui::Box &b = ui.coverBox;
+    if (!ui.coverShown || b.x_max < b.x_min || b.y_max < b.y_min) {
+        if (k.placed) frame += lmtui::kitty::hide(k.id);
+        k.placed = false;
+        return;
+    }
+    if (ui.coverShown != k.sent) {
+        if (k.id != 0) frame += lmtui::kitty::erase(k.id);
+        k.id = k.id % 0xFFFFFFu + 1; // 1..2^24-1: ids also fit a 24-bit colour
+        frame += lmtui::kitty::transmit(*ui.coverShown, k.id);
+        k.sent = ui.coverShown;
+    }
+    frame += lmtui::kitty::place(k.id, b.x_min, b.y_min, {b.x_max - b.x_min + 1, b.y_max - b.y_min + 1});
+    k.placed = true;
 }
 
 void usage(FILE *f) {
@@ -1274,6 +1319,12 @@ int run(int argc, char **argv) {
     ui.showCacheMarkers = set.showCacheMarkers;
     ui.coverArt = set.coverArt;
     ui.coverMaxRows = lm::art::thumbSide(coverThumbRes(set.coverResolution)) / 2;
+    switch (set.coverGraphics) {
+    case lm::config::CoverGraphics::Auto: ui.graphics = lmtui::detectGraphics([](const char *n) { return std::getenv(n); }); break;
+    case lm::config::CoverGraphics::Kitty: ui.graphics = lmtui::Graphics::Kitty; break;
+    case lm::config::CoverGraphics::HalfBlocks: ui.graphics = lmtui::Graphics::HalfBlocks; break;
+    }
+    g_kitty = ui.graphics == lmtui::Graphics::Kitty ? 1 : 0;
     if (!args.empty()) ui.paths = lmtui::collectTracks(args, &errors);
     for (const auto &e : errors) lm::diagln(stderr, "lightmusic: {}", e);
     for (const auto &p : ui.paths) ui.names.push_back(lmtui::displayName(p));
@@ -1485,6 +1536,7 @@ int run(int argc, char **argv) {
             int width = 0, height = 0;
             Tty::size(width, height);
             bool running = true, dirty = true;
+            KittyCover kittyState;
             // Settings reload: inotify on the config directory, polled with the terminal
             // and the self-pipe. Only cache cap/fill/metered, volume and gap_seconds are hot.
             std::optional<lm::config::FileWatcher> watcher;
@@ -2727,6 +2779,7 @@ int run(int argc, char **argv) {
                     // next SIGCONT retries.
                     (void)enterRaw();
                     Tty::size(width, height);
+                    kittyState = KittyCover{}; // leaving the screen erased the images
                     dirty = true;
                 }
                 serviceSleep();
@@ -2735,7 +2788,9 @@ int run(int argc, char **argv) {
                 if (dirty) {
                     auto screen = Screen::Create(Dimension::Fixed(width), Dimension::Fixed(height));
                     Render(screen, render(ui, tagWorker, width, height));
-                    Tty::put("\x1b[H" + screen.ToString());
+                    std::string frame = "\x1b[H" + screen.ToString();
+                    if (ui.graphics == lmtui::Graphics::Kitty) kittyCover(ui, kittyState, frame);
+                    Tty::put(frame);
                     dirty = false;
                 }
                 pollfd fds[4] = {{STDIN_FILENO, POLLIN, 0},

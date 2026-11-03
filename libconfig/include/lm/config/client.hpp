@@ -15,6 +15,8 @@ enum class ReplayGain { Off, Track, Album };
 enum class RepeatMode { Off, All, One }; // playback.repeat: off | all | one
 // ui.cover_resolution: normal (64x64) | high (128x128) | very_high (256x256)
 enum class CoverResolution { Normal, High, VeryHigh };
+// ui.cover_graphics: auto | kitty | half_blocks
+enum class CoverGraphics { Auto, Kitty, HalfBlocks };
 
 struct ClientSettings {
     // server
@@ -47,6 +49,10 @@ struct ClientSettings {
     // high 128x128 (up to 128x64 cells, 48 KiB each), very_high 256x256 (up to 256x128
     // cells, 192 KiB each). Applies on restart.
     CoverResolution coverResolution = CoverResolution::Normal;
+    // How the cover is drawn: half_blocks (two pixels per cell, any truecolour terminal),
+    // kitty (the kitty graphics protocol: real pixels; kitty, Ghostty, WezTerm), auto
+    // (kitty when the terminal is known to support it, else half_blocks). Restart.
+    CoverGraphics coverGraphics = CoverGraphics::Auto;
     // keys (hot): action name -> keys bound to it, replacing that action's defaults
     // (keys.queue_add: [q], keys.quit: []). Names and keys are checked by the frontend.
     std::map<std::string, NamedList> keys;

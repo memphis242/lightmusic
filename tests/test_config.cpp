@@ -104,7 +104,8 @@ void testFullFile() {
                         "ui:\n"
                         "  show_cache_markers: false\n"
                         "  cover_art: off\n"
-                        "  cover_resolution: very_high\n",
+                        "  cover_resolution: very_high\n"
+                        "  cover_graphics: kitty\n",
                         d);
     for (const auto &x : d) std::println(stderr, "  {}", x.str());
     CHECK(d.empty());
@@ -122,6 +123,8 @@ void testFullFile() {
     CHECK(lm::config::ClientSettings{}.coverArt); // on by default
     CHECK(s.coverResolution == lm::config::CoverResolution::VeryHigh);
     CHECK(lm::config::ClientSettings{}.coverResolution == lm::config::CoverResolution::Normal);
+    CHECK(s.coverGraphics == lm::config::CoverGraphics::Kitty);
+    CHECK(lm::config::ClientSettings{}.coverGraphics == lm::config::CoverGraphics::Auto);
     // Flow style is fine too (quoted numbers are not: see testScalarForms).
     Diags e;
     const auto f = load("cache: {max_size_mb: 5, background_fill: off}\n", e);

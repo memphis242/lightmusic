@@ -435,12 +435,12 @@ mkdir -p "$TMP/art"
 gen 440 20 "-c:a flac" "$TMP/art/01 Art.flac"
 ffmpeg -hide_banner -loglevel error -y -f lavfi -i color=c=0xC03020:s=300x300 -frames:v 1 "$TMP/art/cover.png" || exit 1
 printf 'playback:\n  volume: 50\n' > "$CFG"
-art_run() { # LOG COLS [CONFIG]
+art_run() { # LOG COLS [CONFIG [TERM [WAIT-FOR]]]
     printf "$3" > "$CFG"
     : > "$TMP/$1"
     { n=300; while [ $n -gt 0 ] && ! grep -q Playing "$TMP/$1"; do sleep 0.05; n=$((n - 1)); done
-      n=100; while [ $n -gt 0 ] && ! grep -q "▀" "$TMP/$1"; do sleep 0.05; n=$((n - 1)); done
-      printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLORTERM=truecolor \
+      n=100; while [ $n -gt 0 ] && ! grep -qa -- "${5:-▀}" "$TMP/$1"; do sleep 0.05; n=$((n - 1)); done
+      printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=${4:-xterm-256color} COLORTERM=truecolor TMUX= \
         timeout 30 script -qfec "stty cols $2 rows 30; $BIN --null '$TMP/art'" "$TMP/$1" >/dev/null 2>&1
 }
 art_run log30 100 'playback:\n  volume: 50\n'
@@ -454,6 +454,17 @@ grep -q "Playing" "$TMP/log32" && ! grep -q "▀" "$TMP/log32" || { echo "FAIL: 
 # The cover takes priority: at 60 columns it shrinks (to 16x8) instead of hiding.
 art_run log33 60 'playback:\n  volume: 50\n'
 grep -q "▀" "$TMP/log33" || { echo "FAIL: cover art not shrunk to fit a 60-column terminal"; fail=1; }
+# Kitty graphics (auto in a kitty-like terminal): the thumbnail is uploaded once and
+# placed over a blank pane, no half blocks, and every image is erased on exit.
+art_run log34 100 'playback:\n  volume: 50\n' xterm-kitty 'a=p,i=1'
+grep -qa '_Ga=t,f=24,s=64,v=64,i=1,q=2' "$TMP/log34" || { echo "FAIL: kitty: thumbnail not uploaded"; fail=1; }
+grep -qa '_Ga=p,i=1,p=1,c=[0-9]*,r=[0-9]*,C=1,q=2' "$TMP/log34" || { echo "FAIL: kitty: thumbnail not placed"; fail=1; }
+grep -qa '_Ga=d,d=A,q=2' "$TMP/log34" || { echo "FAIL: kitty: images not erased on exit"; fail=1; }
+[ "$(grep -ao '_Ga=t,' "$TMP/log34" | wc -l)" -eq 1 ] || { echo "FAIL: kitty: thumbnail uploaded more than once"; fail=1; }
+grep -q "▀" "$TMP/log34" && { echo "FAIL: kitty: half blocks drawn too"; fail=1; }
+# ui.cover_graphics: half_blocks overrides the detection.
+art_run log35 100 'ui:\n  cover_graphics: half_blocks\n' xterm-kitty
+grep -q "▀" "$TMP/log35" && ! grep -qa '_Ga=' "$TMP/log35" || { echo "FAIL: cover_graphics: half_blocks not honoured"; fail=1; }
 for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (cover art runs)"; cat "$f"; fail=1
