@@ -36,6 +36,11 @@ static void layout() {
     CHECK(lmtui::coverPane(300, 40, kMaxCoverRowsHigh) == (lmtui::PaneSize{80, 40}));
     CHECK(lmtui::coverPane(171, 80, kMaxCoverRowsHigh) == (lmtui::PaneSize{128, 64})); // 171 - 2 - 129 = 40
     CHECK(lmtui::coverPane(170, 80, kMaxCoverRowsHigh) == (lmtui::PaneSize{126, 63}));
+    // Very high (256x256): up to 256x128 cells.
+    CHECK_EQ(lmtui::kMaxCoverRowsVeryHigh, 128);
+    CHECK(lmtui::coverPane(400, 150, lmtui::kMaxCoverRowsVeryHigh) == (lmtui::PaneSize{256, 128}));
+    CHECK(lmtui::coverPane(299, 150, lmtui::kMaxCoverRowsVeryHigh) == (lmtui::PaneSize{256, 128})); // 299-2-257 = 40
+    CHECK(lmtui::coverPane(200, 150, lmtui::kMaxCoverRowsVeryHigh) == (lmtui::PaneSize{156, 78}));
 }
 
 static void rendering() {
@@ -205,6 +210,25 @@ static void worker(const std::string &tmp) {
         }
         CHECK_EQ(high, 1);
         CHECK_EQ(normal, 3);
+    }
+    {
+        // Very high: its own "-v" entry.
+        auto wp = std::make_shared<Waiter>();
+        Waiter &w = *wp;
+        lmtui::ArtWorker art(covers, [wp] { wp->notify(); }, spawn, lm::art::ThumbRes::VeryHigh);
+        art.want({a + "/t1.mp3"});
+        std::vector<lmtui::ArtWorker::Result> got;
+        const bool ok7 = waitFor(w, [&] {
+            for (auto &r : art.take()) got.push_back(std::move(r));
+            return !got.empty();
+        });
+        CHECK(ok7);
+        CHECK(!got.empty() && got[0].thumb && got[0].thumb->res() == lm::art::ThumbRes::VeryHigh &&
+              got[0].thumb->at(250, 250) == (Rgb{90, 80, 70}));
+        int veryHigh = 0;
+        for (const auto &e : fs::directory_iterator(covers))
+            if (e.path().filename().string().ends_with("-v.thumb")) veryHigh++;
+        CHECK_EQ(veryHigh, 1);
     }
 }
 

@@ -13,7 +13,8 @@ namespace lm::config {
 
 enum class ReplayGain { Off, Track, Album };
 enum class RepeatMode { Off, All, One }; // playback.repeat: off | all | one
-enum class CoverResolution { Normal, High }; // ui.cover_resolution: normal (64x64) | high (128x128)
+// ui.cover_resolution: normal (64x64) | high (128x128) | very_high (256x256)
+enum class CoverResolution { Normal, High, VeryHigh };
 
 struct ClientSettings {
     // server
@@ -43,7 +44,8 @@ struct ClientSettings {
     bool notifications = false; // desktop notification on track change (hot)
     bool coverArt = true;       // album cover pane (half-block thumbnail) when the terminal is wide enough (hot)
     // Thumbnail resolution: normal 64x64 pixels (pane up to 64x32 cells, 12 KiB each),
-    // high 128x128 (up to 128x64 cells, 48 KiB each). Applies on restart.
+    // high 128x128 (up to 128x64 cells, 48 KiB each), very_high 256x256 (up to 256x128
+    // cells, 192 KiB each). Applies on restart.
     CoverResolution coverResolution = CoverResolution::Normal;
     // keys (hot): action name -> keys bound to it, replacing that action's defaults
     // (keys.queue_add: [q], keys.quit: []). Names and keys are checked by the frontend.

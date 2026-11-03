@@ -126,9 +126,11 @@ void ArtWorker::run(const std::shared_ptr<Shared> &sh, const std::string &dir, l
         if (!cacheOk) report("cache", (dir.empty() ? std::string("no cache directory") : err) +
                                           " (thumbnails are not kept between runs)");
 
-        // Each resolution has its own entries ("-h": 128x128), so switching back and forth
-        // redoes nothing that is already made.
-        const std::string_view suffix = res == lm::art::ThumbRes::High ? "-h" : "";
+        // Each resolution has its own entries ("-h": 128x128, "-v": 256x256), so switching
+        // back and forth redoes nothing that is already made.
+        const std::string_view suffix = res == lm::art::ThumbRes::VeryHigh ? "-v"
+                                        : res == lm::art::ThumbRes::High   ? "-h"
+                                                                           : "";
         std::shared_ptr<const RemoteThumbs> remote;
         {
             std::lock_guard lk(sh->m);

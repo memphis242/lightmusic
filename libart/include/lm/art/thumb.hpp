@@ -23,18 +23,24 @@ struct Rgb {
     bool operator==(const Rgb &) const = default;
 };
 
-// Thumbnails are square: the centre of the cover, scaled to 64x64 (Normal, 12 KiB) or
-// 128x128 (High, 48 KiB) pixels, RGB, row-major.
-enum class ThumbRes : std::uint8_t { Normal, High };
-[[nodiscard]] constexpr int thumbSide(ThumbRes r) { return r == ThumbRes::High ? 128 : 64; }
+// Thumbnails are square: the centre of the cover, scaled to 64x64 (Normal, 12 KiB),
+// 128x128 (High, 48 KiB) or 256x256 (VeryHigh, 192 KiB) pixels, RGB, row-major.
+enum class ThumbRes : std::uint8_t { Normal, High, VeryHigh };
+inline constexpr ThumbRes kMaxThumbRes = ThumbRes::VeryHigh;
+[[nodiscard]] constexpr int thumbSide(ThumbRes r) {
+    return r == ThumbRes::VeryHigh ? 256 : r == ThumbRes::High ? 128 : 64;
+}
 [[nodiscard]] constexpr std::size_t thumbBytes(ThumbRes r) {
     return std::size_t(thumbSide(r)) * std::size_t(thumbSide(r)) * 3;
 }
-static_assert(thumbBytes(ThumbRes::Normal) == 12288 && thumbBytes(ThumbRes::High) == 49152, "12 and 48 KiB");
+static_assert(thumbBytes(ThumbRes::Normal) == 12288 && thumbBytes(ThumbRes::High) == 49152 &&
+                  thumbBytes(ThumbRes::VeryHigh) == 196608,
+              "12, 48 and 192 KiB");
 // The resolution of a thumbnail of `bytes` RGB bytes; nullopt for any other size.
 [[nodiscard]] constexpr std::optional<ThumbRes> thumbResOfBytes(std::size_t bytes) {
     if (bytes == thumbBytes(ThumbRes::Normal)) return ThumbRes::Normal;
     if (bytes == thumbBytes(ThumbRes::High)) return ThumbRes::High;
+    if (bytes == thumbBytes(ThumbRes::VeryHigh)) return ThumbRes::VeryHigh;
     return std::nullopt;
 }
 
@@ -87,7 +93,8 @@ inline constexpr std::string_view kUpperHalfBlock = "▀";
 // Thumbnail file (the on-disk cache and nothing else): 16-byte header, then the pixels
 // when there is an image. A file without pixels records "this album has no usable art"
 // so the lookup is not repeated until the album changes.
-//   "LMCV" | version (2) | flags (bit 0: has pixels) | resolution (0 Normal, 1 High) | 0 |
+//   "LMCV" | version (2) | flags (bit 0: has pixels) | resolution (0 Normal, 1 High,
+//   2 VeryHigh) | 0 |
 //   stamp (u64, LE)
 // Version 1 files (before High existed) have a zero resolution byte and still read.
 inline constexpr std::size_t kThumbFileHeader = 16;

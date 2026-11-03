@@ -1,6 +1,6 @@
 // Cover-art storage: the on-disk thumbnail cache ($XDG_CACHE_HOME/lightmusic/covers) and
 // the art of a local album (its folder), found and thumbnailed once by a background
-// worker so that playback only ever loads a 12 (or 48) KiB thumbnail.
+// worker so that playback only ever loads one small thumbnail (12 to 192 KiB).
 #pragma once
 
 #include "lm/art/thumb.hpp"

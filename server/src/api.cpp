@@ -476,10 +476,10 @@ struct HttpApi::Impl {
         res.set_content(std::move(pic->data), pic->mime.empty() ? "image/jpeg" : pic->mime);
     }
 
-    // GET /cover/<id>/thumb[?size=128]: the album's 64x64 RGB thumbnail (12288 bytes, rows
-    // top to bottom), or 128x128 (49152 bytes) with size=128; any other size is 400. Made
-    // in the background by the Thumbnailer (128x128; 64x64 is scaled from it here, never
-    // decoded here). The ETag is
+    // GET /cover/<id>/thumb[?size=64|128|256]: the album's RGB thumbnail, rows top to
+    // bottom: 64x64 (12288 bytes, the default), 128x128 or 256x256; any other size is 400.
+    // Made in the background by the Thumbnailer (256x256; the smaller ones are scaled from
+    // it here, never decoded here). The ETag is
     // the album's revision. 404 "no cover" when the album has no usable art; 503 with
     // Retry-After while the thumbnail is not made yet (new or changed album).
     void thumb(const httplib::Request &req, httplib::Response &res) {
@@ -489,13 +489,14 @@ struct HttpApi::Impl {
         if (req.has_param("size")) {
             const std::string sz = req.get_param_value("size");
             if (sz == "128") want = lm::art::ThumbRes::High;
-            else if (sz != "64") return error(res, 400, "size must be 64 or 128");
+            else if (sz == "256") want = lm::art::ThumbRes::VeryHigh;
+            else if (sz != "64") return error(res, 400, "size must be 64, 128 or 256");
         }
         auto rev = pool.get()->album_rev(id);
         if (!rev) return error(res, 404, "no such album");
         lm::art::Thumb t;
         std::string err;
-        switch (thumbs.load(Thumbnailer::key(id), std::uint64_t(*rev), lm::art::ThumbRes::High, t, &err)) {
+        switch (thumbs.load(Thumbnailer::key(id), std::uint64_t(*rev), lm::art::kMaxThumbRes, t, &err)) {
         case lm::art::CoverCache::Lookup::NoArt: return error(res, 404, "no cover");
         case lm::art::CoverCache::Lookup::Miss:
             if (!err.empty()) self->log("thumbnails: " + err);

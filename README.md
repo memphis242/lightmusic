@@ -155,9 +155,11 @@ random), each opened as a list of tracks (enter plays from a track, `o` plays it
 Unicode half blocks (`▀`, foreground = upper pixel, background = lower pixel, two pixels
 per cell) in 24-bit colour (FTXUI maps it to 256 colours when the terminal does not
 advertise truecolour in `COLORTERM`); no kitty/sixel protocol. The pane is square, at
-most 64x32 cells (the 64x64 thumbnail at full resolution), or 128x64 cells with
+most 64x32 cells (the 64x64 thumbnail at full resolution), 128x64 cells with
 `ui.cover_resolution: high` (128x128 thumbnails, 48 KiB each, four times the cache
-space; applies on restart), and as tall as the list; it
+space) or 256x128 cells with `very_high` (256x256, 192 KiB each, sixteen times; a full
+pane needs a terminal of about 300x130 cells, so a small font); applies on restart. It
+is as tall as the list; it
 takes priority over the list, shrinking only to keep the list at least 40 columns wide,
 and is hidden when that leaves it under 4 rows, when the
 album has no art, or with `ui.cover_art: false` (hot). A local album is its folder; its
@@ -169,23 +171,24 @@ treated as untrusted: at most 16 MiB, 8192 pixels per side and 4096x4096 pixels 
 checked before decoding; a bad image is logged once in `:messages` and the pane stays
 empty. Decoded images of 1 MiB and more are mapped and unmapped directly, so a pass over
 large covers leaves no memory resident. Nothing is decoded on the play path: a background thread at `SCHED_IDLE`
-priority makes a 64x64 RGB thumbnail (12 KiB; 128x128, 48 KiB, at high resolution) of every album in the list once, when the
+priority makes a 64x64 RGB thumbnail (12 KiB; 128x128, 48 KiB, at high resolution; 256x256, 192 KiB, at very high) of every album in the list once, when the
 list is loaded, and stores it in `$XDG_CACHE_HOME/lightmusic/covers/` (`cache.dir`
 moves it; 0700, one file per folder, keyed by a hash of the folder path, and redone when
 the name, size or modification time of the art sources changes, so re-tagging or
-replacing the cover is picked up; the two resolutions have separate files). A track change loads only the playing and the next
+replacing the cover is picked up; each resolution has its own files). A track change loads only the playing and the next
 album's thumbnails; the pane scales the thumbnail to its size when drawn. **Server
-tracks** use the thumbnail lightmusicd made (`GET /cover/{id}/thumb`, `?size=128` at high
-resolution; an older server's 64x64 one is shown scaled up; the full image is
+tracks** use the thumbnail lightmusicd made (`GET /cover/{id}/thumb`, `?size=128` or `256` at
+high or very high resolution; an older server's smaller one is shown scaled up; the full image is
 never fetched), requested when the track is current or next, revalidated by the album's
 revision, and kept in the same covers directory; offline, the cached one is shown.
 
 **lightmusicd** makes the thumbnails itself: after the initial scan and after each index
 change a background thread (`SCHED_IDLE`) thumbnails every new or changed album (same
 sources and limits as above; a bad image is logged once and recorded as "no art") at
-128x128 into `thumbs/` next to the database (0700, 48 KiB per album), stamped with the
-album's revision, and deletes those of albums that are gone. A request only reads that
-file (and scales it to 64x64 unless `?size=128` was asked). A cover image replaced
+256x256 into `thumbs/` next to the database (0700, 192 KiB per album: about 190 MB for
+1000 albums), stamped with the album's revision, and deletes those of albums that are
+gone. A request only reads that file and scales it to the size asked (64x64 unless
+`?size=128` or `256`). A cover image replaced
 without any change to the album's tracks keeps the old thumbnail until the album changes.
 
 **Playlists** (M3U / M3U8). `:save NAME` stores the list (not the user queue) as
@@ -690,7 +693,7 @@ limit; the server warns at startup when it listens on loopback without one.
 | `GET /search?q=TEXT&limit=20` | substring match on artist name, album title, track title/artist |
 | `GET /stream/{trackId}` | the original file; 200/206/304/416, `Accept-Ranges`, `ETag`, `Last-Modified`, `If-Range`, `If-None-Match` |
 | `GET /cover/{albumId}` | embedded front cover (first 3 tracks), else `cover`/`folder`/`front` `.jpg`/`.jpeg`/`.png` (any case, never through a symlink) in the album folder; `size` is ignored for now |
-| `GET /cover/{albumId}/thumb` | the album's 64x64 RGB thumbnail: 12288 bytes, rows top to bottom, `application/octet-stream`; `?size=128`: 128x128 (49152 bytes), `?size=64` the default, other sizes 400; `ETag` `"r<album revision>"` (304 for `If-None-Match`); 404 `no cover` without usable art; 503 with `Retry-After` until it is made. Bearer header only |
+| `GET /cover/{albumId}/thumb` | the album's 64x64 RGB thumbnail: 12288 bytes, rows top to bottom, `application/octet-stream`; `?size=128`: 128x128 (49152 bytes), `?size=256`: 256x256 (196608 bytes), `?size=64` the default, other sizes 400; `ETag` `"r<album revision>"` (304 for `If-None-Match`); 404 `no cover` without usable art; 503 with `Retry-After` until it is made. Bearer header only |
 
 Shapes:
 
@@ -987,7 +990,8 @@ ui:
   cover_art: true                   # album cover pane beside the list (hot; hidden
                                     # when the terminal is too narrow)
   cover_resolution: normal          # normal: 64x64 thumbnails (pane up to 64x32
-                                    # cells); high: 128x128 (up to 128x64); restart
+                                    # cells); high: 128x128 (up to 128x64);
+                                    # very_high: 256x256 (up to 256x128); restart
 keys:                               # (hot) action: key or [keys]; replaces that
   queue_add: a                      # action's default keys; [] unbinds it
   quit: [ctrl-c, ctrl-q]
