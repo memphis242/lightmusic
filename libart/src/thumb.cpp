@@ -147,11 +147,15 @@ bool decodeThumbFile(std::span<const std::uint8_t> bytes, std::optional<Thumb> &
         return fail("truncated or oversized thumbnail file");
     stamp = 0;
     for (int i = 0; i < 8; i++) stamp |= std::uint64_t{bytes[8 + std::size_t(i)]} << (8 * i);
-    t.reset();
-    if (has) {
-        t.emplace(res);
-        std::memcpy(t->px().data(), bytes.data() + kThumbFileHeader, thumbBytes(res));
+    if (!has) {
+        t.reset();
+        return true;
     }
+    // Filled first, then moved in: gcc 15 -O2 reports a false -Wmaybe-uninitialized for
+    // the vector inside optional::emplace() after reset().
+    Thumb th(res);
+    std::memcpy(th.px().data(), bytes.data() + kThumbFileHeader, thumbBytes(res));
+    t = std::move(th);
     return true;
 }
 
