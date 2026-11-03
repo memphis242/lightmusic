@@ -123,7 +123,7 @@ std::string encodeThumbFile(const std::optional<Thumb> &t, std::uint64_t stamp) 
     std::string s(kMagic, sizeof kMagic);
     s.push_back(static_cast<char>(kVersion));
     s.push_back(static_cast<char>(t ? 1 : 0));
-    s.push_back(static_cast<char>(t && t->res() == ThumbRes::High ? 1 : 0));
+    s.push_back(static_cast<char>(t ? static_cast<std::uint8_t>(t->res()) : 0));
     s.push_back('\0');
     for (int i = 0; i < 8; i++) s.push_back(static_cast<char>(stamp >> (8 * i) & 0xFF));
     LM_ASSERT(s.size() == kThumbFileHeader, "header layout");
@@ -141,8 +141,9 @@ bool decodeThumbFile(std::span<const std::uint8_t> bytes, std::optional<Thumb> &
         return fail("not a thumbnail file");
     if (bytes[4] != 1 && bytes[4] != kVersion) return fail("unknown thumbnail file version");
     const bool has = bytes[5] == 1;
-    if (bytes[5] > 1 || bytes[6] > (bytes[4] == 1 ? 0 : 1) || bytes[7] != 0) return fail("bad thumbnail file flags");
-    const ThumbRes res = bytes[6] == 1 ? ThumbRes::High : ThumbRes::Normal;
+    if (bytes[5] > 1 || bytes[6] > (bytes[4] == 1 ? 0 : static_cast<std::uint8_t>(kMaxThumbRes)) || bytes[7] != 0)
+        return fail("bad thumbnail file flags");
+    const auto res = static_cast<ThumbRes>(bytes[6]);
     if (bytes.size() != kThumbFileHeader + (has ? thumbBytes(res) : 0))
         return fail("truncated or oversized thumbnail file");
     stamp = 0;

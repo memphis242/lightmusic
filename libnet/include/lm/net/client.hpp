@@ -89,18 +89,18 @@ struct CacheInfo {
     std::int64_t cachedBytes = 0, size = 0;
 };
 
-// GET /api/v1/cover/<album>/thumb[?size=128]: the album's 64x64 (or 128x128) RGB
+// GET /api/v1/cover/<album>/thumb[?size=128|256]: the album's 64x64 (128x128, 256x256) RGB
 // thumbnail (lightmusicd makes it in the background; the full image is never fetched).
 struct AlbumThumb {
     enum class Status {
-        Ok,          // rgb holds bytes(side) (or bytes(64): a server older than size=128),
+        Ok,          // rgb holds bytes(side), or a smaller side's (an older server),
                      // rev the album revision it was made at
         NotModified, // the thumbnail at `ifRev` is still current
         NoArt,       // the album has no usable art (404)
         NotReady,    // not made yet (503): ask again later
     };
     // The sides a thumbnail comes in.
-    static constexpr int kNormalSide = 64, kHighSide = 128;
+    static constexpr int kNormalSide = 64, kHighSide = 128, kVeryHighSide = 256;
     [[nodiscard]] static constexpr std::size_t bytes(int side) { return std::size_t(side) * std::size_t(side) * 3; }
     Status status = Status::NoArt;
     std::string rgb;
@@ -168,10 +168,10 @@ public:
     void setCacheSettings(std::uint64_t capBytes, bool backgroundFill, bool pauseOnMetered);
 
     // Fetches an album thumbnail (blocking; network; any thread but the network thread).
-    // `side`: AlbumThumb::kNormalSide or kHighSide. `ifRev` > 0: the revision of a
-    // thumbnail already held (conditional request). false with *err on a transport error,
-    // a refused key, another status, or a body that is not exactly one thumbnail of that
-    // side or of the normal side (server data is untrusted).
+    // `side`: AlbumThumb::kNormalSide, kHighSide or kVeryHighSide. `ifRev` > 0: the
+    // revision of a thumbnail already held (conditional request). false with *err on a
+    // transport error, a refused key, another status, or a body that is not exactly one
+    // thumbnail of that side or a smaller one (server data is untrusted).
     [[nodiscard]] bool fetchAlbumThumb(std::int64_t albumId, std::int64_t ifRev, int side, AlbumThumb &out,
                                        std::string *err);
     // The same for a detached worker thread that may outlive the Client: the functions

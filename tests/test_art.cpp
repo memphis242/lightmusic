@@ -218,7 +218,7 @@ static void highResolution(const std::string &tmp) {
     bytes swapped = fb;
     swapped[6] = 0; // says Normal, has 48 KiB
     CHECK(!lm::art::decodeThumbFile(sp(swapped), back, stamp, &err));
-    swapped[6] = 2; // no such resolution
+    swapped[6] = 3; // no such resolution
     CHECK(!lm::art::decodeThumbFile(sp(swapped), back, stamp, &err));
     // Version 1 (before High): read as Normal; a resolution byte there is corrupt.
     std::string v1 = lm::art::encodeThumbFile(lo, 4);
@@ -239,6 +239,19 @@ static void highResolution(const std::string &tmp) {
     CHECK(cache.load("l9", 3, ThumbRes::Normal, got, &err) == lm::art::CoverCache::Lookup::Miss && err.empty());
     CHECK(cache.store("l9", 3, std::nullopt, &err));
     CHECK(cache.load("l9", 3, ThumbRes::High, got, &err) == lm::art::CoverCache::Lookup::NoArt);
+    // VeryHigh (256x256): made, scaled down to the others exactly, and stored.
+    static_assert(lm::art::thumbResOfBytes(196608) == ThumbRes::VeryHigh && lm::art::kMaxThumbRes == ThumbRes::VeryHigh);
+    const Thumb vh = lm::art::thumbFromRgb(sp(px), 256, 256, ThumbRes::VeryHigh);
+    CHECK(vh.side() == 256 && vh.px().size() == 196608u && vh.at(255, 255) == (Rgb{150, 0, 0}) &&
+          vh.at(0, 255) == (Rgb{50, 0, 0}));
+    CHECK(lm::art::resized(vh, ThumbRes::High) == hi && lm::art::resized(vh, ThumbRes::Normal) == lo);
+    const std::string fv = lm::art::encodeThumbFile(vh, 5);
+    CHECK_EQ(fv.size(), lm::art::kThumbFileHeader + 196608u);
+    const bytes fvb(fv.begin(), fv.end());
+    CHECK(lm::art::decodeThumbFile(sp(fvb), back, stamp, &err) && back && *back == vh);
+    CHECK(cache.store("l8", 1, vh, &err));
+    CHECK(cache.load("l8", 1, ThumbRes::VeryHigh, got, &err) == lm::art::CoverCache::Lookup::Hit && got == vh);
+    CHECK(cache.load("l8", 1, ThumbRes::High, got, &err) == lm::art::CoverCache::Lookup::Miss);
 }
 
 static void setMtime(const std::string &p, int secs) {

@@ -1,7 +1,7 @@
 // Album thumbnails for GET /api/v1/cover/<id>/thumb.
 //
-// The 128x128 RGB thumbnail (48 KiB, lm::art High) of every album is made in the
-// background (the 64x64 one is scaled from it per request, a 2x2 average),
+// The 256x256 RGB thumbnail (192 KiB, lm::art VeryHigh) of every album is made in the
+// background (the 64x64 and 128x128 ones are scaled from it per request),
 // on a SCHED_IDLE thread, after the initial scan and after each index change, and kept in
 // <database directory>/thumbs/a<id>.thumb, stamped with the album's revision. A request
 // only reads that file: nothing is decoded per request, and the full image is never

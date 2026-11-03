@@ -443,6 +443,14 @@ static_assert(static_cast<int>(lm::Repeat::Off) == static_cast<int>(lm::config::
                   static_cast<int>(lm::Repeat::One) == 2,
               "repeat enums agree");
 lm::Repeat toRepeat(lm::config::RepeatMode m) { return static_cast<lm::Repeat>(static_cast<int>(m)); }
+lm::art::ThumbRes coverThumbRes(lm::config::CoverResolution r) {
+    switch (r) {
+    case lm::config::CoverResolution::Normal: return lm::art::ThumbRes::Normal;
+    case lm::config::CoverResolution::High: return lm::art::ThumbRes::High;
+    case lm::config::CoverResolution::VeryHigh: return lm::art::ThumbRes::VeryHigh;
+    }
+    return lm::art::ThumbRes::Normal; // not reached: every enumerator is handled
+}
 const char *repeatConfigName(lm::Repeat r) { return lm::repeatName(r); } // "off" | "all" | "one"
 
 // UI-thread state only.
@@ -1265,8 +1273,7 @@ int run(int argc, char **argv) {
     }
     ui.showCacheMarkers = set.showCacheMarkers;
     ui.coverArt = set.coverArt;
-    ui.coverMaxRows = set.coverResolution == lm::config::CoverResolution::High ? lmtui::kMaxCoverRowsHigh
-                                                                              : lmtui::kMaxCoverRows;
+    ui.coverMaxRows = lm::art::thumbSide(coverThumbRes(set.coverResolution)) / 2;
     if (!args.empty()) ui.paths = lmtui::collectTracks(args, &errors);
     for (const auto &e : errors) lm::diagln(stderr, "lightmusic: {}", e);
     for (const auto &p : ui.paths) ui.names.push_back(lmtui::displayName(p));
@@ -1323,8 +1330,7 @@ int run(int argc, char **argv) {
         const std::string coversDir = lm::art::coversDir(live.running.cacheDir, &coversErr);
         lmtui::ArtWorker artWorker(
             coversDir, [] { wake(); }, [](std::function<void()> fn) { spawnDetached(std::move(fn)); },
-            live.running.coverResolution == lm::config::CoverResolution::High ? lm::art::ThumbRes::High
-                                                                               : lm::art::ThumbRes::Normal);
+            coverThumbRes(live.running.coverResolution));
         if (coversDir.empty()) ui.status.log(lmtui::StatusLine::Level::Warning, "cover art: " + coversErr);
 #ifdef LM_TUI_NET
         if (client) { // server albums: the thumbnail lightmusicd made, fetched when wanted
@@ -1350,7 +1356,8 @@ int run(int argc, char **argv) {
                 return G::NoArt;
             };
             static_assert(lm::net::AlbumThumb::kNormalSide == lm::art::thumbSide(lm::art::ThumbRes::Normal) &&
-                              lm::net::AlbumThumb::kHighSide == lm::art::thumbSide(lm::art::ThumbRes::High),
+                              lm::net::AlbumThumb::kHighSide == lm::art::thumbSide(lm::art::ThumbRes::High) &&
+                              lm::net::AlbumThumb::kVeryHighSide == lm::art::thumbSide(lm::art::ThumbRes::VeryHigh),
                           "one thumbnail format");
             artWorker.setRemote(std::move(rt));
         }

@@ -4,7 +4,7 @@
 // Nothing is decoded on the play path. The worker runs at background priority
 // (SCHED_IDLE): it makes the thumbnail of every album in the list once (eager, while the
 // list is labelled) and stores it in the covers cache; a track change only asks it to
-// load the current and the next album's thumbnails (12 KiB, or 48 KiB at high resolution). An album the eager pass has not
+// load the current and the next album's thumbnails (12, 48 or 192 KiB by resolution). An album the eager pass has not
 // reached yet is done first when it is wanted.
 #pragma once
 
@@ -30,7 +30,7 @@ namespace lmtui {
 // cell is about twice as tall as it is wide), `cols` = 2 * `rows`. The cover takes
 // priority over the list: it grows up to `maxRows` (half the thumbnail side: kMaxCoverRows
 // = 64x32 cells for the 64x64 thumbnail at full resolution, kMaxCoverRowsHigh = 128x64
-// for 128x128) or the list's height, and only shrinks when the list would otherwise get
+// for 128x128, kMaxCoverRowsVeryHigh = 256x128 for 256x256) or the list's height, and only shrinks when the list would otherwise get
 // narrower than kMinListCols. Hidden (0 x 0) when that leaves it shorter than
 // kMinCoverRows.
 struct PaneSize {
@@ -40,6 +40,7 @@ struct PaneSize {
 };
 inline constexpr int kMaxCoverRows = lm::art::thumbSide(lm::art::ThumbRes::Normal) / 2;
 inline constexpr int kMaxCoverRowsHigh = lm::art::thumbSide(lm::art::ThumbRes::High) / 2;
+inline constexpr int kMaxCoverRowsVeryHigh = lm::art::thumbSide(lm::art::ThumbRes::VeryHigh) / 2;
 inline constexpr int kMinCoverRows = 4, kMinListCols = 40;
 [[nodiscard]] PaneSize coverPane(int width, int listRows, int maxRows = kMaxCoverRows);
 
@@ -56,7 +57,7 @@ struct RemoteThumbs {
     std::function<std::optional<std::int64_t>(const std::string &track)> albumOf;
     enum class Got { Ok, NotModified, NoArt, NotReady, Failed };
     // GET the thumbnail at `res`; `ifRev` > 0: the revision held. Ok fills `rgb` (one
-    // thumbnail, normally of `res`; an older server sends 64x64 only) and `rev`; Failed
+    // thumbnail, normally of `res`; an older server may send a smaller one) and `rev`; Failed
     // sets `err`.
     std::function<Got(std::int64_t albumId, std::int64_t ifRev, lm::art::ThumbRes res, std::string &rgb,
                       std::int64_t &rev, std::string *err)>

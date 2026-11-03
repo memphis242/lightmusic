@@ -1517,7 +1517,7 @@ static void albumThumbs() {
     CHECK(cl != nullptr);
     if (!cl) return;
     using lm::net::AlbumThumb;
-    constexpr int N = AlbumThumb::kNormalSide, H = AlbumThumb::kHighSide;
+    constexpr int N = AlbumThumb::kNormalSide, H = AlbumThumb::kHighSide, V = AlbumThumb::kVeryHighSide;
     const std::string px(AlbumThumb::bytes(N), '\x7f'), hi(AlbumThumb::bytes(H), '\x40');
     srv.setThumb(1, {200, px, hi, 42});
     srv.setThumb(2, {503, "", "", 1});
@@ -1526,6 +1526,7 @@ static void albumThumbs() {
     srv.setThumb(5, {500, "", "", 1});
     srv.setThumb(6, {200, px, "", 1});                              // no 128x128: an older server
     srv.setThumb(7, {200, px, std::string(AlbumThumb::bytes(H) + 1, 'x'), 1}); // oversized 128x128
+    srv.setThumb(8, {200, px, hi, 1}); // a server without 256x256: its 128x128 one is used
     AlbumThumb t;
     std::string err;
     CHECK(cl->fetchAlbumThumb(1, 0, N, t, &err) && t.status == AlbumThumb::Status::Ok && t.rgb == px && t.rev == 42);
@@ -1541,6 +1542,8 @@ static void albumThumbs() {
     CHECK(!cl->fetchAlbumThumb(4, 0, N, t, &err) && err.find("larger") != std::string::npos);
     CHECK(!cl->fetchAlbumThumb(5, 0, N, t, &err) && err.find("HTTP 500") != std::string::npos);
     CHECK(!cl->fetchAlbumThumb(7, 0, H, t, &err) && err.find("larger") != std::string::npos);
+    CHECK(cl->fetchAlbumThumb(8, 0, V, t, &err) && t.status == AlbumThumb::Status::Ok && t.rgb == hi);
+    CHECK(cl->fetchAlbumThumb(6, 0, V, t, &err) && t.status == AlbumThumb::Status::Ok && t.rgb == px);
     // The detached-worker form works the same, and keeps working (failing) after the
     // Client is gone.
     const auto acc = cl->thumbAccess();

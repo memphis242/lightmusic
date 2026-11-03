@@ -74,11 +74,11 @@ int main() {
         const CoverCache cache(Thumbnailer::dir_for(dbp));
         auto look = [&](const char *a, lm::art::Thumb &t) {
             const auto rev = rd.album_rev(album[a]);
-            return cache.load(Thumbnailer::key(album[a]), std::uint64_t(rev.value_or(0)), lm::art::ThumbRes::High, t);
+            return cache.load(Thumbnailer::key(album[a]), std::uint64_t(rev.value_or(0)), lm::art::kMaxThumbRes, t);
         };
         lm::art::Thumb t;
         CHECK(look("A", t) == CoverCache::Lookup::Hit && t.at(10, 10) == (lm::art::Rgb{220, 10, 10}));
-        CHECK(look("B", t) == CoverCache::Lookup::Hit && t.at(1, 120) == (lm::art::Rgb{10, 10, 220}));
+        CHECK(look("B", t) == CoverCache::Lookup::Hit && t.at(1, 240) == (lm::art::Rgb{10, 10, 220}));
         CHECK(look("C", t) == CoverCache::Lookup::NoArt);
         CHECK(look("D", t) == CoverCache::Lookup::NoArt);
         CHECK(look("E", t) == CoverCache::Lookup::NoArt); // the symlinked image was refused
