@@ -177,13 +177,13 @@ for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (repeat/shuffle run)"; cat "$f"; fail=1
 done
-# User queue: q queues the selected row (Q: play next) (shown as +1 and "up next 1"), v opens the
+# User queue: a queues the selected row (A: play next) (shown as +1 and "up next 1"), v opens the
 # queue pane, J/K/d edit it, enter plays a queued track now, esc goes back.
 : > "$TMP/log7"
 wl() { n=200; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log7"; do sleep 0.05; n=$((n - 1)); done; }
 { wl Playing
-  printf j; sleep 0.1; printf j; sleep 0.1; printf q; wl "queued: 10 Tenth"
-  printf k; sleep 0.1; printf Q; wl "plays next: 2 Second"
+  printf j; sleep 0.1; printf j; sleep 0.1; printf a; wl "queued: 10 Tenth"
+  printf k; sleep 0.1; printf A; wl "plays next: 2 Second"
   printf v; wl "Up next: 2 tracks"
   printf J; sleep 0.2; printf d; wl "Up next: 1 track"
   printf '\r'; wl "Up next: 0 tracks"
@@ -214,15 +214,15 @@ grep -q "0:1[01] / 0:20" "$TMP/log8" || { echo "FAIL: 5 did not seek to 50%"; fa
 grep -q "0:1[56] / 0:20" "$TMP/log8" || { echo "FAIL: End did not seek to the last 5 s"; fail=1; }
 # After Home the position restarts below 0:05 (it was >= 0:15).
 tail -c 3000 "$TMP/log8" | grep -q "0:0[0-4] / 0:20" || { echo "FAIL: Home did not seek to the start"; fail=1; }
-# Keybindings from cfg.yaml and the ':' command line: a bare q no longer quits (it
-# queues), the user's keys replace the defaults, :vol / :seek / unknown commands work,
+# Keybindings from cfg.yaml and the ':' command line: the user's keys replace the
+# defaults (queue_add on x frees a), :vol / :seek / unknown commands work,
 # and :q quits.
-printf 'playback:\n  volume: 50\nkeys:\n  queue_add: a\n  help: h\n' > "$CFG"; chmod 600 "$CFG"
+printf 'playback:\n  volume: 50\nkeys:\n  queue_add: x\n  help: h\n' > "$CFG"; chmod 600 "$CFG"
 : > "$TMP/log9"
 w9() { n=200; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log9"; do sleep 0.05; n=$((n - 1)); done; }
 { w9 Playing; w9 "h help  :q quit"
-  printf a; w9 "queued: "
-  printf q; sleep 0.3                     # unbound now: nothing
+  printf x; w9 "queued: "
+  printf a; sleep 0.3                     # unbound now: nothing
   printf ':vol 80\r'; w9 "vol  80%"
   printf ':seek 50%%\r'; w9 "0:1[01] / 0:20"
   printf ':frob\r'; w9 "unknown command: frob"
@@ -241,7 +241,7 @@ w9() { n=200; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log9"; do sleep 0.05
 rc=$?
 [ $rc -eq 0 ] || { echo "FAIL: keys run exit status $rc"; tail -c 1000 "$TMP/log9" | cat -v; fail=1; }
 for want in "h help  :q quit" "queued: 1 First" "vol  80%" "0:1[01] / 0:20" "unknown command: frob" \
-            "a            add the selection to the queue" "messages (any key closes)"; do
+            "x            add the selection to the queue" "messages (any key closes)"; do
     grep -q -- "$want" "$TMP/log9" || { echo "FAIL: keys run: '$want' never shown"; fail=1; }
 done
 grep -q "queued: .*queued: " "$TMP/log9" && { echo "FAIL: unbound q still queued"; fail=1; }
@@ -310,7 +310,7 @@ SESS="$XDG_STATE_HOME/lightmusic/session"
 rm -f "$SESS"
 : > "$TMP/log12"
 w12() { n=300; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log12"; do sleep 0.05; n=$((n - 1)); done; }
-{ w12 Playing; printf j; sleep 0.1; printf q; w12 "queued: "
+{ w12 Playing; printf j; sleep 0.1; printf a; w12 "queued: "
   printf 5; w12 "0:1[01] / 0:20"; printf ' '; w12 Paused
   printf ':q\r'; } | LM_NULL_BACKEND=1 TERM=xterm-256color COLUMNS=100 LINES=24 \
     timeout 30 script -qfec "$BIN --null '$TMP/music'" "$TMP/log12" >/dev/null 2>&1

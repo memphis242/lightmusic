@@ -82,16 +82,16 @@ scale; samples are clamped to ±1 after it in every case.
 | Home / End | seek to the start / the last 5 s | 0 … 9 | seek to 0 % … 90 % |
 | + / - | volume ±5 % | ? / Esc | help / close help |
 | r | repeat: off → all → one | s | shuffle on / off |
-| q / Q | queue selected / play it next | v | show the queue (up next) |
+| a / A | queue selected / play it next | v | show the queue (up next) |
 | b | browse library / folders | P | save offline (remote tracks) |
 | / | fuzzy filter (esc clears) | . | jump to the playing track |
 | S | stop after this track | `:sleep 30` | sleep timer (fades out) |
 | [ / ] | A-B repeat: set A / B | \\ | A-B repeat off |
 | m | bookmark this position | ' | next bookmark |
 | f | favourite / not (selected) | | |
-| : | command line (`:q` quits) | Ctrl-C | quit |
+| : | command line (`:q` quits) | q / Ctrl-C | quit |
 
-A bare `q` does not quit: it queues. Quit with `:q` (or `:quit`) or Ctrl-C. Every key
+Quit with `q`, `:q` (or `:quit`) or Ctrl-C. Every key
 can be rebound in `cfg.yaml` (see **Keybindings** below); the help overlay (`?`) is
 generated from the active bindings.
 
@@ -149,7 +149,7 @@ has **Smart lists** (after the folders without a server): Favourites, Most playe
 and the music folder without a play), Recently added (server: newest track ids first;
 folders: newest files) and Random album (an album of the library or a folder, picked at
 random), each opened as a list of tracks (enter plays from a track, `o` plays it all,
-`q`/`Q` queue it), at most 500 rows.
+`a`/`A` queue it), at most 500 rows.
 
 **Cover art.** The album cover of the playing track is drawn next to the list, in one of
 two ways (`ui.cover_graphics`, restart):
@@ -252,7 +252,7 @@ from the client's mirror, so it works offline too, with the cache markers (`●`
 `◐` partial, `○` remote, `*` saved offline) and each album's cached share (`3/12
 cached`) — and **Folders**. Keys: `enter`/`l` opens a folder, artist or album; on a track
 it plays that folder's files (or the album) from it, replacing the list; `o` plays the
-selected folder (recursively), album or artist now; `q`/`Q` add it to the user queue
+selected folder (recursively), album or artist now; `a`/`A` add it to the user queue
 (end / next) without touching the list; `P` saves a server track or a whole album
 offline (again: unsave); `esc`/`b` returns to the list (the browser keeps its place).
 Started without files (and without a server), the TUI opens in the browser with an empty
@@ -263,12 +263,12 @@ background thread, only for visible rows (newest first, at most 64 waiting, up t
 labels cached), so a large folder costs nothing until it is scrolled through. An idle
 browser has no timers or threads that wake up.
 
-**User queue ("up next")** (`q`, `Q`, `v`). The list you started (the folder, album or
+**User queue ("up next")** (`a`, `A`, `v`). The list you started (the folder, album or
 library: the *context*) and your own queue are kept apart. Queued tracks play before
 the context continues, in queue order, each once: a track leaves the queue when it
 starts. When the queue is empty the context carries on after the context track that
-played last, so queued tracks are an interlude, not a jump. `q` adds the selected row
-at the end, `Q` puts it first ("play next"); rows in the queue show their place
+played last, so queued tracks are an interlude, not a jump. `a` adds the selected row
+at the end, `A` puts it first ("play next"); rows in the queue show their place
 (`+1` plays next) and the status line counts them (`up next 2`). Shuffle and repeat-all
 apply to the context only (the queue is never shuffled or repeated); repeat-one repeats
 whatever track is playing, a queued one too. `p` on a queued track goes back to the
@@ -1007,8 +1007,8 @@ ui:
                                     # half_blocks: two pixels per cell; auto:
                                     # kitty where supported; restart
 keys:                               # (hot) action: key or [keys]; replaces that
-  queue_add: a                      # action's default keys; [] unbinds it
-  quit: [ctrl-c, ctrl-q]
+  queue_add: [a, x]                 # action's default keys; [] unbinds it
+  quit: [q, ctrl-c, ctrl-q]
 ```
 
 | Key | Flag | Default | Hot |
@@ -1054,7 +1054,7 @@ ones while their pane is open.
 
 | context | action (default keys) |
 |---|---|
-| global | `toggle_pause` (space), `next` (n), `prev` (p), `seek_back` (←), `seek_forward` (→), `seek_start` (Home), `seek_end` (End), `volume_up` (+ =), `volume_down` (- _), `play_selected` (enter), `select_up` (k ↑), `select_down` (j ↓), `select_first` (g), `select_last` (G), `page_up` (PgUp), `page_down` (PgDn), `filter` (/), `jump_playing` (.), `stop_after` (S), `ab_start` ([), `ab_end` (]), `ab_clear` (\\), `favourite` (f), `mark` (m), `next_mark` ('), `repeat` (r), `shuffle` (s), `queue_add` (q), `play_next` (Q), `queue_view` (v), `browser` (b), `pin` (P), `command_line` (:), `help` (?), `close_help` (esc), `suspend` (Ctrl-Z), `quit` (Ctrl-C) |
+| global | `toggle_pause` (space), `next` (n), `prev` (p), `seek_back` (←), `seek_forward` (→), `seek_start` (Home), `seek_end` (End), `volume_up` (+ =), `volume_down` (- _), `play_selected` (enter), `select_up` (k ↑), `select_down` (j ↓), `select_first` (g), `select_last` (G), `page_up` (PgUp), `page_down` (PgDn), `filter` (/), `jump_playing` (.), `stop_after` (S), `ab_start` ([), `ab_end` (]), `ab_clear` (\\), `favourite` (f), `mark` (m), `next_mark` ('), `repeat` (r), `shuffle` (s), `queue_add` (a), `play_next` (A), `queue_view` (v), `browser` (b), `pin` (P), `command_line` (:), `help` (?), `close_help` (esc), `suspend` (Ctrl-Z), `quit` (q Ctrl-C) |
 | queue pane | `queue_move_up` (K), `queue_move_down` (J), `queue_remove` (d Del), `queue_clear` (c), `queue_close` (esc) |
 | browser | `browse_open` (l), `browse_up` (⌫ h), `browse_play` (o), `browser_close` (esc) |
 
