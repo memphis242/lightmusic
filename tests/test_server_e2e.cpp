@@ -344,6 +344,19 @@ int main(int argc, char **argv) {
     CHECK(r && r->status == 401);
     r = get("/api/v1/cover/999999/thumb");
     CHECK(r && r->status == 404);
+    // ?size=128: the 128x128 one (what the server keeps; 64x64 is scaled from it), the
+    // same revision; other sizes are refused.
+    r = get("/api/v1/cover/" + album + "/thumb?size=128");
+    CHECK(r && r->status == 200 && r->body.size() == 128u * 128u * 3u && r->get_header_value("ETag") == thumb_etag);
+    if (r && r->body.size() == 128u * 128u * 3u) {
+        const auto px = [&](std::size_t i) { return static_cast<unsigned char>(r->body[i]); };
+        CHECK(px(0) > 200 && px(1) < 50 && px(2) < 50);
+        CHECK(px(49149) > 200 && px(49150) < 50 && px(49151) < 50);
+    }
+    r = get("/api/v1/cover/" + album + "/thumb?size=64");
+    CHECK(r && r->status == 200 && r->body.size() == 64u * 64u * 3u);
+    r = get("/api/v1/cover/" + album + "/thumb?size=100");
+    CHECK(r && r->status == 400);
 
     // slowloris: headers trickled slower than --header-timeout (2 s) get the connection
     // closed even though each byte arrives well within the 5 s per-read timeout

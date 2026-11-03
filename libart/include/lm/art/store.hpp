@@ -1,6 +1,6 @@
 // Cover-art storage: the on-disk thumbnail cache ($XDG_CACHE_HOME/lightmusic/covers) and
 // the art of a local album (its folder), found and thumbnailed once by a background
-// worker so that playback only ever loads a 12 KiB thumbnail.
+// worker so that playback only ever loads a 12 (or 48) KiB thumbnail.
 #pragma once
 
 #include "lm/art/thumb.hpp"
@@ -32,10 +32,12 @@ public:
         NoArt, // the album has no usable art (recorded): show nothing
         Hit,   // `out` holds the thumbnail
     };
-    // Reads the entry for `key`. A missing file, another stamp, or a corrupt or unreadable
-    // file is a Miss; for the last two `err` (if given) says why.
-    [[nodiscard]] Lookup load(std::string_view key, std::uint64_t stamp, Thumb &out, std::string *err = nullptr) const;
-    // The entry for `key` whatever its stamp (returned in `stamp`): for a cache that is
+    // Reads the entry for `key`. A missing file, another stamp, a thumbnail of another
+    // resolution than `res`, or a corrupt or unreadable file is a Miss; for the last two
+    // `err` (if given) says why.
+    [[nodiscard]] Lookup load(std::string_view key, std::uint64_t stamp, ThumbRes res, Thumb &out,
+                              std::string *err = nullptr) const;
+    // The entry for `key` whatever its stamp (returned in `stamp`) and resolution: for a cache that is
     // revalidated elsewhere (server thumbnails, by revision).
     [[nodiscard]] Lookup peek(std::string_view key, Thumb &out, std::uint64_t &stamp, std::string *err = nullptr) const;
     // Records `t` (nullopt: no art) for `key` at `stamp`.
@@ -70,11 +72,11 @@ struct LocalAlbum {
 // false with `err` if the folder cannot be listed.
 [[nodiscard]] bool probeAlbum(const std::string &trackPath, LocalAlbum &out, std::string *err);
 
-// Makes the album's thumbnail: the embedded picture of `a.audio` first, then the folder
+// Makes the album's thumbnail (at `res`): the embedded picture of `a.audio` first, then the folder
 // image. true with `out` empty when there is no art at all; false with `err` when art
 // exists but none of it is usable (corrupt, unsupported or over the limits).
 [[nodiscard]] bool buildAlbumThumb(const LocalAlbum &a, std::optional<Thumb> &out, std::string *err,
-                                   const Limits &lim = {});
+                                   const Limits &lim = {}, ThumbRes res = ThumbRes::Normal);
 
 // Reads a whole regular file of at most `maxBytes` (symlinks are followed; a FIFO or
 // device is refused without blocking). false with `err` (and errno) otherwise.

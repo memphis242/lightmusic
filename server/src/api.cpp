@@ -436,6 +436,12 @@ struct HttpApi::Impl {
         // TODO: honour ?size= (thumbnails cached on disk by hash); originals for now.
         std::int64_t id;
         if (!parse_i64(req.matches[1].str(), id)) return error(res, 404, "no such album");
+        lm::art::ThumbRes want = lm::art::ThumbRes::Normal;
+        if (req.has_param("size")) {
+            const std::string sz = req.get_param_value("size");
+            if (sz == "128") want = lm::art::ThumbRes::High;
+            else if (sz != "64") return error(res, 400, "size must be 64 or 128");
+        }
         auto rev = pool.get()->album_rev(id);
         if (!rev) return error(res, 404, "no such album");
         std::string inm = req.get_header_value("If-None-Match");
@@ -476,18 +482,26 @@ struct HttpApi::Impl {
         res.set_content(std::move(pic->data), pic->mime.empty() ? "image/jpeg" : pic->mime);
     }
 
-    // GET /cover/<id>/thumb: the album's 64x64 RGB thumbnail (12288 bytes, rows top to
-    // bottom), made in the background by the Thumbnailer; never decoded here. The ETag is
+    // GET /cover/<id>/thumb[?size=128]: the album's 64x64 RGB thumbnail (12288 bytes, rows
+    // top to bottom), or 128x128 (49152 bytes) with size=128; any other size is 400. Made
+    // in the background by the Thumbnailer (128x128; 64x64 is scaled from it here, never
+    // decoded here). The ETag is
     // the album's revision. 404 "no cover" when the album has no usable art; 503 with
     // Retry-After while the thumbnail is not made yet (new or changed album).
     void thumb(const httplib::Request &req, httplib::Response &res) {
         std::int64_t id;
         if (!parse_i64(req.matches[1].str(), id)) return error(res, 404, "no such album");
+        lm::art::ThumbRes want = lm::art::ThumbRes::Normal;
+        if (req.has_param("size")) {
+            const std::string sz = req.get_param_value("size");
+            if (sz == "128") want = lm::art::ThumbRes::High;
+            else if (sz != "64") return error(res, 400, "size must be 64 or 128");
+        }
         auto rev = pool.get()->album_rev(id);
         if (!rev) return error(res, 404, "no such album");
         lm::art::Thumb t;
         std::string err;
-        switch (thumbs.load(Thumbnailer::key(id), std::uint64_t(*rev), t, &err)) {
+        switch (thumbs.load(Thumbnailer::key(id), std::uint64_t(*rev), lm::art::ThumbRes::High, t, &err)) {
         case lm::art::CoverCache::Lookup::NoArt: return error(res, 404, "no cover");
         case lm::art::CoverCache::Lookup::Miss:
             if (!err.empty()) self->log("thumbnails: " + err);
@@ -503,7 +517,9 @@ struct HttpApi::Impl {
             return;
         }
         res.status = 200;
-        res.set_content(std::string(reinterpret_cast<const char *>(t.px.data()), t.px.size()), "application/octet-stream");
+        const lm::art::Thumb out = lm::art::resized(t, want);
+        res.set_content(std::string(reinterpret_cast<const char *>(out.px().data()), out.px().size()),
+                        "application/octet-stream");
     }
 
     void get(const std::string &pattern, Handler h) {

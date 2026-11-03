@@ -9,11 +9,11 @@
 
 namespace lmtui {
 
-PaneSize coverPane(int width, int listRows) {
+PaneSize coverPane(int width, int listRows, int maxRows) {
     // The pane takes its columns plus a separator; the list keeps the rest (minus the
     // border) and at least kMinListCols of it.
     const int widthRows = (width - 2 - 1 - kMinListCols) / 2;
-    const int rows = std::min({kMaxCoverRows, listRows, widthRows});
+    const int rows = std::min({maxRows, listRows, widthRows});
     if (rows < kMinCoverRows) return {};
     return {2 * rows, rows};
 }
@@ -38,8 +38,8 @@ ftxui::Element coverElement(const lm::art::Thumb &t, PaneSize size) {
     return vbox(std::move(lines));
 }
 
-ArtWorker::ArtWorker(std::string coversDir, std::function<void()> notify, Spawn spawn)
-    : dir_(std::move(coversDir)), notify_(std::move(notify)), spawn_(std::move(spawn)) {}
+ArtWorker::ArtWorker(std::string coversDir, std::function<void()> notify, Spawn spawn, lm::art::ThumbRes res)
+    : dir_(std::move(coversDir)), res_(res), notify_(std::move(notify)), spawn_(std::move(spawn)) {}
 
 ArtWorker::~ArtWorker() {
     {
@@ -60,7 +60,7 @@ void ArtWorker::start() {
         return;
     }
     try {
-        spawn_([sh = sh_, dir = dir_, notify = notify_] { run(sh, dir, notify); });
+        spawn_([sh = sh_, dir = dir_, res = res_, notify = notify_] { run(sh, dir, res, notify); });
     } catch (const std::exception &e) { // no thread: no art this time; the next request retries
         std::lock_guard lk(sh_->m);
         sh_->running = false;
@@ -107,7 +107,8 @@ std::vector<std::string> ArtWorker::takeMessages() {
     return std::exchange(sh_->messages, {});
 }
 
-void ArtWorker::run(const std::shared_ptr<Shared> &sh, const std::string &dir, const std::function<void()> &notify) {
+void ArtWorker::run(const std::shared_ptr<Shared> &sh, const std::string &dir, lm::art::ThumbRes res,
+                    const std::function<void()> &notify) {
     // Worker thread. Exceptions (allocation failure) must not leave the thread.
     try {
         auto report = [&](const std::string &key, std::string msg) {
@@ -125,6 +126,9 @@ void ArtWorker::run(const std::shared_ptr<Shared> &sh, const std::string &dir, c
         if (!cacheOk) report("cache", (dir.empty() ? std::string("no cache directory") : err) +
                                           " (thumbnails are not kept between runs)");
 
+        // Each resolution has its own entries ("-h": 128x128), so switching back and forth
+        // redoes nothing that is already made.
+        const std::string_view suffix = res == lm::art::ThumbRes::High ? "-h" : "";
         std::shared_ptr<const RemoteThumbs> remote;
         {
             std::lock_guard lk(sh->m);
@@ -133,7 +137,7 @@ void ArtWorker::run(const std::shared_ptr<Shared> &sh, const std::string &dir, c
         // A server album: revalidate the cached thumbnail by revision (one small request),
         // fall back to it when the server cannot be reached.
         auto remoteLookup = [&](std::int64_t album) -> std::shared_ptr<const lm::art::Thumb> {
-            const std::string key = std::format("r{:016x}-{}", lm::art::fnv1a64(remote->server), album);
+            const std::string key = std::format("r{:016x}-{}{}", lm::art::fnv1a64(remote->server), album, suffix);
             lm::art::Thumb held;
             std::uint64_t stamp = 0;
             std::string e;
@@ -144,7 +148,7 @@ void ArtWorker::run(const std::shared_ptr<Shared> &sh, const std::string &dir, c
             std::string rgb;
             std::int64_t rev = 0;
             const auto got = remote->fetch(album, have == lm::art::CoverCache::Lookup::Hit ? std::int64_t(stamp) : 0,
-                                           rgb, rev, &e);
+                                           res, rgb, rev, &e);
             switch (got) {
             case RemoteThumbs::Got::NotModified: return cached();
             case RemoteThumbs::Got::NotReady: return cached();
@@ -156,12 +160,13 @@ void ArtWorker::run(const std::shared_ptr<Shared> &sh, const std::string &dir, c
                 return nullptr;
             case RemoteThumbs::Got::Ok: break;
             }
-            if (rgb.size() != lm::art::kThumbBytes) { // the fetcher checks; never trust it blindly
+            const auto got_res = lm::art::thumbResOfBytes(rgb.size());
+            if (!got_res) { // the fetcher checks; never trust it blindly
                 report("remote size", "a server thumbnail of the wrong size was ignored");
                 return cached();
             }
-            lm::art::Thumb t;
-            std::memcpy(t.px.data(), rgb.data(), t.px.size());
+            lm::art::Thumb t(*got_res); // 64x64 from an older server: shown scaled up
+            std::memcpy(t.px().data(), rgb.data(), t.px().size());
             if (cacheOk && rev > 0 && !cache.store(key, std::uint64_t(rev), t, &e)) report("store", e);
             return std::make_shared<const lm::art::Thumb>(t);
         };
@@ -173,9 +178,10 @@ void ArtWorker::run(const std::shared_ptr<Shared> &sh, const std::string &dir, c
             std::string e;
             // A folder that cannot be listed: the player reports the track itself.
             if (!lm::art::probeAlbum(track, a, &e)) return nullptr;
+            a.key += suffix;
             lm::art::Thumb t;
             if (cacheOk) {
-                switch (cache.load(a.key, a.stamp, t, &e)) {
+                switch (cache.load(a.key, a.stamp, res, t, &e)) {
                 case lm::art::CoverCache::Lookup::Hit: return std::make_shared<const lm::art::Thumb>(t);
                 case lm::art::CoverCache::Lookup::NoArt: return nullptr;
                 case lm::art::CoverCache::Lookup::Miss:
@@ -184,7 +190,7 @@ void ArtWorker::run(const std::shared_ptr<Shared> &sh, const std::string &dir, c
                 }
             }
             std::optional<lm::art::Thumb> built;
-            if (!lm::art::buildAlbumThumb(a, built, &e)) report("art " + a.key, e);
+            if (!lm::art::buildAlbumThumb(a, built, &e, {}, res)) report("art " + a.key, e);
             if (cacheOk && !cache.store(a.key, a.stamp, built, &e)) report("store", e);
             return built ? std::make_shared<const lm::art::Thumb>(*built) : nullptr;
         };

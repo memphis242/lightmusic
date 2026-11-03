@@ -29,6 +29,13 @@ static void layout() {
     CHECK(!lmtui::coverPane(120, 3).visible());                    // too short
     CHECK(lmtui::coverPane(51, 30) == (lmtui::PaneSize{8, 4}));    // smallest: 51 - 2 - 9 = 40
     CHECK(!lmtui::coverPane(50, 30).visible());                    // list would be < 40 columns
+    // High resolution (128x128): up to 128x64 cells.
+    using lmtui::kMaxCoverRowsHigh;
+    CHECK_EQ(kMaxCoverRowsHigh, 64);
+    CHECK(lmtui::coverPane(300, 80, kMaxCoverRowsHigh) == (lmtui::PaneSize{128, 64}));
+    CHECK(lmtui::coverPane(300, 40, kMaxCoverRowsHigh) == (lmtui::PaneSize{80, 40}));
+    CHECK(lmtui::coverPane(171, 80, kMaxCoverRowsHigh) == (lmtui::PaneSize{128, 64})); // 171 - 2 - 129 = 40
+    CHECK(lmtui::coverPane(170, 80, kMaxCoverRowsHigh) == (lmtui::PaneSize{126, 63}));
 }
 
 static void rendering() {
@@ -36,9 +43,9 @@ static void rendering() {
     for (int y = 0; y < 64; y++)
         for (int x = 0; x < 64; x++) {
             const std::size_t i = (static_cast<std::size_t>(y) * 64 + static_cast<std::size_t>(x)) * 3;
-            t.px[i] = static_cast<std::uint8_t>(x < 32 ? 255 : 0); // left red, right blue
-            t.px[i + 1] = static_cast<std::uint8_t>(y < 32 ? 0 : 100); // lower half: some green
-            t.px[i + 2] = static_cast<std::uint8_t>(x < 32 ? 0 : 255);
+            t.px()[i] = static_cast<std::uint8_t>(x < 32 ? 255 : 0); // left red, right blue
+            t.px()[i + 1] = static_cast<std::uint8_t>(y < 32 ? 0 : 100); // lower half: some green
+            t.px()[i + 2] = static_cast<std::uint8_t>(x < 32 ? 0 : 255);
         }
     // FTXUI maps colours to what the terminal supports when they are made (it detects
     // that from COLORTERM): pin truecolour, as in a modern terminal.
@@ -175,6 +182,30 @@ static void worker(const std::string &tmp) {
         CHECK(ok5);
         CHECK(!got.empty() && got[0].thumb && got[0].thumb->at(1, 1) == (Rgb{90, 80, 70}));
     }
+    {
+        // High resolution: 128x128 thumbnails in their own entries ("-h"), next to the
+        // 64x64 ones, which stay.
+        auto wp = std::make_shared<Waiter>();
+        Waiter &w = *wp;
+        lmtui::ArtWorker art(covers, [wp] { wp->notify(); }, spawn, lm::art::ThumbRes::High);
+        art.want({a + "/t1.mp3"});
+        std::vector<lmtui::ArtWorker::Result> got;
+        const bool ok6 = waitFor(w, [&] {
+            for (auto &r : art.take()) got.push_back(std::move(r));
+            return !got.empty();
+        });
+        CHECK(ok6);
+        CHECK(!got.empty() && got[0].thumb && got[0].thumb->res() == lm::art::ThumbRes::High &&
+              got[0].thumb->at(120, 120) == (Rgb{90, 80, 70}));
+        int high = 0, normal = 0;
+        for (const auto &e : fs::directory_iterator(covers)) {
+            const std::string n = e.path().filename().string();
+            if (n.ends_with("-h.thumb")) high++;
+            else if (n.ends_with(".thumb")) normal++;
+        }
+        CHECK_EQ(high, 1);
+        CHECK_EQ(normal, 3);
+    }
 }
 
 // Server albums: fetched when wanted, revalidated by revision (If-None-Match), kept in the
@@ -185,6 +216,8 @@ static void remote(const std::string &tmp) {
         std::mutex m;
         std::vector<G> answers;   // next answers, in order
         std::vector<std::int64_t> ifRevs; // what the worker sent
+        std::vector<lm::art::ThumbRes> asked;
+        int side = 64;                    // what an Ok sends
     };
     auto script = std::make_shared<Script>();
     lmtui::RemoteThumbs rt;
@@ -193,14 +226,16 @@ static void remote(const std::string &tmp) {
         if (track.rfind("lm://", 0) != 0) return std::nullopt;
         return 7;
     };
-    rt.fetch = [script](std::int64_t album, std::int64_t ifRev, std::string &rgb, std::int64_t &rev, std::string *err) {
+    rt.fetch = [script](std::int64_t album, std::int64_t ifRev, lm::art::ThumbRes res, std::string &rgb,
+                        std::int64_t &rev, std::string *err) {
         std::lock_guard lk(script->m);
         script->ifRevs.push_back(ifRev);
+        script->asked.push_back(res);
         CHECK_EQ(album, 7);
         const G g = script->answers.empty() ? G::Failed : script->answers.front();
         if (!script->answers.empty()) script->answers.erase(script->answers.begin());
         if (g == G::Ok) {
-            const auto px = lmtest::solid(64, 64, 5, 6, 7);
+            const auto px = lmtest::solid(script->side, script->side, 5, 6, 7);
             rgb.assign(px.begin(), px.end());
             rev = 3;
         }
@@ -209,7 +244,7 @@ static void remote(const std::string &tmp) {
     };
     auto spawn = [](std::function<void()> fn) { std::thread(std::move(fn)).detach(); };
     const std::string covers = tmp + "/rcovers";
-    auto ask = [&](std::vector<G> answers) {
+    auto ask = [&](std::vector<G> answers, lm::art::ThumbRes res = lm::art::ThumbRes::Normal) {
         {
             std::lock_guard lk(script->m);
             script->answers = std::move(answers);
@@ -218,7 +253,7 @@ static void remote(const std::string &tmp) {
         // after this scope has seen the result and ended.
         auto wp = std::make_shared<Waiter>();
         Waiter &w = *wp;
-        lmtui::ArtWorker art(covers, [wp] { wp->notify(); }, spawn);
+        lmtui::ArtWorker art(covers, [wp] { wp->notify(); }, spawn, res);
         art.setRemote(rt);
         art.want({"lm://server/track/1"});
         std::vector<lmtui::ArtWorker::Result> got;
@@ -246,6 +281,26 @@ static void remote(const std::string &tmp) {
     {
         std::lock_guard lk(script->m);
         CHECK(script->ifRevs == (std::vector<std::int64_t>{0, 3, 3, 3, 3, 0}));
+        script->ifRevs.clear();
+        script->side = 128;
+    }
+    // High resolution: asked for 128x128, kept in its own entry (its first request is
+    // unconditional); an older server's 64x64 reply is still shown.
+    using lm::art::ThumbRes;
+    auto [h1, hm1] = ask({G::Ok}, ThumbRes::High);
+    CHECK(h1 && h1->res() == ThumbRes::High && h1->at(127, 127) == (Rgb{5, 6, 7}));
+    auto [h2, hm2] = ask({G::NotModified}, ThumbRes::High);
+    CHECK(h2 && h2->res() == ThumbRes::High);
+    {
+        std::lock_guard lk(script->m);
+        script->side = 64;
+    }
+    auto [h3, hm3] = ask({G::Ok}, ThumbRes::High);
+    CHECK(h3 && h3->res() == ThumbRes::Normal && h3->at(63, 63) == (Rgb{5, 6, 7}));
+    {
+        std::lock_guard lk(script->m);
+        CHECK(script->ifRevs == (std::vector<std::int64_t>{0, 3, 3}));
+        CHECK(script->asked.size() == 9 && script->asked.back() == ThumbRes::High && script->asked.front() == ThumbRes::Normal);
     }
 }
 

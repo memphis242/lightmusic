@@ -1507,8 +1507,9 @@ void loopbackWarning() {
 } // namespace
 
 // Album thumbnails (Client::fetchAlbumThumb): 200 with exactly one thumbnail and its
-// revision, 304 for the revision held, 404 (no art), 503 (not ready), and untrusted
-// replies refused: a short or oversized body, an unexpected 304, other statuses.
+// revision, 304 for the revision held, 404 (no art), 503 (not ready), the 128x128 one on
+// request (or 64x64 from an older server), and untrusted replies refused: a short or
+// oversized body, an unexpected 304, other statuses.
 static void albumThumbs() {
     FakeServer srv;
     const std::string dir = tempDir("thumb");
@@ -1516,36 +1517,42 @@ static void albumThumbs() {
     CHECK(cl != nullptr);
     if (!cl) return;
     using lm::net::AlbumThumb;
-    const std::string px(AlbumThumb::kAlbumThumbBytes, '\x7f');
-    srv.setThumb(1, {200, px, 42});
-    srv.setThumb(2, {503, "", 1});
-    srv.setThumb(3, {200, px.substr(1), 1});
-    srv.setThumb(4, {200, px + "x", 1});
-    srv.setThumb(5, {500, "", 1});
+    constexpr int N = AlbumThumb::kNormalSide, H = AlbumThumb::kHighSide;
+    const std::string px(AlbumThumb::bytes(N), '\x7f'), hi(AlbumThumb::bytes(H), '\x40');
+    srv.setThumb(1, {200, px, hi, 42});
+    srv.setThumb(2, {503, "", "", 1});
+    srv.setThumb(3, {200, px.substr(1), "", 1});
+    srv.setThumb(4, {200, px + "x", "", 1});
+    srv.setThumb(5, {500, "", "", 1});
+    srv.setThumb(6, {200, px, "", 1});                              // no 128x128: an older server
+    srv.setThumb(7, {200, px, std::string(AlbumThumb::bytes(H) + 1, 'x'), 1}); // oversized 128x128
     AlbumThumb t;
     std::string err;
-    CHECK(cl->fetchAlbumThumb(1, 0, t, &err) && t.status == AlbumThumb::Status::Ok && t.rgb == px && t.rev == 42);
-    CHECK(cl->fetchAlbumThumb(1, 42, t, &err) && t.status == AlbumThumb::Status::NotModified && t.rev == 42 &&
+    CHECK(cl->fetchAlbumThumb(1, 0, N, t, &err) && t.status == AlbumThumb::Status::Ok && t.rgb == px && t.rev == 42);
+    CHECK(cl->fetchAlbumThumb(1, 0, H, t, &err) && t.status == AlbumThumb::Status::Ok && t.rgb == hi && t.rev == 42);
+    CHECK(cl->fetchAlbumThumb(6, 0, H, t, &err) && t.status == AlbumThumb::Status::Ok && t.rgb == px); // older server
+    CHECK(cl->fetchAlbumThumb(1, 42, N, t, &err) && t.status == AlbumThumb::Status::NotModified && t.rev == 42 &&
           t.rgb.empty());
-    CHECK(cl->fetchAlbumThumb(1, 41, t, &err) && t.status == AlbumThumb::Status::Ok); // stale: the new one
-    CHECK(cl->fetchAlbumThumb(2, 0, t, &err) && t.status == AlbumThumb::Status::NotReady);
-    CHECK(cl->fetchAlbumThumb(9, 0, t, &err) && t.status == AlbumThumb::Status::NoArt);
+    CHECK(cl->fetchAlbumThumb(1, 41, N, t, &err) && t.status == AlbumThumb::Status::Ok); // stale: the new one
+    CHECK(cl->fetchAlbumThumb(2, 0, N, t, &err) && t.status == AlbumThumb::Status::NotReady);
+    CHECK(cl->fetchAlbumThumb(9, 0, N, t, &err) && t.status == AlbumThumb::Status::NoArt);
     err.clear();
-    CHECK(!cl->fetchAlbumThumb(3, 0, t, &err) && err.find("bad size") != std::string::npos);
-    CHECK(!cl->fetchAlbumThumb(4, 0, t, &err) && err.find("larger") != std::string::npos);
-    CHECK(!cl->fetchAlbumThumb(5, 0, t, &err) && err.find("HTTP 500") != std::string::npos);
+    CHECK(!cl->fetchAlbumThumb(3, 0, N, t, &err) && err.find("bad size") != std::string::npos);
+    CHECK(!cl->fetchAlbumThumb(4, 0, N, t, &err) && err.find("larger") != std::string::npos);
+    CHECK(!cl->fetchAlbumThumb(5, 0, N, t, &err) && err.find("HTTP 500") != std::string::npos);
+    CHECK(!cl->fetchAlbumThumb(7, 0, H, t, &err) && err.find("larger") != std::string::npos);
     // The detached-worker form works the same, and keeps working (failing) after the
     // Client is gone.
     const auto acc = cl->thumbAccess();
     CHECK(acc.server == srv.url());
-    CHECK(acc.fetch(1, 0, t, &err) && t.status == AlbumThumb::Status::Ok);
+    CHECK(acc.fetch(1, 0, N, t, &err) && t.status == AlbumThumb::Status::Ok);
     CHECK(!acc.albumOf(lm::TrackId(777)));
     // A server that is gone: a transport error, not a crash or a hang.
     srv.stop();
-    CHECK(!cl->fetchAlbumThumb(1, 0, t, &err) && !err.empty());
+    CHECK(!cl->fetchAlbumThumb(1, 0, N, t, &err) && !err.empty());
     cl.reset();
     err.clear();
-    CHECK(!acc.fetch(1, 0, t, &err) && err.find("cancelled") != std::string::npos);
+    CHECK(!acc.fetch(1, 0, N, t, &err) && err.find("cancelled") != std::string::npos);
     std::error_code ec;
     fs::remove_all(dir, ec);
 }
