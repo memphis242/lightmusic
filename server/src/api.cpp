@@ -436,12 +436,6 @@ struct HttpApi::Impl {
         // TODO: honour ?size= (thumbnails cached on disk by hash); originals for now.
         std::int64_t id;
         if (!parse_i64(req.matches[1].str(), id)) return error(res, 404, "no such album");
-        lm::art::ThumbRes want = lm::art::ThumbRes::Normal;
-        if (req.has_param("size")) {
-            const std::string sz = req.get_param_value("size");
-            if (sz == "128") want = lm::art::ThumbRes::High;
-            else if (sz != "64") return error(res, 400, "size must be 64 or 128");
-        }
         auto rev = pool.get()->album_rev(id);
         if (!rev) return error(res, 404, "no such album");
         std::string inm = req.get_header_value("If-None-Match");
