@@ -95,5 +95,8 @@ struct CommandLine {
 // character; other keys are ignored) or, for "backspace", removes the last character
 // (UTF-8 aware). Returns false for "backspace" on an empty line (the caller closes it).
 bool editCommandLine(std::string &line, std::string_view key);
+// True for a key that types a character (printable ASCII or one UTF-8 character): in
+// the ':' line and the '/' prompt such a key is text even when bound to an action.
+[[nodiscard]] bool isTextKey(std::string_view key);
 
 } // namespace lmtui

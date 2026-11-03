@@ -149,13 +149,13 @@ static void testKeys() {
     CHECK(G("down") == Command::SelectDown);
     CHECK(G("k") == Command::SelectUp);
     CHECK(G("up") == Command::SelectUp);
-    // #20: q/Q queue, quit is Ctrl-C or :q only.
-    CHECK(G("q") == Command::QueueAdd);
-    CHECK(G("Q") == Command::QueuePlayNext);
+    // a/A queue; q, Ctrl-C and :q quit.
+    CHECK(G("a") == Command::QueueAdd);
+    CHECK(G("A") == Command::QueuePlayNext);
     CHECK(G("ctrl-c") == Command::Quit);
     CHECK(G(":") == Command::OpenCommandLine);
-    CHECK(G("a") == Command::None);
-    CHECK(G("A") == Command::None);
+    CHECK(G("q") == Command::Quit);
+    CHECK(G("Q") == Command::None);
     CHECK(G("?") == Command::ToggleHelp);
     CHECK(G("escape") == Command::CloseHelp);
     CHECK(G("x") == Command::None);
@@ -172,8 +172,8 @@ static void testKeys() {
     CHECK(B("l") == Command::PlaySelected);
     CHECK(B("enter") == Command::PlaySelected);
     CHECK(B("escape") == Command::ToggleBrowser);
-    CHECK(B("q") == Command::QueueAdd);
-    CHECK(B("Q") == Command::QueuePlayNext);
+    CHECK(B("a") == Command::QueueAdd);
+    CHECK(B("A") == Command::QueuePlayNext);
     CHECK(B(" ") == Command::TogglePause);
     CHECK(G("home") == Command::SeekStart);
     CHECK(G("end") == Command::SeekEnd);
@@ -201,8 +201,8 @@ static void testKeys() {
     CHECK(Qp("c") == Command::QueueClear);
     CHECK(Qp("escape") == Command::ToggleQueueView);
     CHECK(Qp("v") == Command::ToggleQueueView);
-    CHECK(Qp("q") == Command::None); // the queue holds what is queued already
-    CHECK(Qp("Q") == Command::None);
+    CHECK(Qp("a") == Command::None); // the queue holds what is queued already
+    CHECK(Qp("A") == Command::None);
     CHECK(Qp("j") == Command::SelectDown);
     CHECK(Qp("enter") == Command::PlaySelected);
     CHECK(Qp(" ") == Command::TogglePause);
@@ -299,11 +299,12 @@ static void testKeymapOverrides() {
     std::vector<std::string> errs;
     {
         lmtui::Keymap km;
-        // Replace defaults; "a" moves from nothing to queue_add, "q" is freed.
-        CHECK(km.apply(Named{{"queue_add", L({"a"})}, {"quit", L({"ctrl-c", "space"})}}, errs));
+        // Replace defaults; "x" moves from nothing to queue_add, "a" is freed.
+        CHECK(km.apply(Named{{"queue_add", L({"x"})}, {"quit", L({"ctrl-c", "space"})}}, errs));
         CHECK(errs.empty());
-        CHECK(km.lookup(Context::Global, "a") == Command::QueueAdd);
-        CHECK(km.lookup(Context::Global, "q") == Command::None);
+        CHECK(km.lookup(Context::Global, "x") == Command::QueueAdd);
+        CHECK(km.lookup(Context::Global, "a") == Command::None);
+        CHECK(km.lookup(Context::Global, "q") == Command::None); // quit rebound without q
         // space was toggle_pause's default: the user's binding wins.
         CHECK(km.lookup(Context::Global, " ") == Command::Quit);
         CHECK(km.keysOf("toggle_pause").empty());
@@ -421,6 +422,8 @@ static void testCommandLine() {
     for (const char *bad : {"vol", "vol 151", "vol -1", "volume loud"}) CHECK(lmtui::parseCommandLine(bad).kind == CL::Error);
 
     std::string line;
+    CHECK(lmtui::isTextKey("q") && lmtui::isTextKey(" ") && lmtui::isTextKey("\xc3\xa9"));
+    CHECK(!lmtui::isTextKey("ctrl-c") && !lmtui::isTextKey("enter") && !lmtui::isTextKey("\x01"));
     CHECK(lmtui::editCommandLine(line, "q"));
     CHECK(lmtui::editCommandLine(line, "€"));
     CHECK(lmtui::editCommandLine(line, "left")); // ignored

@@ -53,7 +53,7 @@ L=$TMP/log1; : > "$L"
 { wait_in "$L" "Album A/"
   printf '\r'; wait_in "$L" "Tester — Beta"     # lazy tags in the album folder
   printf '\177'; wait_in "$L" "loose"            # back up
-  printf q; wait_in "$L" "queued: 2 tracks"      # the whole folder (row 1)
+  printf a; wait_in "$L" "queued: 2 tracks"      # the whole folder (row 1)
   printf j; sleep 0.2; printf '\r'; wait_in "$L" "Playing"
   printf b; sleep 0.3; printf '\177'; sleep 0.3  # above the music folder
   printf ':q\r'; } | tui "$L" ""

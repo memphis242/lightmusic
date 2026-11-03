@@ -2734,6 +2734,11 @@ int run(int argc, char **argv) {
                     break;
                 }
             };
+            // In the ':' line and the '/' prompt printable keys are text: only a quit key
+            // that cannot be typed (Ctrl-C by default) quits, so "q" in a path stays text.
+            auto quitsInText = [&](const std::string &key) {
+                return !lmtui::isTextKey(key) && ui.keymap.lookup(lmtui::Context::Global, key) == lmtui::Command::Quit;
+            };
             auto handleKey = [&](const std::string &key) {
                 if (ui.showMessages && !ui.cmdline) { // any key closes it (the quit key still quits)
                     const lmtui::Command c = ui.keymap.lookup(paneContext(), key);
@@ -2744,7 +2749,7 @@ int run(int argc, char **argv) {
                 }
                 if (ui.filterInput) {
                     dirty = true;
-                    if (ui.keymap.lookup(lmtui::Context::Global, key) == lmtui::Command::Quit) running = false;
+                    if (quitsInText(key)) running = false;
                     else if (key == "escape") clearFilter();
                     else if (key == "enter") {
                         ui.filterInput.reset(); // keep the filter
@@ -2762,7 +2767,7 @@ int run(int argc, char **argv) {
                 }
                 if (!ui.cmdline) return runCommand(ui.keymap.lookup(paneContext(), key), key);
                 dirty = true;
-                if (ui.keymap.lookup(lmtui::Context::Global, key) == lmtui::Command::Quit) running = false;
+                if (quitsInText(key)) running = false;
                 else if (key == "escape") ui.cmdline.reset();
                 else if (key == "enter") {
                     const std::string t = std::move(*ui.cmdline);

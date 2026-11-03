@@ -32,8 +32,8 @@ constexpr std::array kActions = {
     Action{"page_down", PageDown, Context::Global, "pagedown", "page down"},
     Action{"repeat", CycleRepeat, Context::Global, "r", "repeat: off -> all -> one"},
     Action{"shuffle", ToggleShuffle, Context::Global, "s", "shuffle on / off"},
-    Action{"queue_add", QueueAdd, Context::Global, "q", "add the selection to the queue"},
-    Action{"play_next", QueuePlayNext, Context::Global, "Q", "play the selection next"},
+    Action{"queue_add", QueueAdd, Context::Global, "a", "add the selection to the queue"},
+    Action{"play_next", QueuePlayNext, Context::Global, "A", "play the selection next"},
     Action{"queue_view", ToggleQueueView, Context::Global, "v", "show the queue (up next)"},
     Action{"browser", ToggleBrowser, Context::Global, "b", "browse library / folders"},
     Action{"pin", TogglePin, Context::Global, "P", "save offline / unsave (server tracks)"},
@@ -50,7 +50,7 @@ constexpr std::array kActions = {
     Action{"help", ToggleHelp, Context::Global, "?", "this help"},
     Action{"close_help", CloseHelp, Context::Global, "escape", "close the help"},
     Action{"suspend", Suspend, Context::Global, "ctrl-z", "suspend to the shell"},
-    Action{"quit", Quit, Context::Global, "ctrl-c", "quit"},
+    Action{"quit", Quit, Context::Global, "q ctrl-c", "quit"},
     Action{"queue_move_up", QueueMoveUp, Context::Queue, "K", "move the entry up"},
     Action{"queue_move_down", QueueMoveDown, Context::Queue, "J", "move the entry down"},
     Action{"queue_remove", QueueRemove, Context::Queue, "d delete", "remove the entry"},
@@ -381,6 +381,14 @@ CommandLine parseCommandLine(std::string_view text) {
     return r;
 }
 
+bool isTextKey(std::string_view key) {
+    if (key.size() == 1) {
+        const auto c = static_cast<unsigned char>(key[0]);
+        return c >= 0x20 && c < 0x7f;
+    }
+    return oneUtf8Char(key) > 1;
+}
+
 bool editCommandLine(std::string &line, std::string_view key) {
     if (key == "backspace") {
         if (line.empty()) return false;
@@ -389,12 +397,7 @@ bool editCommandLine(std::string &line, std::string_view key) {
         line.resize(n);
         return true;
     }
-    if (key.size() == 1) {
-        const auto c = static_cast<unsigned char>(key[0]);
-        if (c >= 0x20 && c < 0x7f) line += key;
-        return true;
-    }
-    if (oneUtf8Char(key) > 1) line += key;
+    if (isTextKey(key)) line += key;
     return true;
 }
 
