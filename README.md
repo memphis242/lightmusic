@@ -155,7 +155,9 @@ random), each opened as a list of tracks (enter plays from a track, `o` plays it
 Unicode half blocks (`▀`, foreground = upper pixel, background = lower pixel, two pixels
 per cell) in 24-bit colour (FTXUI maps it to 256 colours when the terminal does not
 advertise truecolour in `COLORTERM`); no kitty/sixel protocol. The pane is square, at
-most 32x16 cells, and hidden when the list would get narrower than 40 columns, when the
+most 64x32 cells (the 64x64 thumbnail at full resolution) and as tall as the list; it
+takes priority over the list, shrinking only to keep the list at least 40 columns wide,
+and is hidden when that leaves it under 4 rows, when the
 album has no art, or with `ui.cover_art: false` (hot). A local album is its folder; its
 art is the embedded picture of the folder's first audio file (ID3v2 `APIC`, FLAC
 `PICTURE`, Vorbis/Opus `METADATA_BLOCK_PICTURE`; the front cover, else the first

@@ -27,15 +27,17 @@
 namespace lmtui {
 
 // The cover pane next to the list: square on screen (each cell holds two pixels, and a
-// cell is about twice as tall as it is wide), `rows` = min(16, list rows), `cols` = 2 *
-// rows. Hidden (0 x 0) when the list would get narrower than kMinListCols or the pane
-// shorter than kMinRows.
+// cell is about twice as tall as it is wide), `cols` = 2 * `rows`. The cover takes
+// priority over the list: it grows up to kMaxCoverRows (64x32 cells = the 64x64
+// thumbnail at full resolution) or the list's height, and only shrinks when the list
+// would otherwise get narrower than kMinListCols. Hidden (0 x 0) when that leaves it
+// shorter than kMinCoverRows.
 struct PaneSize {
     int cols = 0, rows = 0;
     [[nodiscard]] bool visible() const { return cols > 0 && rows > 0; }
     bool operator==(const PaneSize &) const = default;
 };
-inline constexpr int kMaxCoverRows = 16, kMinCoverRows = 4, kMinListCols = 40;
+inline constexpr int kMaxCoverRows = 32, kMinCoverRows = 4, kMinListCols = 40;
 [[nodiscard]] PaneSize coverPane(int width, int listRows);
 
 // The thumbnail as `size.rows` lines of `size.cols` half-block cells ('▀', truecolour

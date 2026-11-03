@@ -10,11 +10,12 @@
 namespace lmtui {
 
 PaneSize coverPane(int width, int listRows) {
-    const int rows = std::min(kMaxCoverRows, listRows);
-    const int cols = 2 * rows;
-    // The pane takes its columns plus a separator; the list keeps the rest (minus the border).
-    if (rows < kMinCoverRows || width - 2 - (cols + 1) < kMinListCols) return {};
-    return {cols, rows};
+    // The pane takes its columns plus a separator; the list keeps the rest (minus the
+    // border) and at least kMinListCols of it.
+    const int widthRows = (width - 2 - 1 - kMinListCols) / 2;
+    const int rows = std::min({kMaxCoverRows, listRows, widthRows});
+    if (rows < kMinCoverRows) return {};
+    return {2 * rows, rows};
 }
 
 ftxui::Element coverElement(const lm::art::Thumb &t, PaneSize size) {

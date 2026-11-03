@@ -21,12 +21,14 @@ namespace fs = std::filesystem;
 using lm::art::Rgb;
 
 static void layout() {
-    CHECK(lmtui::coverPane(120, 30) == (lmtui::PaneSize{32, 16})); // capped at 16 rows
-    CHECK(lmtui::coverPane(120, 10) == (lmtui::PaneSize{20, 10}));
+    CHECK(lmtui::coverPane(200, 50) == (lmtui::PaneSize{64, 32})); // capped at 32 rows (64x64 px)
+    CHECK(lmtui::coverPane(200, 10) == (lmtui::PaneSize{20, 10})); // as tall as the list
+    CHECK(lmtui::coverPane(100, 40) == (lmtui::PaneSize{56, 28})); // shrinks to keep the list at 40
+    CHECK(lmtui::coverPane(107, 40) == (lmtui::PaneSize{64, 32})); // 107 - 2 - 65 = 40
+    CHECK(lmtui::coverPane(106, 40) == (lmtui::PaneSize{62, 31}));
     CHECK(!lmtui::coverPane(120, 3).visible());                    // too short
-    CHECK(!lmtui::coverPane(70, 30).visible());                    // list would be < 40 columns
-    CHECK(lmtui::coverPane(75, 30).visible());                     // 75 - 2 - 33 = 40
-    CHECK(!lmtui::coverPane(74, 30).visible());
+    CHECK(lmtui::coverPane(51, 30) == (lmtui::PaneSize{8, 4}));    // smallest: 51 - 2 - 9 = 40
+    CHECK(!lmtui::coverPane(50, 30).visible());                    // list would be < 40 columns
 }
 
 static void rendering() {

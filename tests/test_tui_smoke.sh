@@ -449,8 +449,11 @@ grep -q "38;2;19[0-3];4[5-9];3[0-3]" "$TMP/log30" || { echo "FAIL: cover art col
 ls "$XDG_CACHE_HOME/lightmusic/covers/"*.thumb >/dev/null 2>&1 || { echo "FAIL: no cover thumbnail cached"; fail=1; }
 art_run log31 100 'ui:\n  cover_art: false\n'
 grep -q "Playing" "$TMP/log31" && ! grep -q "▀" "$TMP/log31" || { echo "FAIL: cover art shown with ui.cover_art: false"; fail=1; }
-art_run log32 60 'playback:\n  volume: 50\n'
+art_run log32 50 'playback:\n  volume: 50\n'
 grep -q "Playing" "$TMP/log32" && ! grep -q "▀" "$TMP/log32" || { echo "FAIL: cover art shown in a narrow terminal"; fail=1; }
+# The cover takes priority: at 60 columns it shrinks (to 16x8) instead of hiding.
+art_run log33 60 'playback:\n  volume: 50\n'
+grep -q "▀" "$TMP/log33" || { echo "FAIL: cover art not shrunk to fit a 60-column terminal"; fail=1; }
 for f in "$TMP"/san*; do
     [ -e "$f" ] || continue
     echo "FAIL: sanitizer report $f (cover art runs)"; cat "$f"; fail=1
