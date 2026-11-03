@@ -4,7 +4,7 @@
 // Nothing is decoded on the play path. The worker runs at background priority
 // (SCHED_IDLE): it makes the thumbnail of every album in the list once (eager, while the
 // list is labelled) and stores it in the covers cache; a track change only asks it to
-// load the current and the next album's 12 KiB thumbnails. An album the eager pass has not
+// load the current and the next album's thumbnails (12 KiB, or 48 KiB at high resolution). An album the eager pass has not
 // reached yet is done first when it is wanted.
 #pragma once
 
@@ -28,17 +28,20 @@ namespace lmtui {
 
 // The cover pane next to the list: square on screen (each cell holds two pixels, and a
 // cell is about twice as tall as it is wide), `cols` = 2 * `rows`. The cover takes
-// priority over the list: it grows up to kMaxCoverRows (64x32 cells = the 64x64
-// thumbnail at full resolution) or the list's height, and only shrinks when the list
-// would otherwise get narrower than kMinListCols. Hidden (0 x 0) when that leaves it
-// shorter than kMinCoverRows.
+// priority over the list: it grows up to `maxRows` (half the thumbnail side: kMaxCoverRows
+// = 64x32 cells for the 64x64 thumbnail at full resolution, kMaxCoverRowsHigh = 128x64
+// for 128x128) or the list's height, and only shrinks when the list would otherwise get
+// narrower than kMinListCols. Hidden (0 x 0) when that leaves it shorter than
+// kMinCoverRows.
 struct PaneSize {
     int cols = 0, rows = 0;
     [[nodiscard]] bool visible() const { return cols > 0 && rows > 0; }
     bool operator==(const PaneSize &) const = default;
 };
-inline constexpr int kMaxCoverRows = 32, kMinCoverRows = 4, kMinListCols = 40;
-[[nodiscard]] PaneSize coverPane(int width, int listRows);
+inline constexpr int kMaxCoverRows = lm::art::thumbSide(lm::art::ThumbRes::Normal) / 2;
+inline constexpr int kMaxCoverRowsHigh = lm::art::thumbSide(lm::art::ThumbRes::High) / 2;
+inline constexpr int kMinCoverRows = 4, kMinListCols = 40;
+[[nodiscard]] PaneSize coverPane(int width, int listRows, int maxRows = kMaxCoverRows);
 
 // The thumbnail as `size.rows` lines of `size.cols` half-block cells ('▀', truecolour
 // foreground = upper pixel, background = lower pixel).
@@ -52,9 +55,11 @@ struct RemoteThumbs {
     // The album of a remote track; nullopt when `track` is not one (a local path).
     std::function<std::optional<std::int64_t>(const std::string &track)> albumOf;
     enum class Got { Ok, NotModified, NoArt, NotReady, Failed };
-    // GET the thumbnail; `ifRev` > 0: the revision held. Ok fills `rgb` (12288 bytes) and
-    // `rev`; Failed sets `err`.
-    std::function<Got(std::int64_t albumId, std::int64_t ifRev, std::string &rgb, std::int64_t &rev, std::string *err)>
+    // GET the thumbnail at `res`; `ifRev` > 0: the revision held. Ok fills `rgb` (one
+    // thumbnail, normally of `res`; an older server sends 64x64 only) and `rev`; Failed
+    // sets `err`.
+    std::function<Got(std::int64_t albumId, std::int64_t ifRev, lm::art::ThumbRes res, std::string &rgb,
+                      std::int64_t &rev, std::string *err)>
         fetch;
 };
 
@@ -67,8 +72,10 @@ public:
     };
 
     // `notify` is called on the worker thread after results or messages land (wakes the
-    // UI). `spawn` starts the (detached) worker thread once, on the first request.
-    ArtWorker(std::string coversDir, std::function<void()> notify, Spawn spawn);
+    // UI). `spawn` starts the (detached) worker thread once, on the first request. `res`:
+    // the thumbnails made and fetched (each resolution has its own cache entries).
+    ArtWorker(std::string coversDir, std::function<void()> notify, Spawn spawn,
+              lm::art::ThumbRes res = lm::art::ThumbRes::Normal);
     ArtWorker(const ArtWorker &) = delete;
     ArtWorker &operator=(const ArtWorker &) = delete;
     // Stops the worker after its current album; never waits for it (a read may block).
@@ -100,11 +107,13 @@ private:
         bool stop = false, running = false;
         std::shared_ptr<const RemoteThumbs> remote; // set before the thread starts
     };
-    static void run(const std::shared_ptr<Shared> &sh, const std::string &dir, const std::function<void()> &notify);
+    static void run(const std::shared_ptr<Shared> &sh, const std::string &dir, lm::art::ThumbRes res,
+                    const std::function<void()> &notify);
     void start();
 
     std::shared_ptr<Shared> sh_ = std::make_shared<Shared>();
     std::string dir_;
+    lm::art::ThumbRes res_;
     std::function<void()> notify_;
     Spawn spawn_;
     std::set<std::string> folders_; // UI thread: folders already handed to prefetch()

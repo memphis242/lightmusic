@@ -1,4 +1,4 @@
-// Cover-art thumbnails: decoding (JPEG/PNG), the 64x64 RGB album thumbnail, its file
+// Cover-art thumbnails: decoding (JPEG/PNG), the square RGB album thumbnail, its file
 // format, and half-block cells for drawing it in a terminal. Pure functions (no I/O);
 // lm/art/store.hpp has the cache and the local album lookup.
 //
@@ -23,15 +23,35 @@ struct Rgb {
     bool operator==(const Rgb &) const = default;
 };
 
-// Thumbnails are square: the centre of the cover, scaled to 64x64 pixels, RGB, row-major.
-inline constexpr int kThumbSide = 64;
-inline constexpr std::size_t kThumbBytes = std::size_t{kThumbSide} * kThumbSide * 3;
-static_assert(kThumbBytes == 12288, "a thumbnail is 12 KiB");
+// Thumbnails are square: the centre of the cover, scaled to 64x64 (Normal, 12 KiB) or
+// 128x128 (High, 48 KiB) pixels, RGB, row-major.
+enum class ThumbRes : std::uint8_t { Normal, High };
+[[nodiscard]] constexpr int thumbSide(ThumbRes r) { return r == ThumbRes::High ? 128 : 64; }
+[[nodiscard]] constexpr std::size_t thumbBytes(ThumbRes r) {
+    return std::size_t(thumbSide(r)) * std::size_t(thumbSide(r)) * 3;
+}
+static_assert(thumbBytes(ThumbRes::Normal) == 12288 && thumbBytes(ThumbRes::High) == 49152, "12 and 48 KiB");
+// The resolution of a thumbnail of `bytes` RGB bytes; nullopt for any other size.
+[[nodiscard]] constexpr std::optional<ThumbRes> thumbResOfBytes(std::size_t bytes) {
+    if (bytes == thumbBytes(ThumbRes::Normal)) return ThumbRes::Normal;
+    if (bytes == thumbBytes(ThumbRes::High)) return ThumbRes::High;
+    return std::nullopt;
+}
 
-struct Thumb {
-    std::array<std::uint8_t, kThumbBytes> px{};
-    [[nodiscard]] Rgb at(int x, int y) const; // 0 <= x, y < kThumbSide
+// Invariant: px().size() == thumbBytes(res()).
+class Thumb {
+public:
+    explicit Thumb(ThumbRes r = ThumbRes::Normal) : res_(r), px_(thumbBytes(r)) {}
+    [[nodiscard]] ThumbRes res() const { return res_; }
+    [[nodiscard]] int side() const { return thumbSide(res_); }
+    [[nodiscard]] std::span<std::uint8_t> px() { return px_; }
+    [[nodiscard]] std::span<const std::uint8_t> px() const { return px_; }
+    [[nodiscard]] Rgb at(int x, int y) const; // 0 <= x, y < side()
     bool operator==(const Thumb &) const = default;
+
+private:
+    ThumbRes res_;
+    std::vector<std::uint8_t> px_;
 };
 
 struct Limits {
@@ -44,11 +64,13 @@ struct Limits {
 // oversized (bytes, a side or the pixel count over `lim`), unsupported or corrupt image.
 // The dimensions are read from the header and checked before any pixel is decoded.
 [[nodiscard]] std::optional<Thumb> makeThumb(std::span<const std::uint8_t> encoded, std::string *err,
-                                             const Limits &lim = {});
+                                             const Limits &lim = {}, ThumbRes res = ThumbRes::Normal);
 
 // The thumbnail of a decoded RGB image (w * h * 3 bytes): the centred square, area-averaged
-// down (or sampled up) to 64x64.
-[[nodiscard]] Thumb thumbFromRgb(std::span<const std::uint8_t> rgb, int w, int h);
+// down (or sampled up) to the side of `res`.
+[[nodiscard]] Thumb thumbFromRgb(std::span<const std::uint8_t> rgb, int w, int h, ThumbRes res = ThumbRes::Normal);
+// `t` at resolution `res` (area average down, nearest up; a copy when it already is).
+[[nodiscard]] Thumb resized(const Thumb &t, ThumbRes res);
 
 // One terminal cell of a half-block picture: '▀' (U+2580) drawn with `top` as the
 // foreground colour and `bottom` as the background, so each cell shows two pixels.
@@ -65,7 +87,9 @@ inline constexpr std::string_view kUpperHalfBlock = "▀";
 // Thumbnail file (the on-disk cache and nothing else): 16-byte header, then the pixels
 // when there is an image. A file without pixels records "this album has no usable art"
 // so the lookup is not repeated until the album changes.
-//   "LMCV" | version (1) | flags (bit 0: has pixels) | 2 zero bytes | stamp (u64, LE)
+//   "LMCV" | version (2) | flags (bit 0: has pixels) | resolution (0 Normal, 1 High) | 0 |
+//   stamp (u64, LE)
+// Version 1 files (before High existed) have a zero resolution byte and still read.
 inline constexpr std::size_t kThumbFileHeader = 16;
 [[nodiscard]] std::string encodeThumbFile(const std::optional<Thumb> &t, std::uint64_t stamp);
 // false with `err` for a file that is not exactly one of the two valid shapes.

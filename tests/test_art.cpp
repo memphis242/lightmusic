@@ -31,8 +31,8 @@ static bool near(Rgb a, Rgb b, int tol) {
 }
 
 static bool allPixels(const Thumb &t, Rgb c, int tol = 0) {
-    for (int y = 0; y < lm::art::kThumbSide; y++)
-        for (int x = 0; x < lm::art::kThumbSide; x++)
+    for (int y = 0; y < t.side(); y++)
+        for (int x = 0; x < t.side(); x++)
             if (!near(t.at(x, y), c, tol)) return false;
     return true;
 }
@@ -130,9 +130,9 @@ static void halfBlockCells() {
         for (int x = 0; x < 64; x++) {
             const std::size_t i = (static_cast<std::size_t>(y) * 64 + static_cast<std::size_t>(x)) * 3;
             const Rgb c = bands[y / 16];
-            t.px[i] = c.r;
-            t.px[i + 1] = c.g;
-            t.px[i + 2] = c.b;
+            t.px()[i] = c.r;
+            t.px()[i + 1] = c.g;
+            t.px()[i + 2] = c.b;
         }
     const auto cells = lm::art::halfBlocks(t, 3, 2);
     CHECK_EQ(cells.size(), 6u);
@@ -148,9 +148,9 @@ static void halfBlockCells() {
 
 static void thumbFiles() {
     Thumb t;
-    for (std::size_t i = 0; i < t.px.size(); i++) t.px[i] = static_cast<std::uint8_t>(i * 7);
+    for (std::size_t i = 0; i < t.px().size(); i++) t.px()[i] = static_cast<std::uint8_t>(i * 7);
     const std::string f = lm::art::encodeThumbFile(t, 0x0102030405060708ull);
-    CHECK_EQ(f.size(), lm::art::kThumbFileHeader + lm::art::kThumbBytes);
+    CHECK_EQ(f.size(), lm::art::kThumbFileHeader + lm::art::thumbBytes(lm::art::ThumbRes::Normal));
     const bytes fb(f.begin(), f.end());
     std::optional<Thumb> back;
     std::uint64_t stamp = 0;
@@ -165,7 +165,7 @@ static void thumbFiles() {
     b1[0] = 'X';
     CHECK(bad(b1));
     bytes b2 = fb;
-    b2[4] = 2;
+    b2[4] = 3;
     CHECK(bad(b2));
     bytes b3 = fb;
     b3[5] = 3;
@@ -177,6 +177,68 @@ static void thumbFiles() {
     b5.push_back(0);
     CHECK(bad(b5));
     CHECK(bad(bytes(5, 0)));
+}
+
+// High (128x128) thumbnails: made from the image, scaled to Normal (2x2 average), their
+// own file size, version 1 files still read as Normal, and a cache lookup for another
+// resolution is a miss.
+static void highResolution(const std::string &tmp) {
+    using lm::art::ThumbRes;
+    static_assert(lm::art::thumbResOfBytes(12288) == ThumbRes::Normal && lm::art::thumbResOfBytes(49152) == ThumbRes::High &&
+                  !lm::art::thumbResOfBytes(12287));
+    // A 256x256 image: four quadrants, so each thumbnail pixel is one colour.
+    bytes px;
+    for (int y = 0; y < 256; y++)
+        for (int x = 0; x < 256; x++) {
+            const unsigned char v = static_cast<unsigned char>((x < 128 ? 0 : 100) + (y < 128 ? 0 : 50));
+            px.insert(px.end(), {v, 0, 0});
+        }
+    const Thumb hi = lm::art::thumbFromRgb(sp(px), 256, 256, ThumbRes::High);
+    CHECK(hi.res() == ThumbRes::High && hi.side() == 128 && hi.px().size() == 49152u);
+    CHECK(hi.at(0, 0) == (Rgb{0, 0, 0}) && hi.at(127, 0) == (Rgb{100, 0, 0}) && hi.at(0, 127) == (Rgb{50, 0, 0}) &&
+          hi.at(127, 127) == (Rgb{150, 0, 0}));
+    // Scaled to Normal it equals the Normal thumbnail of the image (exact: power-of-two areas).
+    const Thumb lo = lm::art::resized(hi, ThumbRes::Normal);
+    CHECK(lo == lm::art::thumbFromRgb(sp(px), 256, 256) && lo.side() == 64);
+    CHECK(lm::art::resized(hi, ThumbRes::High) == hi);
+    CHECK(lm::art::resized(lo, ThumbRes::High).at(127, 127) == (Rgb{150, 0, 0})); // up: nearest
+    CHECK_EQ(lm::art::halfBlocks(hi, 128, 64).size(), 8192u);
+    // Encoded images: makeThumb at High.
+    const auto png = lmtest::makePng(4, 4, lmtest::solid(4, 4, 1, 2, 3));
+    std::string err;
+    const auto m = lm::art::makeThumb(sp(png), &err, {}, ThumbRes::High);
+    CHECK(m && m->res() == ThumbRes::High && m->at(100, 100) == (Rgb{1, 2, 3}));
+    // Files: High round-trips; a High header with Normal pixels (or the reverse) is corrupt.
+    const std::string f = lm::art::encodeThumbFile(hi, 9);
+    CHECK_EQ(f.size(), lm::art::kThumbFileHeader + 49152u);
+    bytes fb(f.begin(), f.end());
+    std::optional<Thumb> back;
+    std::uint64_t stamp = 0;
+    CHECK(lm::art::decodeThumbFile(sp(fb), back, stamp, &err) && back && *back == hi && stamp == 9);
+    bytes swapped = fb;
+    swapped[6] = 0; // says Normal, has 48 KiB
+    CHECK(!lm::art::decodeThumbFile(sp(swapped), back, stamp, &err));
+    swapped[6] = 2; // no such resolution
+    CHECK(!lm::art::decodeThumbFile(sp(swapped), back, stamp, &err));
+    // Version 1 (before High): read as Normal; a resolution byte there is corrupt.
+    std::string v1 = lm::art::encodeThumbFile(lo, 4);
+    v1[4] = 1;
+    bytes v1b(v1.begin(), v1.end());
+    CHECK(lm::art::decodeThumbFile(sp(v1b), back, stamp, &err) && back && *back == lo && stamp == 4);
+    std::string v1h = f;
+    v1h[4] = 1;
+    bytes v1hb(v1h.begin(), v1h.end());
+    CHECK(!lm::art::decodeThumbFile(sp(v1hb), back, stamp, &err));
+    // Cache: a lookup for the other resolution is a miss (made again), not an error.
+    const lm::art::CoverCache cache(tmp + "/hicache");
+    CHECK(cache.ensureDir(&err));
+    CHECK(cache.store("l9", 3, hi, &err));
+    Thumb got;
+    err.clear();
+    CHECK(cache.load("l9", 3, ThumbRes::High, got, &err) == lm::art::CoverCache::Lookup::Hit && got == hi);
+    CHECK(cache.load("l9", 3, ThumbRes::Normal, got, &err) == lm::art::CoverCache::Lookup::Miss && err.empty());
+    CHECK(cache.store("l9", 3, std::nullopt, &err));
+    CHECK(cache.load("l9", 3, ThumbRes::High, got, &err) == lm::art::CoverCache::Lookup::NoArt);
 }
 
 static void setMtime(const std::string &p, int secs) {
@@ -193,16 +255,16 @@ static void cacheAndAlbums(const std::string &tmp) {
     struct stat sb{};
     CHECK(::stat(dir.c_str(), &sb) == 0 && (sb.st_mode & 0777) == 0700);
     Thumb t, got;
-    t.px.fill(77);
-    CHECK(cache.load("l0", 1, got) == lm::art::CoverCache::Lookup::Miss);
+    std::ranges::fill(t.px(), std::uint8_t{77});
+    CHECK(cache.load("l0", 1, lm::art::ThumbRes::Normal, got) == lm::art::CoverCache::Lookup::Miss);
     CHECK(cache.store("l0", 1, t, &err));
-    CHECK(cache.load("l0", 1, got) == lm::art::CoverCache::Lookup::Hit && got == t);
-    CHECK(cache.load("l0", 2, got) == lm::art::CoverCache::Lookup::Miss);
+    CHECK(cache.load("l0", 1, lm::art::ThumbRes::Normal, got) == lm::art::CoverCache::Lookup::Hit && got == t);
+    CHECK(cache.load("l0", 2, lm::art::ThumbRes::Normal, got) == lm::art::CoverCache::Lookup::Miss);
     CHECK(cache.store("l1", 5, std::nullopt, &err));
-    CHECK(cache.load("l1", 5, got) == lm::art::CoverCache::Lookup::NoArt);
+    CHECK(cache.load("l1", 5, lm::art::ThumbRes::Normal, got) == lm::art::CoverCache::Lookup::NoArt);
     CHECK(lmtest::writeBytes(dir + "/l2.thumb", bytes(100, 1)));
     err.clear();
-    CHECK(cache.load("l2", 1, got, &err) == lm::art::CoverCache::Lookup::Miss && !err.empty());
+    CHECK(cache.load("l2", 1, lm::art::ThumbRes::Normal, got, &err) == lm::art::CoverCache::Lookup::Miss && !err.empty());
     CHECK(lm::art::CoverCache::validKey("l0123abc") && !lm::art::CoverCache::validKey("../x") &&
           !lm::art::CoverCache::validKey(""));
     // An unwritable cache directory is an error, not a crash.
@@ -328,6 +390,7 @@ int main() {
     halfBlockCells();
     thumbFiles();
     cacheAndAlbums(tmp);
+    highResolution(tmp);
     realFiles(tmp);
     std::error_code ec;
     fs::remove_all(tmp, ec);

@@ -466,6 +466,7 @@ struct Ui {
     // Cover art (ui.cover_art): thumbnails of the playing and the next track's albums
     // (nullptr: no art), as the art worker delivers them.
     bool coverArt = true;
+    int coverMaxRows = lmtui::kMaxCoverRows; // ui.cover_resolution (restart)
     std::unordered_map<std::string, std::shared_ptr<const lm::art::Thumb>> covers;
     int selected = 0;
     bool help = false;
@@ -726,7 +727,7 @@ Element render(const Ui &ui, TagWorker &tags, int width, int height) {
     // Cover pane beside the list (hidden without art or when the terminal is too narrow).
     if (ui.coverArt && st.index >= 0 && static_cast<std::size_t>(st.index) < ui.paths.size()) {
         const auto it = ui.covers.find(ui.paths[static_cast<std::size_t>(st.index)]);
-        const lmtui::PaneSize pane = lmtui::coverPane(width, visible);
+        const lmtui::PaneSize pane = lmtui::coverPane(width, visible, ui.coverMaxRows);
         if (it != ui.covers.end() && it->second && pane.visible())
             queue = hbox({queue | flex, separator(), lmtui::coverElement(*it->second, pane)});
     }
@@ -1264,6 +1265,8 @@ int run(int argc, char **argv) {
     }
     ui.showCacheMarkers = set.showCacheMarkers;
     ui.coverArt = set.coverArt;
+    ui.coverMaxRows = set.coverResolution == lm::config::CoverResolution::High ? lmtui::kMaxCoverRowsHigh
+                                                                              : lmtui::kMaxCoverRows;
     if (!args.empty()) ui.paths = lmtui::collectTracks(args, &errors);
     for (const auto &e : errors) lm::diagln(stderr, "lightmusic: {}", e);
     for (const auto &p : ui.paths) ui.names.push_back(lmtui::displayName(p));
@@ -1318,8 +1321,10 @@ int run(int argc, char **argv) {
         // (each folder once), and only loaded on a track change (see art_view.hpp).
         std::string coversErr;
         const std::string coversDir = lm::art::coversDir(live.running.cacheDir, &coversErr);
-        lmtui::ArtWorker artWorker(coversDir, [] { wake(); },
-                                   [](std::function<void()> fn) { spawnDetached(std::move(fn)); });
+        lmtui::ArtWorker artWorker(
+            coversDir, [] { wake(); }, [](std::function<void()> fn) { spawnDetached(std::move(fn)); },
+            live.running.coverResolution == lm::config::CoverResolution::High ? lm::art::ThumbRes::High
+                                                                               : lm::art::ThumbRes::Normal);
         if (coversDir.empty()) ui.status.log(lmtui::StatusLine::Level::Warning, "cover art: " + coversErr);
 #ifdef LM_TUI_NET
         if (client) { // server albums: the thumbnail lightmusicd made, fetched when wanted
@@ -1330,11 +1335,11 @@ int run(int argc, char **argv) {
                 const auto id = lm::net::Client::parseTrackUri(track);
                 return id ? albumOf(*id) : std::nullopt;
             };
-            rt.fetch = [fetch = acc.fetch](std::int64_t album, std::int64_t ifRev, std::string &rgb, std::int64_t &rev,
-                                           std::string *err) {
+            rt.fetch = [fetch = acc.fetch](std::int64_t album, std::int64_t ifRev, lm::art::ThumbRes res,
+                                           std::string &rgb, std::int64_t &rev, std::string *err) {
                 using G = lmtui::RemoteThumbs::Got;
                 lm::net::AlbumThumb t;
-                if (!fetch(album, ifRev, t, err)) return G::Failed;
+                if (!fetch(album, ifRev, lm::art::thumbSide(res), t, err)) return G::Failed;
                 rev = t.rev;
                 switch (t.status) {
                 case lm::net::AlbumThumb::Status::Ok: rgb = std::move(t.rgb); return G::Ok;
@@ -1344,7 +1349,9 @@ int run(int argc, char **argv) {
                 }
                 return G::NoArt;
             };
-            static_assert(lm::net::AlbumThumb::kAlbumThumbBytes == lm::art::kThumbBytes, "one thumbnail format");
+            static_assert(lm::net::AlbumThumb::kNormalSide == lm::art::thumbSide(lm::art::ThumbRes::Normal) &&
+                              lm::net::AlbumThumb::kHighSide == lm::art::thumbSide(lm::art::ThumbRes::High),
+                          "one thumbnail format");
             artWorker.setRemote(std::move(rt));
         }
 #endif

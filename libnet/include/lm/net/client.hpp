@@ -89,16 +89,19 @@ struct CacheInfo {
     std::int64_t cachedBytes = 0, size = 0;
 };
 
-// GET /api/v1/cover/<album>/thumb: the album's 64x64 RGB thumbnail (lightmusicd makes it
-// in the background; the full image is never fetched).
+// GET /api/v1/cover/<album>/thumb[?size=128]: the album's 64x64 (or 128x128) RGB
+// thumbnail (lightmusicd makes it in the background; the full image is never fetched).
 struct AlbumThumb {
     enum class Status {
-        Ok,          // rgb holds kAlbumThumbBytes, rev the album revision it was made at
+        Ok,          // rgb holds bytes(side) (or bytes(64): a server older than size=128),
+                     // rev the album revision it was made at
         NotModified, // the thumbnail at `ifRev` is still current
         NoArt,       // the album has no usable art (404)
         NotReady,    // not made yet (503): ask again later
     };
-    static constexpr std::size_t kAlbumThumbBytes = std::size_t{64} * 64 * 3;
+    // The sides a thumbnail comes in.
+    static constexpr int kNormalSide = 64, kHighSide = 128;
+    [[nodiscard]] static constexpr std::size_t bytes(int side) { return std::size_t(side) * std::size_t(side) * 3; }
     Status status = Status::NoArt;
     std::string rgb;
     std::int64_t rev = 0;
@@ -165,17 +168,19 @@ public:
     void setCacheSettings(std::uint64_t capBytes, bool backgroundFill, bool pauseOnMetered);
 
     // Fetches an album thumbnail (blocking; network; any thread but the network thread).
-    // `ifRev` > 0: the revision of a thumbnail already held (conditional request). false
-    // with *err on a transport error, a refused key, another status, or a body that is
-    // not exactly one thumbnail (server data is untrusted).
-    [[nodiscard]] bool fetchAlbumThumb(std::int64_t albumId, std::int64_t ifRev, AlbumThumb &out, std::string *err);
+    // `side`: AlbumThumb::kNormalSide or kHighSide. `ifRev` > 0: the revision of a
+    // thumbnail already held (conditional request). false with *err on a transport error,
+    // a refused key, another status, or a body that is not exactly one thumbnail of that
+    // side or of the normal side (server data is untrusted).
+    [[nodiscard]] bool fetchAlbumThumb(std::int64_t albumId, std::int64_t ifRev, int side, AlbumThumb &out,
+                                       std::string *err);
     // The same for a detached worker thread that may outlive the Client: the functions
     // keep the client's internals alive; after ~Client, fetches fail ("cancelled") and
     // albumOf still answers from the mirror.
     struct ThumbAccess {
         std::string server; // the server URL (a cache namespace for its album ids)
         std::function<std::optional<std::int64_t>(TrackId)> albumOf;
-        std::function<bool(std::int64_t albumId, std::int64_t ifRev, AlbumThumb &, std::string *)> fetch;
+        std::function<bool(std::int64_t albumId, std::int64_t ifRev, int side, AlbumThumb &, std::string *)> fetch;
     };
     [[nodiscard]] ThumbAccess thumbAccess() const;
 

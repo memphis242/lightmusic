@@ -79,10 +79,11 @@ public:
         rev_++;
     }
     // GET /cover/<album>/thumb: status 200 with `body` (ETag "r<rev>"; If-None-Match of it
-    // gives 304), or any other status with an empty body. Unknown albums: 404.
+    // gives 304), or any other status with an empty body. Unknown albums: 404. With
+    // ?size=128 `high` is sent when set, else `body` (a server older than size=128).
     struct Thumb {
         int status = 200;
-        std::string body;
+        std::string body, high;
         std::int64_t rev = 1;
     };
     void setThumb(std::int64_t album, Thumb t) {
@@ -135,7 +136,9 @@ private:
         r.status = it->second.status;
         if (r.status == 200) {
             r.set_header("ETag", etag);
-            r.set_content(it->second.body, "application/octet-stream");
+            const bool wantHigh = q.has_param("size") && q.get_param_value("size") == "128";
+            r.set_content(wantHigh && !it->second.high.empty() ? it->second.high : it->second.body,
+                          "application/octet-stream");
         }
     }
 

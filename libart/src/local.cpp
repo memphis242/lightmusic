@@ -104,7 +104,8 @@ bool probeAlbum(const std::string &trackPath, LocalAlbum &out, std::string *err)
     return true;
 }
 
-bool buildAlbumThumb(const LocalAlbum &a, std::optional<Thumb> &out, std::string *err, const Limits &lim) {
+bool buildAlbumThumb(const LocalAlbum &a, std::optional<Thumb> &out, std::string *err, const Limits &lim,
+                     ThumbRes res) {
     out.reset();
     std::string why;
     auto note = [&](const std::string &m) { why += (why.empty() ? "" : "; ") + m; };
@@ -114,7 +115,7 @@ bool buildAlbumThumb(const LocalAlbum &a, std::optional<Thumb> &out, std::string
         if (!readEmbeddedPicture(a.audio, pic, &e)) {
             note(e);
         } else if (!pic.empty()) {
-            if (auto t = makeThumb(pic, &e, lim)) {
+            if (auto t = makeThumb(pic, &e, lim, res)) {
                 out = t;
                 return true;
             }
@@ -126,7 +127,7 @@ bool buildAlbumThumb(const LocalAlbum &a, std::optional<Thumb> &out, std::string
         if (!readSmallFile(a.image, lim.maxBytes, bytes, &e)) {
             note(e);
         } else if (auto t = makeThumb(std::span(reinterpret_cast<const std::uint8_t *>(bytes.data()), bytes.size()), &e,
-                                      lim)) {
+                                      lim, res)) {
             out = t;
             return true;
         } else {

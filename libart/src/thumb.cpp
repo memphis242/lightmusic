@@ -53,25 +53,33 @@ struct StbFree {
 };
 
 constexpr char kMagic[4] = {'L', 'M', 'C', 'V'};
-constexpr std::uint8_t kVersion = 1;
+constexpr std::uint8_t kVersion = 2;
 
 } // namespace
 
 Rgb Thumb::at(int x, int y) const {
-    LM_ASSERT(x >= 0 && y >= 0 && x < kThumbSide && y < kThumbSide, "pixel inside the thumbnail");
-    const std::size_t i = (std::size_t(y) * kThumbSide + std::size_t(x)) * 3;
-    return Rgb{px[i], px[i + 1], px[i + 2]};
+    LM_ASSERT(x >= 0 && y >= 0 && x < side() && y < side(), "pixel inside the thumbnail");
+    const std::size_t i = (std::size_t(y) * std::size_t(side()) + std::size_t(x)) * 3;
+    return Rgb{px_[i], px_[i + 1], px_[i + 2]};
 }
 
-Thumb thumbFromRgb(std::span<const std::uint8_t> rgb, int w, int h) {
+Thumb thumbFromRgb(std::span<const std::uint8_t> rgb, int w, int h, ThumbRes res) {
     LM_ASSERT(w > 0 && h > 0 && rgb.size() >= std::size_t(w) * std::size_t(h) * 3, "a w x h RGB image");
     const int side = std::min(w, h);
-    Thumb t;
-    resample(rgb, w, Rect{(w - side) / 2, (h - side) / 2, side, side}, kThumbSide, kThumbSide, t.px.data());
+    Thumb t(res);
+    resample(rgb, w, Rect{(w - side) / 2, (h - side) / 2, side, side}, t.side(), t.side(), t.px().data());
     return t;
 }
 
-std::optional<Thumb> makeThumb(std::span<const std::uint8_t> encoded, std::string *err, const Limits &lim) {
+Thumb resized(const Thumb &t, ThumbRes res) {
+    if (t.res() == res) return t;
+    Thumb out(res);
+    resample(t.px(), t.side(), Rect{0, 0, t.side(), t.side()}, out.side(), out.side(), out.px().data());
+    return out;
+}
+
+std::optional<Thumb> makeThumb(std::span<const std::uint8_t> encoded, std::string *err, const Limits &lim,
+                               ThumbRes res) {
     auto fail = [&](std::string m) -> std::optional<Thumb> {
         if (err) *err = std::move(m);
         return std::nullopt;
@@ -92,7 +100,7 @@ std::optional<Thumb> makeThumb(std::span<const std::uint8_t> encoded, std::strin
     if (!px) return fail(std::format("cannot decode the image ({})", stbi_failure_reason()));
     if (dw != w || dh != h) return fail("image size changed while decoding"); // header and data disagree
     const std::size_t n = std::size_t(w) * std::size_t(h) * 3;
-    return thumbFromRgb(std::span<const std::uint8_t>(px.get(), n), w, h);
+    return thumbFromRgb(std::span<const std::uint8_t>(px.get(), n), w, h, res);
 }
 
 std::vector<Cell> halfBlocks(const Thumb &t, int cols, int rows) {
@@ -100,7 +108,7 @@ std::vector<Cell> halfBlocks(const Thumb &t, int cols, int rows) {
     if (cols <= 0 || rows <= 0) return cells;
     const int ph = rows * 2;
     std::vector<std::uint8_t> px(std::size_t(cols) * std::size_t(ph) * 3);
-    resample(t.px, kThumbSide, Rect{0, 0, kThumbSide, kThumbSide}, cols, ph, px.data());
+    resample(t.px(), t.side(), Rect{0, 0, t.side(), t.side()}, cols, ph, px.data());
     cells.reserve(std::size_t(cols) * std::size_t(rows));
     auto rgbAt = [&](int x, int y) {
         const std::size_t i = (std::size_t(y) * std::size_t(cols) + std::size_t(x)) * 3;
@@ -115,10 +123,11 @@ std::string encodeThumbFile(const std::optional<Thumb> &t, std::uint64_t stamp) 
     std::string s(kMagic, sizeof kMagic);
     s.push_back(static_cast<char>(kVersion));
     s.push_back(static_cast<char>(t ? 1 : 0));
-    s.append(2, '\0');
+    s.push_back(static_cast<char>(t && t->res() == ThumbRes::High ? 1 : 0));
+    s.push_back('\0');
     for (int i = 0; i < 8; i++) s.push_back(static_cast<char>(stamp >> (8 * i) & 0xFF));
     LM_ASSERT(s.size() == kThumbFileHeader, "header layout");
-    if (t) s.append(reinterpret_cast<const char *>(t->px.data()), t->px.size());
+    if (t) s.append(reinterpret_cast<const char *>(t->px().data()), t->px().size());
     return s;
 }
 
@@ -130,17 +139,23 @@ bool decodeThumbFile(std::span<const std::uint8_t> bytes, std::optional<Thumb> &
     };
     if (bytes.size() < kThumbFileHeader || std::memcmp(bytes.data(), kMagic, sizeof kMagic) != 0)
         return fail("not a thumbnail file");
-    if (bytes[4] != kVersion) return fail("unknown thumbnail file version");
+    if (bytes[4] != 1 && bytes[4] != kVersion) return fail("unknown thumbnail file version");
     const bool has = bytes[5] == 1;
-    if (bytes[5] > 1 || bytes[6] != 0 || bytes[7] != 0) return fail("bad thumbnail file flags");
-    if (bytes.size() != kThumbFileHeader + (has ? kThumbBytes : 0)) return fail("truncated or oversized thumbnail file");
+    if (bytes[5] > 1 || bytes[6] > (bytes[4] == 1 ? 0 : 1) || bytes[7] != 0) return fail("bad thumbnail file flags");
+    const ThumbRes res = bytes[6] == 1 ? ThumbRes::High : ThumbRes::Normal;
+    if (bytes.size() != kThumbFileHeader + (has ? thumbBytes(res) : 0))
+        return fail("truncated or oversized thumbnail file");
     stamp = 0;
     for (int i = 0; i < 8; i++) stamp |= std::uint64_t{bytes[8 + std::size_t(i)]} << (8 * i);
-    t.reset();
-    if (has) {
-        t.emplace();
-        std::memcpy(t->px.data(), bytes.data() + kThumbFileHeader, kThumbBytes);
+    if (!has) {
+        t.reset();
+        return true;
     }
+    // Filled first, then moved in: gcc 15 -O2 reports a false -Wmaybe-uninitialized for
+    // the vector inside optional::emplace() after reset().
+    Thumb th(res);
+    std::memcpy(th.px().data(), bytes.data() + kThumbFileHeader, thumbBytes(res));
+    t = std::move(th);
     return true;
 }
 

@@ -90,13 +90,14 @@ std::size_t Thumbnailer::run_pass() {
         const std::string k = key(id);
         lm::art::Thumb t;
         std::string err;
-        const auto look = cache_.load(k, std::uint64_t(rev), t, &err);
+        const auto look = cache_.load(k, std::uint64_t(rev), lm::art::ThumbRes::High, t, &err);
         if (!err.empty()) log("thumbnails: " + err + " (made again)");
         if (look == lm::art::CoverCache::Lookup::Miss) {
             std::optional<lm::art::Thumb> thumb;
             if (auto pic = load_album_cover(roots, db.album_track_paths(id))) {
                 thumb = lm::art::makeThumb(
-                    std::span(reinterpret_cast<const std::uint8_t *>(pic->data.data()), pic->data.size()), &err);
+                    std::span(reinterpret_cast<const std::uint8_t *>(pic->data.data()), pic->data.size()), &err, {},
+                    lm::art::ThumbRes::High);
                 if (!thumb) log("thumbnails: album " + std::to_string(id) + ": " + err);
             }
             if (!cache_.store(k, std::uint64_t(rev), thumb, &err)) {

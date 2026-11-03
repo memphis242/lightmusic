@@ -1615,11 +1615,12 @@ bool plainLibraryId(const std::string &s) {
 } // namespace
 
 namespace {
-bool fetchThumb(Client::Core &c, std::int64_t albumId, std::int64_t ifRev, AlbumThumb &out, std::string *err);
+bool fetchThumb(Client::Core &c, std::int64_t albumId, std::int64_t ifRev, int side, AlbumThumb &out,
+                std::string *err);
 } // namespace
 
-bool Client::fetchAlbumThumb(std::int64_t albumId, std::int64_t ifRev, AlbumThumb &out, std::string *err) {
-    return fetchThumb(*core_, albumId, ifRev, out, err);
+bool Client::fetchAlbumThumb(std::int64_t albumId, std::int64_t ifRev, int side, AlbumThumb &out, std::string *err) {
+    return fetchThumb(*core_, albumId, ifRev, side, out, err);
 }
 
 Client::ThumbAccess Client::thumbAccess() const {
@@ -1630,15 +1631,18 @@ Client::ThumbAccess Client::thumbAccess() const {
         if (!t || t->albumId <= 0) return std::nullopt;
         return t->albumId;
     };
-    a.fetch = [core = core_](std::int64_t albumId, std::int64_t ifRev, AlbumThumb &out, std::string *err) {
-        return fetchThumb(*core, albumId, ifRev, out, err);
+    a.fetch = [core = core_](std::int64_t albumId, std::int64_t ifRev, int side, AlbumThumb &out, std::string *err) {
+        return fetchThumb(*core, albumId, ifRev, side, out, err);
     };
     return a;
 }
 
 namespace {
-bool fetchThumb(Client::Core &c, std::int64_t albumId, std::int64_t ifRev, AlbumThumb &out, std::string *err) {
+bool fetchThumb(Client::Core &c, std::int64_t albumId, std::int64_t ifRev, int side, AlbumThumb &out,
+                std::string *err) {
     LM_ASSERT(!c.net->onNetThread(), "a blocking fetch on the network thread would wait for itself");
+    LM_ASSERT(side == AlbumThumb::kNormalSide || side == AlbumThumb::kHighSide, "a thumbnail side");
+    const std::size_t maxBytes = AlbumThumb::bytes(side);
     out = AlbumThumb{};
     struct Result {
         long status = 0;
@@ -1650,7 +1654,8 @@ bool fetchThumb(Client::Core &c, std::int64_t albumId, std::int64_t ifRev, Album
     auto done = std::make_shared<std::promise<void>>();
     auto fut = done->get_future();
     HttpRequest req;
-    req.url = c.base + "/api/v1/cover/" + std::to_string(albumId) + "/thumb";
+    req.url = c.base + "/api/v1/cover/" + std::to_string(albumId) + "/thumb" +
+              (side == AlbumThumb::kHighSide ? "?size=128" : "");
     if (ifRev > 0) req.headers.push_back("If-None-Match: \"r" + std::to_string(ifRev) + "\"");
     req.totalTimeoutSec = 30;
     req.onHead = [res](const HttpResponseHead &h) {
@@ -1658,8 +1663,8 @@ bool fetchThumb(Client::Core &c, std::int64_t albumId, std::int64_t ifRev, Album
         res->etag = h.header("etag");
         return true;
     };
-    req.onData = [res](const char *p, std::size_t n) {
-        if (res->body.size() + n > AlbumThumb::kAlbumThumbBytes) {
+    req.onData = [res, maxBytes](const char *p, std::size_t n) {
+        if (res->body.size() + n > maxBytes) {
             res->tooBig = true;
             return false;
         }
@@ -1689,7 +1694,7 @@ bool fetchThumb(Client::Core &c, std::int64_t albumId, std::int64_t ifRev, Album
     };
     switch (res->status) {
     case 200:
-        if (res->body.size() != AlbumThumb::kAlbumThumbBytes)
+        if (res->body.size() != maxBytes && res->body.size() != AlbumThumb::bytes(AlbumThumb::kNormalSide))
             return fail("bad size (" + std::to_string(res->body.size()) + " bytes)");
         out.status = AlbumThumb::Status::Ok;
         out.rgb = std::move(res->body);
