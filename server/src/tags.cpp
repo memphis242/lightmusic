@@ -8,6 +8,7 @@
 #include <taglib/mpegfile.h>
 #include <taglib/opusfile.h>
 #include <taglib/tag.h>
+#include <taglib/taglib.h> // TAGLIB_MAJOR_VERSION: include it directly, never rely on it arriving transitively
 #include <taglib/tfilestream.h>
 #include <taglib/tpropertymap.h>
 #include <taglib/vorbisfile.h>
