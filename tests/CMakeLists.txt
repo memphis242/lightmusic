@@ -124,8 +124,10 @@ function(lm_compile_fail name src case regex)
   target_compile_definitions(${name} PRIVATE LM_CF_CASE=${case})
   target_link_libraries(${name} PRIVATE lm_warnings_test ${ARGN})
   add_test(NAME ${name} COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target ${name})
+  # LC_ALL=C: gcc quotes names with typographic quotes in a UTF-8 locale (seen with
+  # gcc 16), which the ASCII-quoted regexes would not match.
   set_tests_properties(${name} PROPERTIES PASS_REGULAR_EXPRESSION "${regex}" RESOURCE_LOCK lm_build_tree TIMEOUT 120
-                                          LABELS compile_fail)
+                                          LABELS compile_fail ENVIRONMENT "LC_ALL=C")
 endfunction()
 lm_compile_fail(cf_int_field_bool config_fields.cpp 1 "IntFieldValue" lm::config)
 lm_compile_fail(cf_int_field_double config_fields.cpp 2 "IntFieldValue" lm::config)
