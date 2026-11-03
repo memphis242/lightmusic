@@ -381,6 +381,14 @@ CommandLine parseCommandLine(std::string_view text) {
     return r;
 }
 
+bool isTextKey(std::string_view key) {
+    if (key.size() == 1) {
+        const auto c = static_cast<unsigned char>(key[0]);
+        return c >= 0x20 && c < 0x7f;
+    }
+    return oneUtf8Char(key) > 1;
+}
+
 bool editCommandLine(std::string &line, std::string_view key) {
     if (key == "backspace") {
         if (line.empty()) return false;
@@ -389,12 +397,7 @@ bool editCommandLine(std::string &line, std::string_view key) {
         line.resize(n);
         return true;
     }
-    if (key.size() == 1) {
-        const auto c = static_cast<unsigned char>(key[0]);
-        if (c >= 0x20 && c < 0x7f) line += key;
-        return true;
-    }
-    if (oneUtf8Char(key) > 1) line += key;
+    if (isTextKey(key)) line += key;
     return true;
 }
 

@@ -422,6 +422,8 @@ static void testCommandLine() {
     for (const char *bad : {"vol", "vol 151", "vol -1", "volume loud"}) CHECK(lmtui::parseCommandLine(bad).kind == CL::Error);
 
     std::string line;
+    CHECK(lmtui::isTextKey("q") && lmtui::isTextKey(" ") && lmtui::isTextKey("\xc3\xa9"));
+    CHECK(!lmtui::isTextKey("ctrl-c") && !lmtui::isTextKey("enter") && !lmtui::isTextKey("\x01"));
     CHECK(lmtui::editCommandLine(line, "q"));
     CHECK(lmtui::editCommandLine(line, "€"));
     CHECK(lmtui::editCommandLine(line, "left")); // ignored

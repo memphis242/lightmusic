@@ -226,6 +226,7 @@ w9() { n=200; while [ $n -gt 0 ] && ! grep -q -- "$1" "$TMP/log9"; do sleep 0.05
   printf ':vol 80\r'; w9 "vol  80%"
   printf ':seek 50%%\r'; w9 "0:1[01] / 0:20"
   printf ':frob\r'; w9 "unknown command: frob"
+  printf ':quack\r'; w9 "unknown command: quack" # q in the line is text, not quit
   printf ':nex\177xt\r'; w9 "2 Second"   # backspace edits the line
   printf h; w9 "add the selection to the queue"
   printf h; sleep 0.2
