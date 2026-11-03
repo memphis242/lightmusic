@@ -1,6 +1,9 @@
 # lightmusic TUI. Uses the system FTXUI (Fedora: ftxui-devel 6.x) when found; otherwise,
 # with LM_FETCH_FTXUI=ON, fetches FTXUI v6.1.9 (needs network) and links it statically.
-find_package(ftxui 6 CONFIG QUIET)
+find_package(ftxui 7 CONFIG QUIET)
+if(NOT ftxui_FOUND)
+  find_package(ftxui 6 CONFIG QUIET)
+endif()
 if(ftxui_FOUND)
   message(STATUS "lightmusic TUI: system FTXUI ${ftxui_VERSION}")
 elseif(LM_FETCH_FTXUI)
